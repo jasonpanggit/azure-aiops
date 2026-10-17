@@ -11,6 +11,8 @@ const navigation = vi.hoisted(() => ({
 const authorizedScope = vi.hoisted(() => ({ subscription: ["sub-1"] }));
 const api = vi.hoisted(() => ({
   detail: vi.fn(),
+  reviews: vi.fn(),
+  createReview: vi.fn(),
   exposureOverview: vi.fn(),
   exposureItems: vi.fn(),
 }));
@@ -34,7 +36,7 @@ vi.mock("@/lib/services", async () => {
   );
   return {
     ...actual,
-    kbApi: { detail: api.detail },
+    kbApi: { detail: api.detail, reviews: api.reviews, createReview: api.createReview },
     vulnerabilityApi: {
       ...actual.vulnerabilityApi,
       exposureOverview: api.exposureOverview,
@@ -259,6 +261,8 @@ describe("KB detail", () => {
       "subscription=sub-1&q=kernel&severity=critical&page_size=25&origin=%2Fexposure%2Fdefender-posture&row=exposure-1&scroll=320&generation=generation-25",
     );
     api.detail.mockResolvedValue(kbEnvelope());
+    api.reviews.mockResolvedValue({ data: { schema_version: 1, actor: "reader", kb_id: "KB600001", scope: authorizedScope, revision: 0, reviews: [] },
+      scope: authorizedScope, evidence: [], warnings: [] });
     api.exposureOverview.mockResolvedValue(overviewEnvelope());
     api.exposureItems.mockResolvedValue(findingsEnvelope());
   });

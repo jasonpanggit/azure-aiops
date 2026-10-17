@@ -1836,6 +1836,35 @@ silently dropped or widened. Maintenance-review declarations and retained
 verification observations are separate, not implemented by this current-source
 projection.
 
+### KB maintenance-review declarations
+
+`GET /api/v1/kbs/{kb_id}/reviews` reads a private append-only declaration history
+under current caller authorization. Identity includes principal, every exact
+effective scope selector and canonical uppercase KB identifier; reads do not
+acquire providers. `POST` accepts only an expected revision (0–20), the displayed
+Silver generation, a declared owner, an offset-aware proposed start/end window,
+up to 20 unique other KB references, a `needs_review`, `deferred` or `reviewed`
+disposition and a required explanation. Actor, record ID, recording clock and
+source evidence cannot be supplied by the browser.
+
+Before each append the server reauthorizes and reacquires current KB metadata
+using the existing SQL detail path. The requested Silver generation must still
+match. Only its generation and snapshot clock/coverage/freshness are retained
+beside the declaration; arbitrary assets, provider payloads and execution plans
+are excluded. Independent catalog and snapshot clocks are not synchronized.
+`state/kb-review/<identity-hash>.json` uses create-only/ETag compare-and-swap,
+at most 20 records and 256 KiB, with no eviction or overwrite of earlier reviews.
+Corrupt documents fail instead of becoming empty history; revision/capacity or
+changed-generation conflicts return 409. Unconfirmed storage outcomes return an
+explicit error. The UI disables saves until an explicit retained reload following
+an ambiguous write and never retries POST automatically.
+
+These are personal operator declarations, not delivered owner assignments,
+maintenance reservations, verified prerequisites, approval transitions,
+remediation execution or proof of a fix. A `reviewed` disposition asserts only
+that the operator recorded that disposition. Retained reads remain possible when
+current KB metadata is unavailable; new reviews require its generation.
+
 ### Situation handover annotations and observed comparisons
 
 `GET /api/v1/situations/{situation_id}/notes` reauthorizes the live Situation

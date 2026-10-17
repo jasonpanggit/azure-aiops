@@ -2025,6 +2025,16 @@ export const multiAgentApi = {
 };
 
 export const kbApi = {
+  /** Read private exact-scope KB declarations without refreshing provider data. */
+  reviews: (kbId: string, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").KbReviewHistory>(`/kbs/${encodeURIComponent(kbId)}/reviews`, {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Reauthorize/reacquire Silver metadata before retaining an operator declaration. */
+  createReview: (kbId: string, scope: ScopeSelection, expectedRevision: number, declaration: import("./types").KbReviewDeclaration) =>
+    apiRequest<import("./types").KbReviewHistory>(`/kbs/${encodeURIComponent(kbId)}/reviews`, {
+      method: "POST", query: scopeToSearchParams(scope), body: { ...declaration, expected_revision: expectedRevision },
+    }),
   detail: (
     kbId: string,
     scope: ScopeSelection = {},

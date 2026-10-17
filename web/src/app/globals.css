@@ -5816,6 +5816,19 @@ body.topology-fullscreen-open {
   margin-block: 12px;
 }
 
+.kb-maintenance-review input,
+.kb-maintenance-review select,
+.kb-maintenance-review textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+}
+
+.kb-maintenance-review p,
+.kb-maintenance-review dd {
+  overflow-wrap: anywhere;
+}
+
 .kb-update-evidence h3 {
   margin-block: 24px 12px;
 }

@@ -1719,6 +1719,34 @@ export interface ExposureEnrichmentState {
   sources: Record<string, ExposureEnrichmentSourceState>;
 }
 
+export interface KbReviewDeclaration {
+  generation: string;
+  owner: string;
+  window_start: string;
+  window_end: string;
+  dependency_kbs: string[];
+  disposition: "needs_review" | "deferred" | "reviewed";
+  note: string;
+}
+
+export interface KbReviewRecord extends KbReviewDeclaration {
+  expected_revision: number;
+  review_id: string;
+  recorded_at: string;
+  source_observed_at: string;
+  source_completeness: string;
+  source_freshness: string;
+}
+
+export interface KbReviewHistory {
+  schema_version: 1;
+  actor: string;
+  scope: ScopeSelection;
+  kb_id: string;
+  revision: number;
+  reviews: KbReviewRecord[];
+}
+
 export interface KbDetail {
   generation?: string;
   snapshot_freshness_at?: string;

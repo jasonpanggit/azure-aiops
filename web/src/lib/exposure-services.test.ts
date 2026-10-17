@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
-import { vulnerabilityApi } from "@/lib/services";
+import { kbApi, vulnerabilityApi } from "@/lib/services";
 import { SCOPE_DIMENSIONS } from "@/lib/scope";
 import type {
   Envelope,
@@ -39,6 +39,25 @@ function captureFetch<T, TPagination = Pagination>(body: Envelope<T, TPagination
 describe("vulnerabilityApi authoritative Exposure envelope", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("keeps KB retained reads separate from Silver-generation review declarations with exact scope", async () => {
+    const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(dimension => [dimension, ["one", "two"]]));
+    const fetchSpy = captureFetch({ data: {}, scope, evidence: [], warnings: [] });
+    const controller = new AbortController();
+    const declaration = { generation: "silver-patch:one", owner: "Operations", window_start: "2026-10-20T01:00:00Z",
+      window_end: "2026-10-20T02:00:00Z", dependency_kbs: ["KB6000000"], disposition: "needs_review" as const, note: "Review" };
+    await kbApi.reviews("KB6000001", scope, controller.signal);
+    await kbApi.createReview("KB6000001", scope, 2, declaration);
+    const calls = fetchSpy.mock.calls.filter(([input]) => String(input).includes("/api/v1/"));
+    expect(calls).toHaveLength(2);
+    calls.forEach(([input]) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe("/api/v1/kbs/KB6000001/reviews");
+      for (const dimension of SCOPE_DIMENSIONS) expect(url.searchParams.getAll(dimension)).toEqual(["one", "two"]);
+    });
+    expect(calls[0][1]).toMatchObject({ method: "GET", signal: controller.signal });
+    expect(JSON.parse(calls[1][1].body)).toEqual({ ...declaration, expected_revision: 2 });
   });
 
   it("separates CVE receipt reads, explicit acquisition and retained-byte downloads with exact scope", async () => {

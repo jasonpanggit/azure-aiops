@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/PageHeader";
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { KbUpdateEvidence } from "@/components/exposure/KbUpdateEvidence";
+import { KbMaintenanceReview } from "@/components/exposure/KbMaintenanceReview";
 import { validateKbEvidence } from "@/lib/kb-evidence";
 import { SourceFreshnessRail } from "@/components/exposure/SourceFreshnessRail";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
@@ -789,6 +790,7 @@ function KbDetailBody({ params }: { params: { id: string } }) {
               </Section>
 
               <KbUpdateEvidence kbId={kbId} detail={data} />
+              <KbMaintenanceReview kbId={kbId} scope={findingState.scope} generation={data?.generation} />
               <Section
                 label="Affected assets"
                 sourceName="Affected findings"
