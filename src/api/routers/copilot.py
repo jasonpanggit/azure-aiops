@@ -2476,6 +2476,24 @@ def investigate_canonical(
     )
 
 
+@router.get("/copilot/threads", summary="Discover authorized retained investigation threads")
+def retained_threads(
+    context: Context, scope: ReadScope, principal: CurrentPrincipal,
+    page: Annotated[int, Query(ge=0, le=31)] = 0,
+) -> dict[str, Any]:
+    """List one bounded principal/scope-authorized storage page, without tools."""
+    try:
+        data = investigation_thread_store().list_owned(principal.subject, scope, page=page)
+    except ThreadStoreUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Retained thread discovery is temporarily unavailable",
+        ) from exc
+    return envelope(data, scope=scope.to_dict(), warnings=[
+        "Storage-order discovery is not chronological or a snapshot. Pages may be empty after authorization or expiry; reads do not renew retention.",
+    ])
+
+
 @router.get("/copilot/threads/{thread_id}/history", summary="Read exact retained historical turns")
 def retained_thread_history(
     thread_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal,

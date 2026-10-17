@@ -12,6 +12,7 @@ import { StructuredData } from "@/components/ui/StructuredData";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { CopilotHistory } from "@/components/CopilotHistory";
 import { CopilotFindings } from "@/components/CopilotFindings";
+import { CopilotThreadCatalog } from "@/components/CopilotThreadCatalog";
 import { useScope } from "@/lib/scope-context";
 import { ScopeBookmarkError, scopedBookmark, scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import {
@@ -187,6 +188,7 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision }: { scope: Sc
       />
 
       <CopilotHistory threadId={pinnedThreadId || lastThreadId || threadContinuity?.thread?.threadId || ""} scope={scope} pinned={Boolean(pinnedThreadId)} expectedRevision={pinnedRevision} />
+      <CopilotThreadCatalog scope={scope} />
       {pinnedThreadId ? <StatePanel title="Historical review only" message="New questions are disabled while an exact historical thread is selected. Leave historical review to use the current active conversation; this read does not attach or resume the selected thread." /> : null}
       {recovery ? <StatePanel title="Request outcome unconfirmed" message={recovery} tone="partial" action={<button className="button" onClick={() => setRecovery("")}>I reviewed the outcome; enable a deliberate new question</button>} /> : null}
 

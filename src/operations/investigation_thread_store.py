@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -678,6 +679,71 @@ class InvestigationThreadStore:
             self._threads.move_to_end(thread_id)
             self._persist(record)
             return record
+
+    def list_owned(
+        self,
+        principal_subject: str,
+        current_scope: Scope,
+        *,
+        page: int = 0,
+    ) -> dict[str, Any]:
+        """Discover one bounded storage page without renewing or writing threads."""
+        if not 0 <= page < 32:
+            raise ValueError("history page must be between 0 and 31")
+        with self._lock:
+            now = self._clock()
+            continuation = None
+            if self.documents is not None:
+                try:
+                    for index in range(page + 1):
+                        names, continuation = self.documents.list_names(
+                            "threads", limit=64, continuation=continuation,
+                        )
+                        if index < page and continuation is None:
+                            names = []
+                            break
+                except Exception:
+                    _LOGGER.warning("failed to list retained investigation threads", exc_info=True)
+                    raise ThreadStoreUnavailable() from None
+            else:
+                names = [thread_document_name(key) for key in sorted(self._threads)]
+                continuation = "more" if len(names) > (page + 1) * 64 else None
+                names = names[page * 64:(page + 1) * 64]
+            items = []
+            for name in names:
+                match = re.fullmatch(r"threads/(thr-[a-f0-9]{32})\.json", name)
+                if match is None:
+                    continue
+                thread_id = match.group(1)
+                try:
+                    record = self._load(thread_id) if self.documents is not None else self._threads.get(thread_id)
+                except ThreadNotFound:
+                    _LOGGER.warning("corrupt retained thread omitted from discovery")
+                    continue
+                if (
+                    record is None
+                    or record.principal_subject != principal_subject
+                    or self._expiry_reason(record, now)
+                    or not scope_within(current_scope, record.scope)
+                ):
+                    continue
+                latest = record.turns[-1] if record.turns else None
+                visible = latest is not None and scope_within(latest.scope, current_scope)
+                question = str(latest.payload.get("question") or "") if visible else ""
+                items.append({
+                    "thread_id": record.thread_id,
+                    "thread_revision": record.revision,
+                    "durability": record.durability,
+                    "question": question[:1024],
+                    "title_status": "visible" if visible else "withheld_or_empty",
+                })
+            return {
+                "threads": items, "page": page,
+                "has_more": continuation is not None and page < 31,
+                "scan_limit_reached": continuation is not None and page == 31,
+                "order": "storage_listing",
+                "durability": DURABILITY_DURABLE if self.documents is not None else DURABILITY_MEMORY_ONLY,
+            }
 
     def read_snapshot(
         self,

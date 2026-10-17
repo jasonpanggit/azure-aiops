@@ -763,6 +763,12 @@ export interface CopilotToolSpec {
 }
 
 export const copilotApi = {
+  /** Discover a bounded authorized storage page, never execute or renew threads. */
+  retainedThreads: (scope: ScopeSelection, page = 0, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("page", String(page));
+    return apiRequest<import("./types").RetainedCopilotThreads>("/copilot/threads", { query, signal });
+  },
   /** Read exact authorized historical turns without renewing or executing a thread. */
   retainedHistory: (threadId: string, scope: ScopeSelection, options: { signal?: AbortSignal; expectedRevision?: number } = {}) => {
     const query = scopeToSearchParams(scope);

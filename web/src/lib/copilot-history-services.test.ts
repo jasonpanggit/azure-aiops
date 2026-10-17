@@ -7,6 +7,17 @@ vi.mock("./api-client", () => ({ apiRequest: mock.request, resolveApiBaseUrl: ()
 
 describe("Copilot history and interrupt transport contracts", () => {
   beforeEach(() => { mock.request.mockReset(); mock.request.mockResolvedValue({ data: {} }); });
+  it("discovers a read-only authorized page with scope and cancellation", async () => {
+    const controller = new AbortController();
+    await copilotApi.retainedThreads({ owner: ["a", "b"] }, 2, controller.signal);
+    const [path, options] = mock.request.mock.calls[0];
+    expect(path).toBe("/copilot/threads");
+    expect(options.query.getAll("owner")).toEqual(["a", "b"]);
+    expect(options.query.get("page")).toBe("2");
+    expect(options.signal).toBe(controller.signal);
+    expect(options.method).toBeUndefined();
+    expect(options.body).toBeUndefined();
+  });
   it("pins a retained read to the reviewed revision", async () => {
     await copilotApi.retainedHistory("thread", {}, { expectedRevision: 3 });
     expect(mock.request.mock.calls[0][1].query.get("expected_revision")).toBe("3");

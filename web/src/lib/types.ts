@@ -3779,6 +3779,16 @@ export interface CanonicalCopilotToolResult {
   warning: string;
 }
 /** Exact owned history remains historical even if it was the latest retained turn. */
+export interface RetainedCopilotThreads {
+  threads: Array<{ thread_id: string; thread_revision: number; durability: "durable" | "memory_only"; question: string; title_status: "visible" | "withheld_or_empty" }>;
+  page: number;
+  has_more: boolean;
+  scan_limit_reached: boolean;
+  order: "storage_listing";
+  durability: "durable" | "memory_only";
+}
+
+/** Exact owned history remains historical even if it was the latest retained turn. */
 export interface RetainedCopilotHistory {
   thread_id: string;
   thread_revision: number;

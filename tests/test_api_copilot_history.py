@@ -22,6 +22,34 @@ PARAMS = {
 SCOPE = Scope.from_mapping(PARAMS)
 
 
+def test_catalog_returns_only_owned_scoped_history_without_execution(tmp_path, monkeypatch):
+    client, documents, _, thread, executor = _fixture(tmp_path, monkeypatch)
+    before = documents.read(next(iter(documents.documents)))
+    response = client.get("/api/v1/copilot/threads", params=PARAMS, headers=_auth())
+    assert response.status_code == 200, response.text
+    assert response.json()["scope"] == SCOPE.to_dict()
+    assert response.json()["data"]["threads"][0]["thread_id"] == thread.thread_id
+    assert documents.read(next(iter(documents.documents))) == before
+    client.app.state.context.authenticator = StaticTokenAuthenticator({
+        TOKEN: Principal(subject="foreign", grants=(Grant("admin"),)),
+    })
+    foreign = client.get("/api/v1/copilot/threads", params=PARAMS, headers=_auth())
+    assert foreign.status_code == 200
+    assert foreign.json()["data"]["threads"] == []
+    assert thread.thread_id not in foreign.text
+    assert client.get("/api/v1/copilot/threads").status_code == 401
+    executor.assert_not_called()
+
+
+def test_catalog_listing_failure_is_explicit_503(tmp_path, monkeypatch):
+    client, documents, _, _, executor = _fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(documents, "list_names", Mock(side_effect=RuntimeError("unavailable")))
+    response = client.get("/api/v1/copilot/threads", params=PARAMS, headers=_auth())
+    assert response.status_code == 503
+    assert "data" not in response.json()
+    executor.assert_not_called()
+
+
 def test_exact_history_revision_conflict_after_authorization(tmp_path, monkeypatch):
     client, _, _, thread, executor = _fixture(tmp_path, monkeypatch)
     path = f"/api/v1/copilot/threads/{thread.thread_id}/history"

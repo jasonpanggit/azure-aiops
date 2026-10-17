@@ -82,6 +82,19 @@ a changed revision returns 409 without substituting newer evidence. This
 guards the current retained document; it does not invent immutable historical
 revisions or extend existing retention.
 
+`GET /copilot/threads?page=0..31` discovers existing retained documents in
+bounded storage-order pages (at most 64 candidate documents per page). Each
+candidate is reauthorized for principal, current scope and expiry before any
+identity, revision or title is returned. Broader historical questions remain
+withheld after scope narrowing. Reads never renew retention, sweep or write,
+and configured storage failures return 503 rather than an empty success.
+Durable discovery survives replicas/restarts; memory-only discovery explicitly
+does not. Pages are not chronological, complete-history totals or snapshots;
+concurrent changes can shift page membership. An authorized page can be empty.
+The scan limit is explicit, with exact-thread links still available beyond it.
+The on-demand conversation catalog reopens an exact revision for historical
+review only; it does not attach that thread to new requests or retry execution.
+
 ## Agents retained investigation links
 
 `/agents?ledger_id=<exact-id>` reads the existing principal-owned retained ledger
