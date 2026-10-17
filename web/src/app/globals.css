@@ -5774,6 +5774,21 @@ body.topology-fullscreen-open {
   border-bottom: 1px solid var(--color-border);
 }
 
+.exposure-recovery .patch-review-selection {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  margin-block: 8px;
+  overflow-wrap: anywhere;
+}
+
+.exposure-recovery .patch-review-selection input {
+  width: 20px;
+  min-height: 20px;
+  flex: 0 0 20px;
+}
+
 .compliance-policy-explanation,
 .compliance-policy-audit-entry {
   overflow-wrap: anywhere;

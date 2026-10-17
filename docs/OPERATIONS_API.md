@@ -1633,6 +1633,35 @@ generations and source extents; omitted facet groups remain unavailable.
 
 ### Exposure evidence recovery review
 
+Patch priorities also reads a separate generation-pinned filtered facet response
+for whole-query counts, independent of cursor-page charts. Cursor samples are
+never accumulated into global totals; unavailable vocabularies remain unknown.
+Counts refer to matching findings, not distinct targets or weaknesses. The queue
+explains selected sorting and the ascending exposure-ID tie-breaker; target views
+are not priority ranks. Row explanations expose reported severity, SLA, source
+completeness and generation, without inventing score components or business-risk
+weighting not supplied by the source.
+
+`GET /api/v1/vulnerabilities/exposure/patch-reviews` reads exact-principal/scope
+immutable personal review batches without querying current sources. `POST`
+accepts a reviewed history revision, exact generation, cursor/page size/sort,
+allowlisted filters, one to 25 unique finding IDs, owner and nonblank review
+note. The server reauthorizes the query and reacquires that page before selecting
+the requested IDs; browser rows, counts, actors or execution payloads are
+rejected. Changed generation/selection or revision cannot produce a successful
+snapshot. Saved projections retain finding/target/weakness identities, severity,
+SLA/completeness, source observation time and separate server capture time.
+They do not execute patches or create approvals, schedules or delivered owner
+assignments. New page/filter/generation workspaces clear unsaved selections;
+refreshing/retained rows cannot be submitted.
+
+`state/patch-review` uses the existing document root and exact principal/scope
+hash, create-only/ETag concurrency, at most 20 batches and 256 KiB without
+eviction. Corrupt storage is unavailable rather than empty. A lost save reply
+requires an explicit retained reload before another deliberate save; no POST is
+automatically replayed. Old batches remain historical evidence, not current
+finding or remediation status.
+
 The landing page orders advisory review by evidence quality, reported critical
 severity, exact overdue SLA classification and high severity. It exposes the
 source generation/state and preserves all nine scope dimensions and generation

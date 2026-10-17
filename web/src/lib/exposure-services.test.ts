@@ -79,6 +79,31 @@ describe("vulnerabilityApi authoritative Exposure envelope", () => {
     expect(calls[1][1]).toMatchObject({ method: "POST", body: JSON.stringify(payload) });
   });
 
+  it("reacquires a bounded review selection without submitting source rows", async () => {
+    const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(dimension => [dimension, ["one", "two"]]));
+    const fetchSpy = captureFetch({ data: {}, evidence: [], scope, warnings: [] });
+    const controller = new AbortController();
+    const query = {
+      scope, filters: { severity: "critical", active: true }, sort: { field: "priority_score" as const, direction: "desc" as const },
+      pageSize: 25 as const, page: 2, cursor: "opaque-next", cursorHistory: [""], generation: GENERATION, target: "", drawer: "",
+    };
+    await vulnerabilityApi.patchReviews(scope, controller.signal);
+    await vulnerabilityApi.createPatchReview(query, 2, ["finding-one"], "Operations", "Review before planning");
+    const calls = fetchSpy.mock.calls.filter(([input]) => String(input).includes("/api/v1/"));
+    expect(calls).toHaveLength(2);
+    for (const [input] of calls) {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe("/api/v1/vulnerabilities/exposure/patch-reviews");
+      for (const dimension of SCOPE_DIMENSIONS) expect(url.searchParams.getAll(dimension)).toEqual(["one", "two"]);
+    }
+    expect(calls[0][1]).toMatchObject({ method: "GET", signal: controller.signal });
+    expect(JSON.parse(calls[1][1].body)).toEqual({
+      expected_revision: 2, generation: GENERATION, cursor: "opaque-next", page_size: 25,
+      sort_by: "priority_score", sort_direction: "desc", filters: query.filters,
+      exposure_ids: ["finding-one"], owner: "Operations", note: "Review before planning",
+    });
+  });
+
   it("preserves findings, generation, counts, completeness, and source attribution", async () => {
     const envelope: Envelope<ExposureCollection> = {
       data: {

@@ -1740,6 +1740,19 @@ export const vulnerabilityApi = {
     apiRequest<import("./types").ExposureRecoveryState>("/vulnerabilities/exposure/recovery", {
       method: "POST", query: scopeToSearchParams(scope), body: review,
     }),
+  /** Read personal immutable patch-review snapshots without current provider acquisition. */
+  patchReviews: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").PatchReviewHistory>("/vulnerabilities/exposure/patch-reviews", { query: scopeToSearchParams(scope), signal }),
+  /** Reacquire and retain selected finding identities, never executing a patch. */
+  createPatchReview: (query: ExposureQueryState, expectedRevision: number, exposureIds: string[], owner: string, note: string) =>
+    apiRequest<import("./types").PatchReviewHistory>("/vulnerabilities/exposure/patch-reviews", {
+      method: "POST", query: scopeToSearchParams(query.scope),
+      body: {
+        expected_revision: expectedRevision, generation: query.generation, cursor: query.cursor,
+        page_size: query.pageSize, sort_by: query.sort.field, sort_direction: query.sort.direction,
+        filters: query.filters, exposure_ids: exposureIds, owner, note,
+      },
+    }),
   exposureCatalog: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
     apiRequest<ExposureQueryCatalog>("/vulnerabilities/exposure/catalog", {
       query: scopeToSearchParams(scope),

@@ -11,6 +11,8 @@ import {
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
+import { PatchQueueSummary } from "@/components/exposure/PatchQueueSummary";
+import { PatchReview } from "@/components/exposure/PatchReview";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CountBarChart } from "@/components/ui/CountBarChart";
@@ -404,6 +406,7 @@ export default function PatchPrioritiesPage() {
   const [copilotOpen, setCopilotOpen] = useState(false);
   const restoredTargetRef = useRef("");
   const page = section.data;
+  const loadedQuery = useMemo(() => ({ ...queryState, generation: page?.generation ?? queryState.generation }), [queryState, page?.generation]);
   const refreshState = page?.freshness.refresh;
   const rows = useMemo(() => page?.items ?? [], [page?.items]);
   const sectionPresentation = {
@@ -666,6 +669,16 @@ export default function PatchPrioritiesPage() {
           </div>
         )}
 
+      {page && !section.restart.required && <PatchQueueSummary
+        key={exposureRetentionKey(loadedQuery)}
+        query={loadedQuery}
+      />}
+      {page && !section.restart.required && <PatchReview
+        key={exposureQueryKey(loadedQuery)}
+        query={loadedQuery} rows={rows}
+        ready={!section.loading && !section.refreshing && !section.retained}
+      />}
+
       <SourceSectionState
         sourceName="Patch priority evidence"
         itemLabel="findings"
@@ -681,6 +694,15 @@ export default function PatchPrioritiesPage() {
                 {excluded.toLocaleString("en-US")} excluded findings
               </p>
               <p>{viewCopy.description}</p>
+              <details>
+                <summary>How this queue is ordered</summary>
+                <p>Selected ordering: {queryState.sort.field} {queryState.sort.direction}; equal values use exposure_id ascending.
+                  Row numbers show position in this filtered query, not a universal risk rank.
+                  Target-organized views group by target identifier and are not priority-ranked.</p>
+                <p>Priority scores are stored source/read-model values, not an explained weighted business-risk model.
+                  Severity, SLA and source evidence remain separate. No formula decomposition, exploitation probability,
+                  fix readiness or execution authorization is inferred from the score.</p>
+              </details>
             </div>
           </div>
 
@@ -963,6 +985,13 @@ export default function PatchPrioritiesPage() {
                         </td>
                         <td data-label="Operational priority">
                           <strong>{priorityCopy(item.priority_score)}</strong>
+                          <details><summary>Inspect priority evidence for {item.weakness_id}</summary>
+                            <p>Recorded severity: {item.severity || "unknown"}; SLA: {item.sla_state || "unknown"};
+                              current state: {item.current_state || "unknown"}; evidence completeness: {item.completeness || "unknown"}.
+                              Generation: {item.read_model_generation_id || page?.generation || "unknown"}.</p>
+                            <p>Score components and weighting are not supplied for this row. Missing evidence does not mean low risk.
+                              Review the finding and governed action separately.</p>
+                          </details>
                         </td>
                         <td data-label="Governed action">
                           {isServer && item.execution_eligible ? (

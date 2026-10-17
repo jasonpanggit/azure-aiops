@@ -13,6 +13,8 @@ const navigation = vi.hoisted(() => ({
 
 const api = vi.hoisted(() => ({
   exposureItems: vi.fn(),
+  exposureFacets: vi.fn(),
+  patchReviews: vi.fn(),
   exposureHandoffs: vi.fn(),
   patchPriorities: vi.fn(),
   slaCompliance: vi.fn(),
@@ -191,6 +193,11 @@ describe("Patch priorities", () => {
       "subscription=sub-1&q=kernel&severity=critical&page_size=25&sort_by=severity&sort_direction=asc&target=server-1&drawer=evidence&generation=generation-17",
     );
     api.exposureItems.mockResolvedValue(exposureEnvelope());
+    api.patchReviews.mockResolvedValue({ data: { schema_version: 1, actor: "reader", scope: { subscription: ["sub-1"] }, revision: 0, batches: [] }, scope: { subscription: ["sub-1"] }, evidence: [], warnings: [] });
+    const source = exposureEnvelope();
+    api.exposureFacets.mockResolvedValue({ ...source, data: { ...source.data, facets: {
+      severity: [{ value: "critical", count: 7 }], sla_state: [{ value: "overdue", count: 2 }],
+    } } });
     api.exposureHandoffs.mockResolvedValue({
       data: { cases: [], read_only: true, execution_transition: false },
       evidence: [],
@@ -240,16 +247,16 @@ describe("Patch priorities", () => {
     expect(screen.getByText(/5 represented findings/)).toBeInTheDocument();
     expect(screen.getByText(/2 excluded findings/)).toBeInTheDocument();
     expect(
-      screen.getByText(
+      screen.getAllByText(
         "Showing partial evidence. Finding counts do not establish connection coverage.",
-      ),
-    ).toBeInTheDocument();
+      ).length,
+    ).toBeGreaterThan(0);
     expect(
       screen.queryByText(
         "Showing 5 of 2 connections represented. Results and totals exclude unavailable connections.",
       ),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("Defender West connection unavailable")).toBeInTheDocument();
+    expect(screen.getAllByText("Defender West connection unavailable").length).toBeGreaterThan(0);
     expect(
       screen.getByText("Showing 1–2 of 7 findings · 2 loaded"),
     ).toBeInTheDocument();

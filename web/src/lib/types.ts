@@ -1038,6 +1038,32 @@ export interface ExposureRecoveryState {
   candidates: ExposureRecoveryCandidate[];
 }
 
+export interface PatchReviewBatch {
+  batch_id: string;
+  captured_at: string;
+  generation: string;
+  owner: string;
+  note: string;
+  source_observed_at: string;
+  source_completeness: string;
+  findings: Array<{
+    exposure_id: string;
+    target_id: string;
+    weakness_id: string;
+    target_kind: "server" | "container_image";
+    severity: string;
+    completeness: string;
+    sla_state: string;
+  }>;
+}
+export interface PatchReviewHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  batches: PatchReviewBatch[];
+}
+
 export interface ExposureQueryCatalog {
   version: string;
   filters: Array<{
