@@ -64,6 +64,68 @@
   border-radius: var(--radius-sm);
 }
 
+.investigation-team-workspace > summary {
+  padding: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.investigation-team-workspace p {
+  max-width: 75ch;
+  margin-block: 12px;
+}
+
+.investigation-team-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin-block: 16px;
+}
+
+.investigation-team-controls label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.investigation-team-controls input,
+.investigation-team-controls select,
+.investigation-team-controls textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+}
+
+.investigation-team-controls textarea {
+  resize: vertical;
+}
+
+.investigation-team-workspace fieldset {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.investigation-team-metadata > div {
+  display: grid;
+  grid-template-columns: minmax(0, 140px) minmax(0, 1fr);
+  gap: 12px;
+  margin-block: 8px;
+}
+
+.investigation-team-metadata dd {
+  overflow-wrap: anywhere;
+}
+
 .segmented-control {
   display: inline-flex;
   overflow: hidden;
@@ -255,6 +317,7 @@
 
 @media (width <= 1100px) {
   .investigation-entry,
+  .investigation-team-controls,
   .investigation-summary-grid,
   .investigation-layout {
     grid-template-columns: 1fr;
@@ -262,6 +325,15 @@
 
   .investigation-panel-wide {
     grid-column: auto;
+  }
+
+  .investigation-team-metadata > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .investigation-team-metadata dt {
+    font-weight: 600;
   }
 }
 

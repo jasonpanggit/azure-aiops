@@ -20,6 +20,7 @@ from intelligence.inventory.exports import InventoryExportStore
 from network.history import NetworkHistoryStore
 from network.intents import NetworkIntentStore
 from onboarding.service import SubscriptionOnboardingService
+from operations.investigation_workspaces import InvestigationWorkspaceStore
 from operations.overview_history import OverviewHistoryStore
 from operations.predeploy_history import PredeployHistoryStore
 from operations.resource_health_history import ResourceHealthHistoryStore
@@ -119,6 +120,7 @@ class ApiContext:
     network_intent_store: NetworkIntentStore | None = None
     network_history_store: NetworkHistoryStore | None = None
     saved_view_store: SavedViewStore | None = None
+    investigation_workspace_store: InvestigationWorkspaceStore | None = None
     predeploy_history_store: PredeployHistoryStore | None = None
     twin_history_store: TwinHistoryStore | None = None
     # The network design policy (rule-based, UI-editable) is likewise a

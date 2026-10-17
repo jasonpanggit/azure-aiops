@@ -280,6 +280,10 @@ describe("Executive Investigation Workspace", () => {
     "type=Unknown", "mode=unsupported", "mode=", "type=CVE&type=Incident",
     "value=one&value=two", "mode=engineer&mode=executive", "value=bad%0Avalue",
     `value=${"x".repeat(513)}`,
+    "workspace_id=invalid", `workspace_id=wrk-${"a".repeat(32)}&workspace_revision=0`,
+    `workspace_id=wrk-${"a".repeat(32)}&workspace_revision=41`, "workspace_revision=1",
+    `workspace_id=wrk-${"a".repeat(32)}&workspace_revision=01`,
+    `workspace_id=wrk-${"a".repeat(32)}&workspace_revision=1&workspace_revision=2`,
   ])("rejects malformed entry bookmarks before loading sources: %s", async query => {
     navigation.query = query;
     renderWorkspace();
@@ -320,7 +324,7 @@ describe("Executive Investigation Workspace", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copy } });
     const originalUrl = window.location.href;
     try {
-      fireEvent.click(screen.getByRole("button", { name: "Share" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy current entry link" }));
       await waitFor(() => expect(copy).toHaveBeenCalledOnce());
       const shared = new URL(copy.mock.calls[0][0]);
       for (const dimension of SCOPE_DIMENSIONS) {
@@ -334,6 +338,27 @@ describe("Executive Investigation Workspace", () => {
       if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
       else Reflect.deleteProperty(navigator, "clipboard");
       window.history.replaceState(null, "", originalUrl);
+    }
+  });
+
+  it("surfaces clipboard failure with a usable entry link and no false copy audit", async () => {
+    renderWorkspace({ subscription: ["sub-a"] });
+    await screen.findByText("Patch payment servers");
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("clipboard unavailable")) },
+    });
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Copy current entry link" }));
+      await screen.findByText(/Clipboard copy unavailable/);
+      expect(screen.getByRole("link", { name: "Open current entry link" })).toHaveAttribute(
+        "href", expect.stringContaining("subscription=sub-a"),
+      );
+      expect(screen.queryByText("Copied current entry link")).not.toBeInTheDocument();
+      expect(investigateCanonical).not.toHaveBeenCalled();
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
     }
   });
 
@@ -369,7 +394,7 @@ describe("Executive Investigation Workspace", () => {
     renderWorkspace();
     await screen.findByText("Patch payment servers");
     incidents.mockReturnValueOnce(new Promise(() => {}));
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Another service" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Subject" }), { target: { value: "Another service" } });
     await waitFor(() => expect(businessService).toHaveBeenCalledWith("Another service", {}));
     expect(screen.queryByText("Patch payment servers")).not.toBeInTheDocument();
     expect(screen.queryByText("CVE-2026-0001")).not.toBeInTheDocument();

@@ -4601,6 +4601,13 @@ def _saved_view_store():
     return SavedViewStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _investigation_workspace_store():
+    """Persist exact-scope team navigation revisions on the existing durable root."""
+    from operations.investigation_workspaces import InvestigationWorkspaceStore
+
+    return InvestigationWorkspaceStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 def _predeploy_history_store():
     """Retain explicit exact-scope assessment receipts on the existing durable root."""
     from operations.predeploy_history import PredeployHistoryStore
@@ -5848,6 +5855,7 @@ def build_context() -> ApiContext:
         network_intent_store=_network_intent_store(),
         network_history_store=_network_history_store(),
         saved_view_store=_saved_view_store(),
+        investigation_workspace_store=_investigation_workspace_store(),
         predeploy_history_store=_predeploy_history_store(),
         twin_history_store=_twin_history_store(),
         service_objective_store=_service_objective_store(),

@@ -94,8 +94,12 @@ A 20–30 minute walkthrough proving the end-to-end value chain:
    evidence while replacement sources load; late Copilot responses cannot
    publish into another subject, operating scope, or continuity generation.
    Narrowed bookmarks do not reuse or rebind a broader root conversation.
-   Local saves remain browser-local navigation state, not team sharing or
-   retained evidence replay, and JSON exports include the effective scope.
+   The Team workspace disclosure saves server-backed navigation, immutable
+   ownership, explicit reader/editor membership and reviewed revisions.
+   Membership still requires independent platform access; revocation covers
+   historical revisions. Applying saved navigation loads current evidence,
+   not past provider conditions. Local saves remain browser-local fallbacks,
+   and JSON exports include the effective scope; neither is team authorization.
    Current-signal counts describe the loaded subset, not a historical trend;
    unavailable incident or exposure sources do not imply quiet conditions.
 2. **Drill into a real finding** — pick a live vulnerability or network gap

@@ -9,6 +9,51 @@ Azure AI Operations Workbench UI.
 Layer and explicitly requested telemetry through authorized domain adapters.
 No handler reads Fabric, ontology tables, or Azure Resource Graph directly.
 
+## Team investigation navigation workspaces
+
+`POST /investigation-workspaces` creates private navigation using a caller-known
+`wrk-<32 lowercase hex>` identity and a strict `view` (`title`, `entry_type`,
+`subject`, `mode`). It is create-only: an existing, corrupt or partially created
+identity cannot be overwritten. The authenticated subject is the immutable owner;
+the server captures the exact effective nine-dimensional scope. No client-supplied
+owner, stored scope, provider evidence, results or execution fields are accepted.
+
+`GET /investigation-workspaces/{id}` reads the latest revision, or an exact
+`revision=1..40`. Current read authorization, exact effective scope and **current**
+membership are checked before exposing any revision. Missing/unshared/differently
+scoped or unwritten revision selections return 404 without metadata. Workspace
+membership never supplies platform RBAC grants; even a shared principal cannot
+read a broader workspace than its independently authorized effective scope.
+There is no public catalog or inferred group/directory access.
+
+`PUT /investigation-workspaces/{id}` appends a navigation revision for the owner
+or an explicit editor, with `expected_revision` and `view`.
+`PUT /investigation-workspaces/{id}/access` replaces explicit `readers` and
+`editors` (at most 20 each), only for the immutable owner and against
+`expected_revision`. Memberships must be distinct, disjoint principal subjects;
+the owner is implicit. Revocation applies to all historical revisions immediately
+at the next read/write. Historical ACLs do not restore access.
+
+The existing local/OneLake document root provides create-only/CAS persistence.
+Each document retains up to 40 contiguous server-attributed revisions within
+256 KiB. No automatic pruning, overwrite reconciliation or scope migration occurs;
+capacity requires administrative archival. Stale/racing writes return 409.
+Unavailable/corrupt storage or a lost commit reply returns 503, not empty success;
+inspect the browser-known identity and latest revision before retrying. Aborting
+a browser wait does not establish whether a submitted write committed.
+
+The Investigation disclosure supports private creation, exact-ID opening, reviewed
+revision history, explicit current-navigation saves, owner-managed memberships
+and scope/revision-bound links. Opening a navigation revision does not apply it
+or run Copilot. Applying it explicitly reacquires current authorized evidence.
+Older revisions are review-only until the latest is reopened for editing. Entry
+links are separate from team sharing, never change membership, and expose an
+explicit manual link when clipboard copying is unavailable.
+
+These revisions retain **navigation and membership**, not a hypothesis board,
+historical provider results, exact past estate state or retained evidence replay.
+Local saves/export remain separate browser fallbacks, not team authorization.
+
 ## Remediation decision context
 
 The portal's compact decision summary remains present across Select, Review,

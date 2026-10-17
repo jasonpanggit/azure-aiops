@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { TopologyWorkspace } from "@/components/network/TopologyWorkspace";
+import { InvestigationTeamWorkspacePanel } from "@/components/InvestigationTeamWorkspace";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { CopilotCitations } from "@/components/ui/CopilotCitations";
 import { MetricCard } from "@/components/ui/MetricCard";
@@ -225,11 +226,14 @@ function InvestigationWorkspaceContent() {
   const query = useSearchParams().toString();
   const { scope } = useScope();
   const threadContinuity = useOptionalThreadContinuity();
-  const bookmark = useMemo<{ error: string } | { scope: ScopeSelection; entryType: EntryType; entryValue: string; mode: Mode }>(() => {
+  const bookmark = useMemo<{ error: string } | {
+    scope: ScopeSelection; entryType: EntryType; entryValue: string; mode: Mode;
+    workspaceId: string; workspaceRevision: number | undefined;
+  }>(() => {
     try {
       const params = new URLSearchParams(query);
       const restoredScope = scopedBookmark(params, scope);
-      if (["type", "value", "mode"].some(key => params.getAll(key).length > 1)) {
+      if (["type", "value", "mode", "workspace_id", "workspace_revision"].some(key => params.getAll(key).length > 1)) {
         throw new ScopeBookmarkError("Investigation entry parameters must not be repeated.");
       }
       const type = params.get("type") ?? "BusinessService";
@@ -242,7 +246,16 @@ function InvestigationWorkspaceContent() {
       if (entryValue.length > 512 || /[\0\r\n]/.test(entryValue)) {
         throw new ScopeBookmarkError("The investigation subject must be at most 512 characters without line breaks.");
       }
-      return { scope: restoredScope, entryType, entryValue, mode };
+      const workspaceId = params.get("workspace_id") ?? "";
+      const rawRevision = params.get("workspace_revision");
+      if ((params.has("workspace_id") && !/^wrk-[0-9a-f]{32}$/.test(workspaceId))
+        || (rawRevision !== null && (!workspaceId || !/^(?:[1-9]|[1-3][0-9]|40)$/.test(rawRevision)))) {
+        throw new ScopeBookmarkError("The workspace identity or revision is invalid. Reopen a complete workspace revision link.");
+      }
+      return {
+        scope: restoredScope, entryType, entryValue, mode, workspaceId,
+        workspaceRevision: rawRevision === null ? undefined : Number(rawRevision),
+      };
     } catch (error) {
       if (!(error instanceof ScopeBookmarkError)) throw error;
       return { error: error.message };
@@ -264,18 +277,22 @@ function InvestigationWorkspaceContent() {
         initialEntryType={bookmark.entryType}
         initialEntryValue={bookmark.entryValue}
         initialMode={bookmark.mode}
+        initialWorkspaceId={bookmark.workspaceId}
+        initialWorkspaceRevision={bookmark.workspaceRevision}
         shareRootContinuity={shareRootContinuity}
       />
     </PageScopeProvider>
   );
 }
 
-function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, initialMode, shareRootContinuity }: {
+function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, initialMode, shareRootContinuity, initialWorkspaceId, initialWorkspaceRevision }: {
   scope: ScopeSelection;
   initialEntryType: EntryType;
   initialEntryValue: string;
   initialMode: Mode;
   shareRootContinuity: boolean;
+  initialWorkspaceId: string;
+  initialWorkspaceRevision?: number;
 }) {
   const rootContinuity = useOptionalThreadContinuity();
   const threadContinuity = shareRootContinuity ? rootContinuity : null;
@@ -287,6 +304,8 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState<SavedInvestigation[]>([]);
   const [audit, setAudit] = useState<Array<{ at: string; action: string }>>([]);
+  const [entryLink, setEntryLink] = useState<{ href: string; message: string } | null>(null);
+  const [refreshSequence, setRefreshSequence] = useState(0);
   const generation = useRef(0);
 
   const subject = entryValue.trim();
@@ -303,6 +322,7 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
     generation.current += 1;
     setState({ errors: [] });
     setSelected(null);
+    setEntryLink(null);
     setLoading(true);
     const loaders: Array<Promise<unknown>> = [
       operationsApi.incidents(scope, 0, 25),
@@ -368,7 +388,7 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
       active = false;
       generation.current += 1;
     };
-  }, [entryType, subject, scope]);
+  }, [entryType, subject, scope, refreshSequence]);
 
   const score = riskScore(state.risk, state.vulnerabilities);
   const owner = ownerFrom(state.context, state.incidentDetail);
@@ -729,14 +749,22 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
   };
 
   const share = async () => {
+    const requestGeneration = generation.current;
     const query = scopeToSearchParams(scope);
     query.set("type", entryType);
     query.set("value", subject);
     query.set("mode", mode);
-    const url = `${window.location.origin}/investigate?${query.toString()}`;
-    window.history.replaceState(null, "", `/investigate?${query.toString()}`);
-    await navigator.clipboard?.writeText(url).catch(() => undefined);
-    pushAudit("Created share link");
+    const href = `/investigate?${query.toString()}`;
+    setEntryLink({ href, message: "Entry link ready. This does not share a team workspace or change membership." });
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(`${window.location.origin}${href}`);
+      if (requestGeneration === generation.current) pushAudit("Copied current entry link");
+    } catch {
+      if (requestGeneration === generation.current) {
+        setEntryLink({ href, message: "Clipboard copy unavailable. Open or copy the entry link below; team workspace membership is unchanged." });
+      }
+    }
   };
 
   const exportInvestigation = () => {
@@ -760,7 +788,7 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
         actions={
           <>
             <button className="button button-secondary" type="button" onClick={saveInvestigation}>Save view locally</button>
-            <button className="button button-secondary" type="button" onClick={share}>Share</button>
+            <button className="button button-secondary" type="button" onClick={share}>Copy current entry link</button>
             <button className="button button-secondary" type="button" onClick={exportInvestigation}>Export</button>
             <button className="button button-primary" type="button" onClick={runCopilot} disabled={loading}>Generate conclusion</button>
           </>
@@ -773,6 +801,8 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
         }
       />
 
+      {entryLink && <p role="status">{entryLink.message} <Link href={entryLink.href}>Open current entry link</Link></p>}
+
       <section className="investigation-entry card" aria-label="Investigation entry">
         <label>
           Entry point
@@ -782,13 +812,28 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
         </label>
         <label>
           Subject
-          <input value={entryValue} onChange={(event) => setEntryValue(event.target.value)} placeholder="Service, app, incident, CVE, gap, or plan id" />
+          <input value={entryValue} maxLength={512} onChange={(event) => setEntryValue(event.target.value)} placeholder="Service, app, incident, CVE, gap, or plan id" />
         </label>
         <div className="segmented-control" role="group" aria-label="Workspace mode">
           <button type="button" className={mode === "executive" ? "active" : ""} onClick={() => setMode("executive")}>Executive</button>
           <button type="button" className={mode === "engineer" ? "active" : ""} onClick={() => setMode("engineer")}>Engineer</button>
         </div>
       </section>
+
+      <InvestigationTeamWorkspacePanel
+        scope={scope}
+        initialId={initialWorkspaceId}
+        initialRevision={initialWorkspaceRevision}
+        view={{ title: `${entryType}: ${subject || "Current scope"}`, entry_type: entryType, subject, mode }}
+        onRestore={view => {
+          setEntryType(view.entry_type);
+          setEntryValue(view.subject);
+          setMode(view.mode);
+          setSelected(null);
+          setRefreshSequence(sequence => sequence + 1);
+          pushAudit("Applied team workspace navigation; reacquiring current evidence");
+        }}
+      />
 
       <EvidenceBar
         evidence={evidence}

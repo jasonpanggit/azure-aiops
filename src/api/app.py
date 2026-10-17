@@ -33,6 +33,7 @@ from .routers import (
     fabric_medallion,
     graph,
     inventory,
+    investigation_workspaces,
     multi_agent,
     network,
     ontology_discovery,
@@ -373,6 +374,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     app.include_router(service_portfolio.router)
     app.include_router(service_reliability.router)
     app.include_router(saved_views.router)
+    app.include_router(investigation_workspaces.router)
     app.include_router(patching.router)
     app.include_router(planned.router)
     app.include_router(remediation_routes.router)
