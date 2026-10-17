@@ -41,6 +41,34 @@ describe("vulnerabilityApi authoritative Exposure envelope", () => {
     vi.restoreAllMocks();
   });
 
+  it("separates CVE receipt reads, explicit acquisition and retained-byte downloads with exact scope", async () => {
+    const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(dimension => [dimension, ["one", "two"]]));
+    const fetchSpy = captureFetch({ data: {}, evidence: [], scope, warnings: [] });
+    const controller = new AbortController();
+    const query = {
+      scope, filters: { weakness_id: "CVE-2026-2001", active: true }, sort: { field: "priority_score" as const, direction: "desc" as const },
+      pageSize: 25 as const, page: 2, cursor: "opaque-next", cursorHistory: [""], generation: GENERATION, target: "", drawer: "",
+    };
+    const receiptId = `cve-${"1".repeat(32)}`;
+    await vulnerabilityApi.cveEvidence("CVE-2026-2001", scope, controller.signal);
+    await vulnerabilityApi.captureCveEvidence("CVE-2026-2001", query, 2);
+    await vulnerabilityApi.cveEvidenceBundle("CVE-2026-2001", receiptId, scope);
+    const calls = fetchSpy.mock.calls.filter(([input]) => String(input).includes("/api/v1/"));
+    expect(calls).toHaveLength(3);
+    calls.forEach(([input]) => {
+      const url = new URL(String(input));
+      for (const dimension of SCOPE_DIMENSIONS) expect(url.searchParams.getAll(dimension)).toEqual(["one", "two"]);
+    });
+    expect(new URL(String(calls[0][0])).pathname).toBe("/api/v1/cves/CVE-2026-2001/evidence");
+    expect(calls[0][1]).toMatchObject({ method: "GET", signal: controller.signal });
+    expect(JSON.parse(calls[1][1].body)).toEqual({
+      expected_revision: 2, generation: GENERATION, cursor: "opaque-next", page_size: 25,
+      sort_by: "priority_score", sort_direction: "desc", filters: query.filters,
+    });
+    expect(new URL(String(calls[2][0])).pathname).toBe(`/api/v1/cves/CVE-2026-2001/evidence/${receiptId}`);
+    expect(calls[2][1]).toMatchObject({ method: "GET" });
+  });
+
   it("separates retained reads from explicit revision-bound capture across all scope dimensions", async () => {
     const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(dimension => [dimension, ["one", "two"]]));
     const fetchSpy = captureFetch({ data: {}, evidence: [], scope, warnings: [] });

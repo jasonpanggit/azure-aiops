@@ -1758,6 +1758,21 @@ export const vulnerabilityApi = {
       query: scopeToSearchParams(scope),
       signal: options.signal,
     }),
+  /** Read personal retained CVE receipts without acquiring current sources. */
+  cveEvidence: (cveId: string, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").CveEvidenceHistory>(`/cves/${encodeURIComponent(cveId)}/evidence`, { query: scopeToSearchParams(scope), signal }),
+  /** Reacquire one authorized page/catalog pair; never accepts client evidence. */
+  captureCveEvidence: (cveId: string, query: ExposureQueryState, expectedRevision: number) =>
+    apiRequest<import("./types").CveEvidenceHistory>(`/cves/${encodeURIComponent(cveId)}/evidence`, {
+      method: "POST", query: scopeToSearchParams(query.scope),
+      body: { expected_revision: expectedRevision, generation: query.generation, cursor: query.cursor,
+        page_size: query.pageSize, sort_by: query.sort.field, sort_direction: query.sort.direction, filters: query.filters },
+    }),
+  /** Reauthorize exact retained bytes before client checksum verification/download. */
+  cveEvidenceBundle: (cveId: string, receiptId: string, scope: ScopeSelection) =>
+    apiRequest<import("./types").CveEvidenceBundle>(`/cves/${encodeURIComponent(cveId)}/evidence/${encodeURIComponent(receiptId)}`, {
+      query: scopeToSearchParams(scope),
+    }),
   exposureExternalCatalog: <TItem = Record<string, unknown>>(
     weaknessId: string,
     scope: ScopeSelection = {},

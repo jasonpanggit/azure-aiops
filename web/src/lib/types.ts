@@ -1085,6 +1085,56 @@ export interface ExposureQueryCatalog {
   };
 }
 
+export interface CveSourceReceipt {
+  source: "nvd" | "epss" | "kev" | "msrc";
+  identifier: string;
+  status: string;
+  stale: boolean;
+  has_last_known_good: boolean;
+  source_at: string;
+  safe_error_code: string;
+  severity: string;
+  cvss_score: number | null;
+  cvss_vector: string;
+  epss_score: number | null;
+  kev_listed: boolean | null;
+  kb_ids: string[];
+  product_ids: string[];
+}
+
+export interface CveEvidenceReceipt {
+  receipt_id: string;
+  captured_at: string;
+  actor: string;
+  scope: Record<string, string[]>;
+  cve_id: string;
+  generation: string;
+  query_fingerprint: string;
+  filters: { [K in keyof import("./exposure-query-state").ExposureFilterState]?: import("./exposure-query-state").ExposureFilterState[K] | null };
+  sort_by: string;
+  sort_direction: string;
+  page_size: number;
+  cursor_page: boolean;
+  total_count: number;
+  source_completeness: string;
+  source_observed_at: string;
+  findings: PatchReviewBatch["findings"];
+  sources: CveSourceReceipt[];
+  sha256: string;
+}
+export interface CveEvidenceHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  cve_id: string;
+  revision: number;
+  receipts: CveEvidenceReceipt[];
+}
+export interface CveEvidenceBundle {
+  content: string;
+  manifest: { receipt_id: string; cve_id: string; receipt_sha256: string; sha256: string; size_bytes: number };
+}
+
 export interface ExposureExternalCatalog<TItem = Record<string, unknown>> {
   contract_version: string;
   catalog_scope: "external_public_metadata";

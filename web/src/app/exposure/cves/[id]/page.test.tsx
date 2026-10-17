@@ -26,6 +26,7 @@ const api = vi.hoisted(() => ({
   exposureItems: vi.fn(),
   exposureExternalCatalog: vi.fn(),
   acceptRisk: vi.fn(),
+  cveEvidence: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -379,6 +380,8 @@ describe("CVE detail", () => {
         expires_at: "",
       },
     });
+    api.cveEvidence.mockResolvedValue({ data: { schema_version: 1, actor: "reader", scope: { subscription: ["sub-1"] },
+      cve_id: "CVE-2026-0001", revision: 0, receipts: [] }, scope: { subscription: ["sub-1"] }, evidence: [], warnings: [] });
   });
 
   it("uses one SQL catalog read and skips server attack paths for container images", async () => {

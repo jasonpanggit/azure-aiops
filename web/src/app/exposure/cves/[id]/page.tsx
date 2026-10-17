@@ -14,6 +14,7 @@ import {
 } from "@/components/exposure/RiskExceptionDialog";
 import { SourceFreshnessRail } from "@/components/exposure/SourceFreshnessRail";
 import { CveFixMatrix } from "@/components/exposure/CveFixMatrix";
+import { CveEvidence } from "@/components/exposure/CveEvidence";
 import { AttackPathGraphView } from "@/components/ui/AttackPathGraphView";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -453,7 +454,7 @@ function Section({
 }
 
 function CveDetailBody({ params }: { params: { id: string } }) {
-  const cveId = decodeURIComponent(params.id);
+  const cveId = decodeURIComponent(params.id).toUpperCase();
   const { scope } = useScope();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -636,6 +637,7 @@ function CveDetailBody({ params }: { params: { id: string } }) {
     detailContext,
   );
   const findingPage = findings.data;
+  const retainedQuery = useMemo(() => ({ ...findingState, generation: findingPage?.generation ?? findingState.generation }), [findingState, findingPage?.generation]);
   const first = rows.length ? (findingState.page - 1) * findingState.pageSize + 1 : 0;
   const last = rows.length ? first + rows.length - 1 : 0;
   const representedTargets = findingPage?.contract.counts.represented;
@@ -1247,6 +1249,9 @@ function CveDetailBody({ params }: { params: { id: string } }) {
         />
       )}
 
+      <CveEvidence key={exposureQueryKey(retainedQuery)} cveId={cveId.toUpperCase()} query={retainedQuery}
+        ready={Boolean(findingPage && catalog.data && findingPage.generation === catalog.data.generation
+          && !findings.loading && !findings.retained && !catalog.loading && !catalog.retained && !restartRequired)} />
       <CopilotDrawer
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}

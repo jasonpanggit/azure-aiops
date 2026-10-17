@@ -1747,8 +1747,54 @@ Source status, staleness, last-known-good presence and provider observation time
 remain visible. KB navigation pins the actual loaded finding generation.
 URL/scope/CVE changes remount local filters, dialogs and acquisition state so
 previous local filtering and asynchronous evidence cannot survive that boundary.
-Retained CVE revision comparisons and immutable evidence bundles are separate,
-not delivered by this current-source matrix.
+Retained CVE revision comparisons and immutable evidence bundles are delivered
+separately from this current-source matrix.
+
+### Retained CVE evidence and comparison
+
+`GET /api/v1/cves/{cve_id}/evidence` reads private retained evidence for the
+current principal, exact nine-dimensional effective scope and canonical CVE.
+`POST` to the same route explicitly reacquires the authorized finding page and
+sanitized external catalog. The browser submits only the reviewed revision,
+generation, cursor, page size, allowlisted filters and sort. The exact CVE filter
+is required; actor, capture clock, hashes and source rows are server-owned.
+Scope/CVE/generation contradictions fail rather than becoming retained evidence.
+Acquisition is not an atomic snapshot of independent provider clocks.
+
+The existing durable document store applies create-only/ETag compare-and-swap.
+The revision equals the append-only receipt count: at most 20 receipts or 512 KiB
+per identity, with explicit conflicts/capacity failures and no silent eviction.
+Storage absence, corruption and unconfirmed writes remain errors. A lost POST
+response requires an explicit retained reload, never automatic POST replay.
+Receipt/history reads and exports reauthorize current permissions and never
+reacquire providers or restamp retained source observation times.
+
+Each receipt retains at most 100 allowlisted finding identities with target,
+weakness, kind, severity, completeness and SLA state, the whole-query count,
+generation/filters/sort/page-size bindings, a cursor-page indicator, and at most
+40 public source projections. Sources retain provider state, staleness,
+last-known-good presence, observation time, safe error code, CVSS/EPSS/KEV signals,
+KB/product identifiers as available. Failed or stale KEV does not become a
+current listing assertion. Arbitrary provider descriptions/payloads, opaque
+cursors, secrets, attack paths and full inventory are not retained.
+
+Comparisons require distinct receipts with identical query fingerprints.
+Generation and cursor are excluded from that fingerprint deliberately: changed
+page positions or independently refreshed generations can alter membership.
+Totals are query observations; page membership/field/source differences do not
+establish new/resolved findings, installed patches or remediation. Selection
+order is not chronology. This is explicit, bounded retention, not continuous
+change history or synchronized provider historical replay.
+
+`GET /api/v1/cves/{cve_id}/evidence/{receipt_id}` exports only a retained receipt
+visible within that exact identity, returning canonical JSON `content` plus a
+manifest. The receipt's `sha256` covers its canonical payload excluding that hash
+field. The manifest's independent `sha256` and `size_bytes` cover the exact full
+UTF-8 JSON content including the receipt hash; `receipt_sha256` binds it to the
+selected receipt. Browser SHA-256 verification checks exact bytes before passing
+those same bytes to download, without reserialization. Hashes provide integrity,
+not signatures, trusted provider attestations, applicability or execution approval.
+Exports contain private asset identifiers; sharing is an operator decision.
 
 ### Situation handover annotations and observed comparisons
 

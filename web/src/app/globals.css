@@ -5775,6 +5775,42 @@ body.topology-fullscreen-open {
   overflow-wrap: anywhere;
 }
 
+.exposure-recovery summary {
+  min-height: 44px;
+  padding-block: 10px;
+  cursor: pointer;
+}
+
+.exposure-recovery pre {
+  white-space: pre-wrap;
+}
+
+.cve-retained-evidence .card-body > p {
+  max-width: 75ch;
+  margin-block: 12px;
+}
+
+.cve-retained-evidence .button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block: 12px;
+}
+
+.cve-retained-evidence h3 {
+  margin-block: 24px 12px;
+}
+
+.cve-retained-evidence .data-table-wrap {
+  margin-block: 16px;
+}
+
+.cve-retained-evidence caption {
+  padding: 12px 20px;
+  text-align: left;
+  white-space: normal;
+}
+
 .exposure-defender-page .exposure-finding-row summary {
   min-height: 44px;
   padding-block: 10px;
