@@ -1398,6 +1398,28 @@ export interface CompliancePolicyState {
   }>;
 }
 
+/** Server-evaluated metadata-status age; not a live schema or resource-data probe. */
+export interface FabricFreshnessBudget {
+  evaluated_at: string;
+  clock: "metadata_status_ingested_then_observed_then_timestamp";
+  state: "fresh" | "stale" | "unknown";
+  threshold_seconds: number;
+  cadence_minutes: number;
+  slo_multiplier: number;
+  policy: "table_override" | "defaults";
+  source_count: number;
+  known_clock_count: number;
+  worst_known_age_seconds: number | null;
+  remaining_seconds: number | null;
+  sources: Array<{
+    scope: Record<string, string[]>;
+    status_at: string;
+    state: "fresh" | "stale" | "unknown";
+    age_seconds: number | null;
+    remaining_seconds: number | null;
+  }>;
+}
+
 export interface FabricDataset {
   table_name: string;
   availability: string;
@@ -1410,6 +1432,7 @@ export interface FabricDataset {
   watermark: string;
   error: string;
   lineage_ref: string;
+  freshness_budget?: FabricFreshnessBudget;
 }
 
 export interface FabricManifestEntry {

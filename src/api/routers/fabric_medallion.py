@@ -47,12 +47,13 @@ def _runtime_config() -> FabricRuntimeConfig | None:
         return None
 
 
-def _evidence(*, source_engine: str, source_table: str, timestamp: str = "") -> Evidence:
+def _evidence(*, source_engine: str, source_table: str, timestamp: str = "", freshness: str | None = None) -> Evidence:
     return Evidence(
         source_engine=source_engine,
         source_table=source_table,
-        timestamp=timestamp,
+        timestamp="" if freshness == "unknown" else timestamp,
         confidence=CONFIDENCE_HIGH,
+        freshness=freshness or "unknown",
     )
 
 
@@ -97,9 +98,9 @@ def _scope_attributes(row: dict[str, Any]) -> dict[str, str]:
         values = scope_payload.get(dimension) or []
         if values:
             attributes[dimension] = values[0]
-    if "subscription" not in attributes and row.get("subscription_id"):
+    if row.get("subscription_id"):
         attributes["subscription"] = str(row.get("subscription_id") or "")
-    if "subscription_connection" not in attributes and row.get("subscription_connection"):
+    if row.get("subscription_connection"):
         attributes["subscription_connection"] = str(row.get("subscription_connection") or "")
     return attributes
 
@@ -108,6 +109,17 @@ def _row_visible(scope: Scope, row: dict[str, Any]) -> bool:
     if scope.is_unrestricted():
         return True
     attributes = _scope_attributes(row)
+    requested = _parse_requested_scope(row)
+    for dimension, allowed in scope.to_dict().items():
+        values = requested.get(dimension) or []
+        if dimension in {"subscription", "subscription_connection"} and (
+            row.get("subscription_id" if dimension == "subscription" else "subscription_connection")
+        ):
+            values = [attributes[dimension]]
+        if not values or not {value.strip().casefold() for value in values}.issubset(
+            {value.casefold() for value in allowed}
+        ):
+            return False
     return bool(attributes) and scope.matches(attributes)
 
 
@@ -446,12 +458,14 @@ def medallion_layers(context: Context, scope: ReadScope) -> dict[str, Any]:
         "gold": {"healthy": 0, "total": 0},
     }
     tables: dict[str, list[str]] = {"bronze": [], "silver": [], "gold": []}
+    freshness_states: list[str] = []
     for table_name in _registered_tables(rows):
         layer = _layer_for_table(table_name)
         if not layer:
             continue
         tables[layer].append(table_name)
         status = dataset_status(table_name, source_status=rows)
+        freshness_states.append(status["freshness"])
         layers[layer]["total"] += 1
         if str(status.get("availability") or "") in {"healthy", "healthy-empty"}:
             layers[layer]["healthy"] += 1
@@ -461,6 +475,9 @@ def medallion_layers(context: Context, scope: ReadScope) -> dict[str, Any]:
             source_engine=SOURCE_ENGINE,
             source_table=SOURCE_TABLE,
             timestamp=max((_status_timestamp(row) for row in rows), default=""),
+            freshness="stale" if "stale" in freshness_states else (
+                "unknown" if not freshness_states or "unknown" in freshness_states else "fresh"
+            ),
         ),
         scope=scope.to_dict(),
     )
@@ -477,12 +494,14 @@ def medallion_dataset(table_name: str, context: Context, scope: ReadScope) -> di
         for row in rows
         if str(row.get("source_family") or row.get("table_name") or "") == table_name
     ]
+    status = dataset_status(table_name, source_status=rows)
     return envelope(
-        dataset_status(table_name, source_status=rows),
+        status,
         evidence=_evidence(
             source_engine=SOURCE_ENGINE,
             source_table=SOURCE_TABLE,
             timestamp=max((_status_timestamp(row) for row in table_rows), default=""),
+            freshness=status["freshness"],
         ),
         scope=scope.to_dict(),
     )

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -10,7 +10,7 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { FabricMedallionPanel, FABRIC_LAYER_KEYS } from "@/components/fabric/medallion";
 import { useApi } from "@/hooks/useApi";
 import { buildFabricMedallionCopilotContext } from "@/lib/copilot/page-adapters";
-import type { ScopeSelection } from "@/lib/scope";
+import { scopedBookmark, ScopeBookmarkError, type ScopeSelection } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi, fabricMedallionApi } from "@/lib/services";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
@@ -25,23 +25,34 @@ export default function FabricMedallionPage() {
 }
 
 function FabricMedallionPageContent() {
+  const { scope } = useScope();
+  const params = useSearchParams();
+  let narrowed: ScopeSelection;
+  try {
+    narrowed = scopedBookmark(params, scope);
+  } catch (error) {
+    if (!(error instanceof ScopeBookmarkError)) throw error;
+    return (
+      <div className="page-container">
+        <StatePanel title="Fabric selection is outside the current scope" message={error.message} tone="error" />
+        <Link className="button" href="/connections/fabric">Clear Fabric selection</Link>
+      </div>
+    );
+  }
+  return <FabricMedallionWorkspace key={JSON.stringify(narrowed)} scope={scope} fabricScope={narrowed} />;
+}
+
+function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelection; fabricScope: ScopeSelection }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { scope } = useScope();
   const [refreshKey, setRefreshKey] = useState(0);
   const connections = useApi(() => connectionsApi.list(scope), [scope]);
   const rows = useMemo(() => connections.data?.data ?? [], [connections.data]);
 
-  const requestedSubscription = searchParams.get("subscription") ?? "";
-  const [selectedSubscription, setSelectedSubscription] = useState(requestedSubscription);
-
-  useEffect(() => {
-    setSelectedSubscription(requestedSubscription);
-  }, [requestedSubscription]);
+  const selectedSubscription = searchParams.get("subscription") ?? "";
 
   const selectSubscription = useCallback(
     (subscriptionId: string) => {
-      setSelectedSubscription(subscriptionId);
       const params = new URLSearchParams(searchParams.toString());
       if (subscriptionId) params.set("subscription", subscriptionId);
       else params.delete("subscription");
@@ -49,13 +60,6 @@ function FabricMedallionPageContent() {
       router.replace(query ? `/connections/fabric?${query}` : "/connections/fabric", { scroll: false });
     },
     [router, searchParams],
-  );
-
-  // The page-level subscription picker narrows the global scope so every
-  // Fabric medallion call resolves to a single subscription's datasets.
-  const fabricScope: ScopeSelection = useMemo(
-    () => (selectedSubscription ? { ...scope, subscription: [selectedSubscription] } : scope),
-    [scope, selectedSubscription],
   );
 
   const activeConnection = rows.find((connection) => connection.subscription_id === selectedSubscription);
@@ -129,7 +133,9 @@ function FabricMedallionPageContent() {
     lineageRef: capabilities.data?.data.lineage?.native_lineage_url ?? null,
     available: fabricAvailable,
     deploymentBlocked,
-    freshness: fabricAvailable ? "fresh" : "unavailable",
+    freshness: fabricSourceStatuses.some(status => status.freshness === "stale") ? "stale"
+      : fabricAvailable && fabricSourceStatuses.every(status => status.freshness === "fresh") ? "fresh"
+      : fabricSections.some(({ envelope }) => Boolean(envelope)) ? "partial" : "unavailable",
     evidence: fabricEvidence,
     sourceStatuses: fabricSourceStatuses.map((status) => (
       deploymentBlocked && status.source === "fabric/capabilities"

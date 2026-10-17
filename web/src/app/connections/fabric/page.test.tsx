@@ -1,6 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
+import type { ScopeSelection } from "@/lib/scope";
+import { FabricMedallionPanel } from "@/components/fabric/medallion";
 
 const {
   fabricCapabilities,
@@ -112,9 +114,9 @@ function envelope<T>(
   };
 }
 
-function renderPage() {
+function renderPage(initialScope: ScopeSelection = {}) {
   return render(
-    <ScopeProvider>
+    <ScopeProvider initialScope={initialScope}>
       <FabricMedallionPage />
     </ScopeProvider>
   );
@@ -227,6 +229,7 @@ describe("Per-subscription Fabric medallion page", () => {
       const input = buildFabricMedallionCopilotContext.mock.calls.at(-1)?.[0];
       expect(input).toMatchObject({
         available: true,
+        freshness: "stale",
         sourceStatuses: expect.arrayContaining([
           {
             source: "fabric/medallion-layers",
@@ -263,4 +266,82 @@ describe("Per-subscription Fabric medallion page", () => {
       ]));
     });
   });
+
+    it("blocks a bookmarked subscription outside global scope before any Fabric reads", async () => {
+      searchParams.current = new URLSearchParams({ subscription: connections[1].subscription_id });
+      renderPage({ subscription: [connections[0].subscription_id] });
+      expect(screen.getByText("Fabric selection is outside the current scope")).toBeInTheDocument();
+      expect(fabricLayers).not.toHaveBeenCalled();
+      expect(fabricDataset).not.toHaveBeenCalled();
+      expect(fabricCapabilities).not.toHaveBeenCalled();
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it("also blocks an embedded subscription that would broaden its caller's scope", () => {
+      render(<FabricMedallionPanel refreshKey={0} scope={{ subscription: ["sub-a"] }} subscriptionId="sub-b" />);
+      expect(screen.getByText("Fabric selection is outside the current scope")).toBeInTheDocument();
+      expect(fabricLayers).not.toHaveBeenCalled();
+    });
+
+    it("preserves every global selector while narrowing an allowed subscription", async () => {
+      searchParams.current = new URLSearchParams({ subscription: connections[0].subscription_id });
+      const scope = { subscription: connections.map(row => row.subscription_id), environment: ["prod"], subscription_connection: ["prod"] };
+      renderPage(scope);
+      const effective = { ...scope, subscription: [connections[0].subscription_id] };
+      await waitFor(() => expect(fabricDataset).toHaveBeenCalledWith("bronze_resources", effective));
+      expect(fabricLayers).toHaveBeenCalledWith(effective);
+      expect(fabricCapabilities).toHaveBeenCalledWith(effective);
+    });
+
+    it("does not convert unavailable layer counts or registration to zero or no datasets", async () => {
+      fabricLayers.mockRejectedValue(new Error("Synthetic layer failure"));
+      fabricCapabilities.mockRejectedValue(new Error("Synthetic capability failure"));
+      renderPage();
+      expect(await screen.findByText("Fabric layer counts unavailable")).toBeInTheDocument();
+      expect(await screen.findByText("Bronze dataset registration unavailable")).toBeInTheDocument();
+      expect(screen.getByLabelText("Bronze tables value")).toHaveTextContent("—");
+      expect(screen.queryByText("No bronze datasets registered")).not.toBeInTheDocument();
+      await waitFor(() => expect(buildFabricMedallionCopilotContext.mock.calls.at(-1)?.[0]).toMatchObject({
+        available: false, freshness: "stale",
+      }));
+    });
+
+    it("connects dataset budgets to the same scoped card and distinguishes legacy absence", async () => {
+      renderPage();
+      expect(await screen.findByText("Freshness budget unavailable from this response.")).toBeInTheDocument();
+      expect(screen.getByText("bronze_resources")).toBeInTheDocument();
+    });
+
+    it("renders a server budget on its dataset card", async () => {
+      fabricDataset.mockResolvedValue(envelope({
+        table_name: "bronze_resources", row_count: 5, freshness: "fresh", quality: "complete",
+        freshness_budget: {
+          evaluated_at: "2026-10-17T12:00:00Z", clock: "metadata_status_ingested_then_observed_then_timestamp",
+          state: "fresh", threshold_seconds: 600, cadence_minutes: 10, slo_multiplier: 1,
+          policy: "table_override", source_count: 1, known_clock_count: 1,
+          worst_known_age_seconds: 0, remaining_seconds: 600,
+          sources: [{ scope: { subscription: ["sub-a"] }, status_at: "2026-10-17T12:00:00Z",
+            state: "fresh", age_seconds: 0, remaining_seconds: 600 }],
+        },
+      }));
+      renderPage();
+      expect(await screen.findByText("Freshness budget: 10 min remaining")).toBeInTheDocument();
+      expect(screen.getByText("Recorded quality: complete")).toBeInTheDocument();
+      expect(screen.queryByText("All quality checks passed")).not.toBeInTheDocument();
+    });
+
+    it("does not expose a late old-scope dataset response after subscription navigation", async () => {
+      let release = () => {};
+      fabricDataset.mockReturnValueOnce(new Promise(resolve => {
+        release = () => resolve(envelope({ table_name: "bronze_resources", row_count: 91 }));
+      }));
+      fabricDataset.mockResolvedValue(envelope({ table_name: "bronze_resources", row_count: 2 }));
+      const view = renderPage();
+      await waitFor(() => expect(fabricDataset).toHaveBeenCalledTimes(1));
+      searchParams.current = new URLSearchParams({ subscription: connections[1].subscription_id });
+      view.rerender(<ScopeProvider><FabricMedallionPage /></ScopeProvider>);
+      expect(await screen.findByText(/2 rows · observation time unreported/)).toBeInTheDocument();
+      await act(async () => release());
+      expect(screen.queryByText(/91 rows/)).not.toBeInTheDocument();
+    });
 });

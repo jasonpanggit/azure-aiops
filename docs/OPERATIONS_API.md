@@ -9,6 +9,45 @@ Azure AI Operations Workbench UI.
 Layer and explicitly requested telemetry through authorized domain adapters.
 No handler reads Fabric, ontology tables, or Azure Resource Graph directly.
 
+## Fabric metadata freshness budgets
+
+`GET /api/v1/fabric-medallion/datasets/{table_name}` retains its read authorization
+and registered-dataset-only 404 behavior. `freshness_budget` explains a server-side
+evaluation over the authorized source-status rows: evaluation time, selected
+metadata clock, configured cadence/multiplier/threshold, default or table-override
+policy, source/usable-clock counts, worst known age, and per-source age/headroom.
+Headroom can be negative; it is **unknown**, not a full budget, when any clock
+cannot be used. The web disclosure displays at most 20 source budgets and labels
+that limit; aggregate evaluation uses every selected source. Reading a budget does
+not start ingestion, change policy, or schedule a refresh.
+
+Latest status reduction preserves authoritative connection/subscription identity
+and compares offset-aware instants rather than ISO text. Missing, malformed,
+unzoned or future timestamps cannot establish fresh evidence; an unorderable
+status cannot be dismissed as an older success. Across selected sources, stale
+leads unknown, which leads fresh. The exact threshold is still fresh with zero
+headroom; only an age greater than the threshold is stale. Layer/dataset envelope
+freshness follows this aggregation rather than the newest sibling timestamp.
+Unknown aggregate evidence has no representative timestamp; individual clocks
+remain inspectable in the budget.
+
+The clock uses ingestion time first, then observation time, then status timestamp.
+This is **metadata-status age**, not a probe of resource-data freshness, deployed
+schema validation, upstream completeness, a publication guarantee, or next-run
+prediction. A checkpoint may be a watermark **or** the legacy fallback status time.
+`quality=complete` is a recorded classification, not proof every possible quality
+check passed. Cadence/multipliers must be finite and positive; malformed policy
+errors rather than silently receiving default success criteria. Configuration uses
+`AIOPS_FABRIC_CONFIG` when selected, otherwise `fabric.config.yaml`; absent
+file/sections retain default cadence and multiplier behavior.
+
+Source registry identity overrides stale requested-scope identity. A restricted
+read excludes aggregate status rows spanning disallowed values rather than
+assuming the first requested-scope value represents the entire aggregate.
+Page/embedded subscription selectors must preserve every global scope constraint;
+out-of-scope bookmarks are blocked before reads. Failed layer reads are unknown,
+not zero tables, and missing registration evidence is not an empty layer.
+
 ## Asynchronous Agents investigations
 
 `POST /agents/investigation-jobs` admits a strict `{job_id, objective,

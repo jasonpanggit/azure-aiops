@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { formatDateTime } from "@/lib/format";
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { ScopeProvider, useScope } from "@/lib/scope-context";
 import type { ScopeSelection } from "@/lib/scope";
@@ -1197,7 +1198,7 @@ describe("Connections page Fabric Medallion tab", () => {
     expect(subscriptionSelect).toHaveAttribute("name", "subscriptionId");
   });
 
-  it("explains an unpublished watermark instead of labelling it unknown", async () => {
+  it("does not infer nonpublication from a missing recorded checkpoint", async () => {
     mockFabricHealth(["bronze_resources"]);
     fabricDataset.mockResolvedValue(envelope({ ...dataset("bronze_resources", "healthy", 4), watermark: "" }));
 
@@ -1205,12 +1206,13 @@ describe("Connections page Fabric Medallion tab", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
     const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
-    expect(await within(fabricPanel).findByText("Not yet published")).toBeInTheDocument();
-    expect(within(fabricPanel).queryByText("watermark unknown")).not.toBeInTheDocument();
-    expect(within(fabricPanel).getAllByText(/Watermark/).length).toBeGreaterThan(0);
+    expect(await within(fabricPanel).findByText("Unreported")).toBeInTheDocument();
+    expect(within(fabricPanel).queryByText("Not yet published")).not.toBeInTheDocument();
+    expect(within(fabricPanel).getByText("Recorded checkpoint")).toHaveAttribute("title",
+      "A reported watermark, or the metadata status time when a watermark is absent. This is not proof that all upstream records were published.");
   });
 
-  it("renders a populated watermark as a caught-up checkpoint", async () => {
+  it("renders a populated checkpoint without claiming upstream catch-up", async () => {
     mockFabricHealth(["bronze_resources"]);
     fabricDataset.mockResolvedValue(envelope(dataset("bronze_resources", "healthy", 4)));
 
@@ -1218,7 +1220,10 @@ describe("Connections page Fabric Medallion tab", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
     const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
-    expect(await within(fabricPanel).findByText(/Caught up to/)).toBeInTheDocument();
+    const checkpoint = await within(fabricPanel).findByText("Recorded checkpoint");
+    expect(checkpoint.nextElementSibling?.textContent).not.toBe("Unreported");
+    expect(checkpoint.nextElementSibling?.textContent).toBe(formatDateTime("2026-01-01T00:00:00Z"));
+    expect(within(fabricPanel).queryByText(/Caught up to/)).not.toBeInTheDocument();
   });
 
   it("groups lifecycle contracts by disposition with blockers listed first", async () => {

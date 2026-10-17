@@ -1,13 +1,14 @@
 "use client";
 
 import { useMemo } from "react";
+import { FabricFreshnessBudget } from "@/components/fabric/FabricFreshnessBudget";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
-import type { ScopeSelection } from "@/lib/scope";
+import { scopedBookmark, ScopeBookmarkError, type ScopeSelection } from "@/lib/scope";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
@@ -37,37 +38,48 @@ export const EMPTY_FABRIC_COUNTS: Record<FabricLayerKey, FabricLayerCounts> = {
   gold: { healthy: 0, total: 0 },
 };
 
-export function FabricMedallionPanel({
-  hidden = false,
-  refreshKey,
-  scope,
-  subscriptionId,
-  asTabPanel = true,
-}: {
+type FabricPanelProps = {
   hidden?: boolean;
   refreshKey: number;
   scope: ScopeSelection;
   subscriptionId?: string;
   asTabPanel?: boolean;
-}) {
-  // Create a subscription-scoped context if subscriptionId is provided
-  const subscriptionScope = useMemo(
-    () => (subscriptionId ? { ...scope, subscription: [subscriptionId] } : scope),
-    [scope, subscriptionId],
-  );
+};
+
+/** Applies an embedded subscription selector only when it preserves global constraints. */
+export function FabricMedallionPanel(props: FabricPanelProps) {
+  let scope: ScopeSelection;
+  try {
+    const params = new URLSearchParams();
+    if (props.subscriptionId) params.set("subscription", props.subscriptionId);
+    scope = scopedBookmark(params, props.scope);
+  } catch (error) {
+    if (!(error instanceof ScopeBookmarkError)) throw error;
+    return props.hidden ? null : <StatePanel title="Fabric selection is outside the current scope" message={error.message} tone="error" />;
+  }
+  return <FabricMedallionPanelContent key={JSON.stringify(scope)} {...props} scope={scope} />;
+}
+
+function FabricMedallionPanelContent({
+  hidden = false,
+  refreshKey,
+  scope,
+  asTabPanel = true,
+}: FabricPanelProps) {
+  const subscriptionScope = scope;
   const scopeKey = JSON.stringify(subscriptionScope);
   const layerSummary = useApi(() => fabricMedallionApi.layers(subscriptionScope), [refreshKey, scopeKey]);
   const manifest = useApi(() => fabricMedallionApi.manifest(subscriptionScope), [refreshKey, scopeKey]);
   const governance = useApi(() => fabricMedallionApi.governance(subscriptionScope), [refreshKey, scopeKey]);
   const ingestionHistory = useApi(() => fabricMedallionApi.ingestionHistory(subscriptionScope), [refreshKey, scopeKey]);
   const capabilities = useApi(() => fabricMedallionApi.capabilities(subscriptionScope), [refreshKey, scopeKey]);
-  const counts = layerSummary.data?.data.layers ?? EMPTY_FABRIC_COUNTS;
+  const counts = layerSummary.data?.data.layers;
   const tableNames = useMemo(
     () => tableNamesByLayer(capabilities.data?.data, layerSummary.data?.data.tables),
     [capabilities.data, layerSummary.data],
   );
-  const totalTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].total, 0);
-  const healthyTables = FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].healthy, 0);
+  const totalTables = counts ? FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].total, 0) : null;
+  const healthyTables = counts ? FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].healthy, 0) : null;
 
   return (
     <section
@@ -87,17 +99,18 @@ export function FabricMedallionPanel({
       )}
 
       <div className="metric-grid">
-        <MetricCard label="Bronze tables" value={formatHealthCount(counts.bronze)} detail="Raw dataset health and source freshness" tone={fabricMetricTone(counts.bronze)} />
-        <MetricCard label="Silver tables" value={formatHealthCount(counts.silver)} detail="Normalized dataset health and quality" tone={fabricMetricTone(counts.silver)} />
-        <MetricCard label="Gold tables" value={formatHealthCount(counts.gold)} detail="Curated semantic and Data Agent products" tone={fabricMetricTone(counts.gold)} />
+        <MetricCard label="Bronze tables" value={formatHealthCount(counts?.bronze)} detail="Raw dataset health and source freshness" tone={fabricMetricTone(counts?.bronze)} />
+        <MetricCard label="Silver tables" value={formatHealthCount(counts?.silver)} detail="Normalized dataset health and quality" tone={fabricMetricTone(counts?.silver)} />
+        <MetricCard label="Gold tables" value={formatHealthCount(counts?.gold)} detail="Curated semantic and Data Agent products" tone={fabricMetricTone(counts?.gold)} />
         <MetricCard
           label="Governed relationships"
           value={governance.data ? governance.data.data.referential_integrity_blockers : "—"}
-          detail={`${healthyTables}/${totalTables} datasets healthy; referential integrity blockers`}
-          tone={governance.data?.data.referential_integrity_blockers ? "critical" : "success"}
+          detail={counts ? `${healthyTables}/${totalTables} datasets healthy; referential integrity blockers` : "Dataset counts unavailable; referential integrity blockers"}
+          tone={!governance.data ? "default" : governance.data.data.referential_integrity_blockers ? "critical" : "success"}
         />
       </div>
 
+      {layerSummary.error && <StatePanel title="Fabric layer counts unavailable" message={layerSummary.error.message} tone="error" />}
       <FabricCapabilityCallouts capabilities={capabilities.data?.data} error={capabilities.error} />
 
       {FABRIC_LAYER_KEYS.map((layer) => (
@@ -105,7 +118,9 @@ export function FabricMedallionPanel({
           key={layer}
           layer={layer}
           tableNames={tableNames[layer]}
-          counts={counts[layer]}
+          counts={counts?.[layer]}
+          registrationLoading={!layerSummary.data && !capabilities.data && (layerSummary.loading || capabilities.loading)}
+          registrationUnavailable={!layerSummary.data && !capabilities.data}
           scope={subscriptionScope}
           refreshKey={refreshKey}
         />
@@ -125,12 +140,16 @@ function FabricLayerSection({
   counts,
   scope,
   refreshKey,
+  registrationLoading,
+  registrationUnavailable,
 }: {
   layer: FabricLayerKey;
   tableNames: string[];
-  counts: FabricLayerCounts;
+  counts?: FabricLayerCounts;
   scope: ScopeSelection;
   refreshKey: number;
+  registrationLoading: boolean;
+  registrationUnavailable: boolean;
 }) {
   const scopeKey = JSON.stringify(scope);
   const datasets = useApi(() => loadLayerDatasets(tableNames, scope), [refreshKey, tableNames.join("|"), scopeKey]);
@@ -150,7 +169,7 @@ function FabricLayerSection({
           <h2>{label} layer</h2>
           <p>{FABRIC_LAYER_DESCRIPTIONS[layer]}</p>
         </div>
-        <StatusBadge label={formatHealthCount(counts)} tone={statusTone(counts.total === 0 ? "unknown" : counts.healthy === counts.total ? "healthy" : "degraded")} />
+        <StatusBadge label={formatHealthCount(counts)} tone={statusTone(!counts || counts.total === 0 ? "unknown" : counts.healthy === counts.total ? "healthy" : "degraded")} />
       </div>
       <div className="card-body">
         {datasets.error ? (
@@ -159,8 +178,10 @@ function FabricLayerSection({
             message={`${datasets.error.message} Check Fabric capacity and workspace connectivity, then retry.`}
             tone="error"
           />
-        ) : datasets.loading ? (
+        ) : datasets.loading || registrationLoading ? (
           <StatePanel title={`Loading ${label.toLowerCase()} layer health`} message="Checking dataset freshness, quality, row counts, and lineage." tone="loading" />
+        ) : registrationUnavailable ? (
+          <StatePanel title={`${label} dataset registration unavailable`} message="Refresh Fabric health to retry the layer and capability sources. Missing registration evidence is not an empty layer." tone="error" />
         ) : rows.length === 0 ? (
           <StatePanel title={`No ${label} datasets registered`} message="No datasets are registered for this layer in the current scope." />
         ) : (
@@ -184,7 +205,7 @@ function FabricLayerSection({
                       <dd>{qualityCopy(dataset)}</dd>
                     </div>
                     <div>
-                      <dt title={WATERMARK_HELP}>Watermark</dt>
+                      <dt title={WATERMARK_HELP}>Recorded checkpoint</dt>
                       <dd title={WATERMARK_HELP}>{watermarkCopy(dataset)}</dd>
                     </div>
                     <div>
@@ -192,6 +213,7 @@ function FabricLayerSection({
                       <dd title={dataset.lineage_ref}>{dataset.lineage_ref || "Not traced"}</dd>
                     </div>
                   </dl>
+                  <FabricFreshnessBudget budget={dataset.freshness_budget} />
                 </article>
               ))}
             </div>
@@ -428,12 +450,12 @@ export function tableNamesByLayer(
   return layers;
 }
 
-export function formatHealthCount(counts: FabricLayerCounts): string {
-  return `${counts.healthy}/${counts.total}`;
+export function formatHealthCount(counts?: FabricLayerCounts): string {
+  return counts ? `${counts.healthy}/${counts.total}` : "—";
 }
 
-export function fabricMetricTone(counts: FabricLayerCounts): "default" | "critical" | "warning" | "success" {
-  if (counts.total === 0) return "default";
+export function fabricMetricTone(counts?: FabricLayerCounts): "default" | "critical" | "warning" | "success" {
+  if (!counts || counts.total === 0) return "default";
   if (counts.healthy === counts.total) return "success";
   if (counts.healthy === 0) return "critical";
   return "warning";
@@ -458,7 +480,7 @@ function datasetRowsCopy(dataset: FabricDataset): string {
 }
 
 const WATERMARK_HELP =
-  "The newest upstream record the last sync consumed. Everything up to this point is published; anything newer arrives on the next sync.";
+  "A reported watermark, or the metadata status time when a watermark is absent. This is not proof that all upstream records were published.";
 
 // Deployment-blocked and retired contracts lead, so lifecycle problems are
 // visible without scrolling past the healthy majority.
@@ -480,29 +502,27 @@ function groupByDisposition(entries: FabricManifestEntry[]): [string, FabricMani
 }
 
 function datasetSummaryCopy(dataset: FabricDataset): string {
-  const observed = dataset.observed_at ? `last synced ${relativeTime(dataset.observed_at)}` : "never synced";
+  const observed = dataset.observed_at ? `newest observation ${relativeTime(dataset.observed_at)}` : "observation time unreported";
   return `${datasetRowsCopy(dataset)} · ${observed}`;
 }
 
 function freshnessCopy(dataset: FabricDataset): string {
   const freshness = (dataset.freshness || "").toLowerCase();
-  if (freshness === "fresh") return "Within its freshness target";
-  if (freshness === "stale") return `Past its freshness target${dataset.observed_at ? ` — last synced ${relativeTime(dataset.observed_at)}` : ""}`;
-  return "No freshness target evaluated yet";
+  if (freshness === "fresh") return "All reported source clocks within target";
+  if (freshness === "stale") return "At least one source clock is past target";
+  return "Freshness is not established for every source";
 }
 
 function qualityCopy(dataset: FabricDataset): string {
   const quality = (dataset.quality || "").toLowerCase();
-  if (quality === "complete") return "All quality checks passed";
+  if (quality === "complete") return "Recorded quality: complete";
   if (quality === "degraded") return dataset.error || "Quality checks reported issues";
   return "No quality checks recorded yet";
 }
 
-/** Renders the upstream checkpoint in operator language instead of a bare
- *  timestamp, so an unpublished dataset never looks like a failure. */
 function watermarkCopy(dataset: FabricDataset): string {
-  if (!dataset.watermark) return "Not yet published";
-  return `Caught up to ${formatDateTime(dataset.watermark)}`;
+  if (!dataset.watermark) return "Unreported";
+  return formatDateTime(dataset.watermark);
 }
 
 function missingResourceCopy(count: number, kind: "ownership" | "tags"): string {
