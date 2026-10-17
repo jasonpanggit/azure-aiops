@@ -408,6 +408,14 @@ class FinOpsEngine:
         unavailable.extend(
             [
                 {
+                    "metric": "realized_savings",
+                    "reason": (
+                        "No verified remediation-to-resource change is linked to "
+                        "comparable pre-change and post-change Cost Management actuals. "
+                        "Spend movement alone is not evidence of realized savings."
+                    ),
+                },
+                {
                     "metric": "cost_forecast",
                     "reason": "Forecast requires a longer historical billed-cost baseline than discovery currently publishes.",
                 },

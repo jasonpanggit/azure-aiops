@@ -30,6 +30,33 @@ const DIMENSIONS = [
 ] as const;
 
 type Dimension = (typeof DIMENSIONS)[number];
+type ScenarioName = "A" | "B";
+
+interface ScenarioSummary {
+  name: ScenarioName;
+  selectedCount: number;
+  currencyTotals: Array<{ currency: string; amount: number }>;
+  unreportedCurrencyCount: number;
+  unquantifiedCount: number;
+}
+
+const EMPTY_SELECTION = new Set<string>();
+
+function opportunityKey(row: {
+  recommendation_id: string;
+  resource_id: string;
+  problem: string;
+  solution: string;
+  currency: string;
+}): string {
+  return JSON.stringify([
+    row.recommendation_id,
+    row.resource_id,
+    row.problem,
+    row.solution,
+    row.currency,
+  ]);
+}
 
 /** Renders a saving, keeping "not quantified" visibly distinct from zero. */
 function money(amount: number | null | undefined, currency: string): string {
@@ -60,6 +87,20 @@ export default function FinOpsPage() {
   const { scope } = useScope();
   const [dimension, setDimension] = useState<Dimension>("subscription");
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [scenarioSelection, setScenarioSelection] = useState<{
+    scopeKey: string;
+    a: Set<string>;
+    b: Set<string>;
+  }>(() => ({ scopeKey: JSON.stringify(scope), a: new Set(), b: new Set() }));
+  const scenarioScopeKey = JSON.stringify(scope);
+  const scenarioASelection =
+    scenarioSelection.scopeKey === scenarioScopeKey
+      ? scenarioSelection.a
+      : EMPTY_SELECTION;
+  const scenarioBSelection =
+    scenarioSelection.scopeKey === scenarioScopeKey
+      ? scenarioSelection.b
+      : EMPTY_SELECTION;
 
   const summary = useApi(() => governanceApi.finopsSummary(scope), [scope]);
   const opportunities = useApi(() => governanceApi.finopsOpportunities(scope), [scope]);
@@ -92,6 +133,51 @@ export default function FinOpsPage() {
     () => opportunities.data?.data.opportunities ?? [],
     [opportunities.data],
   );
+  const scenarioSummaries = useMemo(() => {
+    const summarize = (
+      name: ScenarioName,
+      selectedIds: Set<string>,
+    ): ScenarioSummary => {
+      const totals = new Map<string, number>();
+      let selectedCount = 0;
+      let unreportedCurrencyCount = 0;
+      let unquantifiedCount = 0;
+
+      for (const row of rows) {
+        if (!selectedIds.has(opportunityKey(row))) continue;
+        selectedCount += 1;
+        if (
+          typeof row.annual_savings !== "number" ||
+          !Number.isFinite(row.annual_savings) ||
+          row.annual_savings < 0
+        ) {
+          unquantifiedCount += 1;
+          continue;
+        }
+        const code = row.currency.trim().toUpperCase();
+        if (!/^[A-Z]{3}$/.test(code)) {
+          unreportedCurrencyCount += 1;
+          continue;
+        }
+        totals.set(code, (totals.get(code) ?? 0) + row.annual_savings);
+      }
+
+      return {
+        name,
+        selectedCount,
+        currencyTotals: Array.from(totals.entries())
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([currencyCode, amount]) => ({ currency: currencyCode, amount })),
+        unreportedCurrencyCount,
+        unquantifiedCount,
+      };
+    };
+
+    return [
+      summarize("A", scenarioASelection),
+      summarize("B", scenarioBSelection),
+    ];
+  }, [rows, scenarioASelection, scenarioBSelection]);
   const wasteRows = useMemo(() => waste.data?.data.waste ?? [], [waste.data]);
   const attributionGroups = useMemo(
     () => attribution.data?.data.groups ?? [],
@@ -164,6 +250,37 @@ export default function FinOpsPage() {
       .slice(0, 6)
       .map(([label, value], index) => ({ id: `waste-${index}`, label, value }));
   }, [filteredWasteRows]);
+
+  const toggleScenarioSelection = (
+    scenario: ScenarioName,
+    key: string,
+  ) => {
+    setScenarioSelection((current) => {
+      const base =
+        current.scopeKey === scenarioScopeKey
+          ? current
+          : { scopeKey: scenarioScopeKey, a: new Set<string>(), b: new Set<string>() };
+      const field = scenario === "A" ? "a" : "b";
+      const next = new Set(base[field]);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return scenario === "A"
+        ? { ...base, scopeKey: scenarioScopeKey, a: next }
+        : { ...base, scopeKey: scenarioScopeKey, b: next };
+    });
+  };
+
+  const clearScenarioSelection = (scenario: ScenarioName) => {
+    setScenarioSelection((current) => {
+      const base =
+        current.scopeKey === scenarioScopeKey
+          ? current
+          : { scopeKey: scenarioScopeKey, a: new Set<string>(), b: new Set<string>() };
+      return scenario === "A"
+        ? { ...base, scopeKey: scenarioScopeKey, a: new Set() }
+        : { ...base, scopeKey: scenarioScopeKey, b: new Set() };
+    });
+  };
 
   const attributionPaging = useTablePagination(filteredAttributionGroups);
   const opportunityPaging = useTablePagination(filteredOpportunities);
@@ -360,8 +477,8 @@ export default function FinOpsPage() {
                 <div>
                   <h2>What this page cannot tell you</h2>
                   <p>
-                    These figures are deliberately absent rather than estimated,
-                    so nothing here is mistaken for billed cost.
+                These figures are deliberately absent rather than estimated
+                or inferred from unrelated observations.
                   </p>
                 </div>
               </div>
@@ -563,10 +680,84 @@ export default function FinOpsPage() {
           <section className="card">
             <div className="card-header">
               <div>
+                <h2>Review scenarios</h2>
+                <p>
+                  Compare temporary selections of Azure Advisor opportunities.
+                  The annualized figures stay separate by currency and are
+                  potential amounts only—not realized, approved, or guaranteed.
+                </p>
+              </div>
+            </div>
+            <div className="card-body">
+              <div className="table-scroll">
+                <table className="operations-table">
+                  <thead>
+                    <tr>
+                      <th>Scenario</th>
+                      <th>Selected opportunities</th>
+                      <th>Potential annualized amounts</th>
+                      <th>Unreported currency</th>
+                      <th>Not quantified</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scenarioSummaries.map((scenario) => {
+                      const amounts = scenario.currencyTotals
+                        .map((total) => money(total.amount, total.currency))
+                        .join("; ");
+                      const detail = [
+                        amounts || "No comparable quantified amounts",
+                        scenario.unreportedCurrencyCount > 0
+                          ? `${scenario.unreportedCurrencyCount} excluded from totals`
+                          : null,
+                        scenario.unquantifiedCount > 0
+                          ? `${scenario.unquantifiedCount} unquantified`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join("; ");
+                      return (
+                        <tr key={scenario.name}>
+                          <td>
+                            <span className="table-primary-link">
+                              Scenario {scenario.name}
+                            </span>
+                          </td>
+                          <td>{scenario.selectedCount}</td>
+                          <td>{detail}</td>
+                          <td>{scenario.unreportedCurrencyCount}</td>
+                          <td>{scenario.unquantifiedCount}</td>
+                          <td>
+                            <button
+                              type="button"
+                              aria-label={`Clear Scenario ${scenario.name}`}
+                              onClick={() => clearScenarioSelection(scenario.name)}
+                              disabled={scenario.selectedCount === 0}
+                            >
+                              Clear
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="table-secondary">
+                Selections are held only in this page session. They do not save
+                a decision, approve an action, or trigger remediation.
+              </p>
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <div>
                 <h2>Savings opportunities</h2>
                 <p>
                   Azure Advisor cost recommendations, richest quantified saving
-                  first.
+                  first. Use the checkboxes to compare opportunities above.
                 </p>
               </div>
             </div>
@@ -588,6 +779,8 @@ export default function FinOpsPage() {
                   <table className="operations-table">
                     <thead>
                       <tr>
+                        <th>Scenario A</th>
+                        <th>Scenario B</th>
                         <th>Recommendation</th>
                         <th>Impact</th>
                         <th>Annual saving</th>
@@ -596,8 +789,26 @@ export default function FinOpsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {opportunityPaging.pageRows.map((row, index) => (
-                        <tr key={row.recommendation_id || row.resource_id || index}>
+                      {opportunityPaging.pageRows.map((row) => {
+                        const key = opportunityKey(row);
+                        return (
+                        <tr key={key}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              aria-label={`Include ${row.problem || "cost recommendation"} in Scenario A`}
+                              checked={scenarioASelection.has(key)}
+                              onChange={() => toggleScenarioSelection("A", key)}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="checkbox"
+                              aria-label={`Include ${row.problem || "cost recommendation"} in Scenario B`}
+                              checked={scenarioBSelection.has(key)}
+                              onChange={() => toggleScenarioSelection("B", key)}
+                            />
+                          </td>
                           <td>
                             <span className="table-primary-link">
                               {row.problem || "Cost recommendation"}
@@ -627,7 +838,8 @@ export default function FinOpsPage() {
                             </div>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

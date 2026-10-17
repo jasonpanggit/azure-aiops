@@ -139,8 +139,14 @@ are named in `unavailable_metrics`.
 to each group and includes its per-currency breakdown. Individual Advisor rows
 remain inspectable with their own amount and currency. The page keeps units
 separate in charts and breakdown tables and labels unreported amounts rather
-than displaying a cross-currency total. This does not provide realized savings,
-cost forecasting, anomaly detection, or a verified remediation outcome.
+than displaying a cross-currency total. `unavailable_metrics` explicitly reports
+`realized_savings` as unavailable until a verified remediation-to-resource
+change is linked to comparable pre-change and post-change Cost Management
+actuals. Spend movement alone is not proof of savings. The page's review
+scenarios are temporary, read-only selections of Advisor opportunities; they
+sum only Azure-issued annualized amounts within each reported currency and do
+not establish approval, execution, or realized outcomes. Cost forecasting and
+anomaly detection are also unavailable.
 
 ## Asynchronous Agents investigations
 

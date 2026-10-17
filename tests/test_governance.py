@@ -198,8 +198,18 @@ def test_summary_never_invents_spend_and_names_what_is_unavailable():
     assert summary["currency"] == "USD"
     unavailable = {item["metric"] for item in summary["unavailable_metrics"]}
     # The whole point: actual spend is absent, and said to be absent.
-    assert unavailable == {"actual_spend", "cost_forecast", "cost_anomaly"}
+    assert unavailable == {
+        "actual_spend",
+        "realized_savings",
+        "cost_forecast",
+        "cost_anomaly",
+    }
     assert all(item["reason"] for item in summary["unavailable_metrics"])
+    realized = next(
+        item for item in summary["unavailable_metrics"]
+        if item["metric"] == "realized_savings"
+    )
+    assert "Spend movement alone is not evidence" in realized["reason"]
 
 
 def test_summary_uses_cost_management_actuals_when_available():
@@ -218,7 +228,7 @@ def test_summary_uses_cost_management_actuals_when_available():
     assert summary["actual_spend_period_end"] == "2026-01-15"
     unavailable = {item["metric"] for item in summary["unavailable_metrics"]}
     assert "actual_spend" not in unavailable
-    assert unavailable == {"cost_forecast", "cost_anomaly"}
+    assert unavailable == {"realized_savings", "cost_forecast", "cost_anomaly"}
 
 
 def test_mixed_currency_totals_are_labelled_rather_than_summed_silently():
@@ -2259,8 +2269,11 @@ def test_finops_summary_exposes_unavailable_metrics(tmp_path):
     client = _client(tmp_path, snapshot=_snapshot())
     response = client.get("/api/v1/governance/finops/summary", headers=_headers())
     assert response.status_code == 200
-    metrics = {item["metric"] for item in response.json()["data"]["unavailable_metrics"]}
+    unavailable = response.json()["data"]["unavailable_metrics"]
+    metrics = {item["metric"] for item in unavailable}
     assert "actual_spend" in metrics
+    realized = next(item for item in unavailable if item["metric"] == "realized_savings")
+    assert "comparable pre-change and post-change" in realized["reason"]
 
 
 def test_access_review_pack_is_served_per_audience(tmp_path):
