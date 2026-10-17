@@ -1719,6 +1719,28 @@ export interface ExposureEnrichmentState {
   sources: Record<string, ExposureEnrichmentSourceState>;
 }
 
+export interface KbObservation {
+  observation_id: string;
+  captured_at: string;
+  generation: string;
+  source_observed_at: string;
+  completeness: string;
+  freshness: string;
+  counts: NonNullable<KbDetail["installation_status_counts"]> | null;
+  targets: NonNullable<KbDetail["target_status_observations"]>;
+  targets_truncated: boolean | null;
+  msrc: { status: string; stale: boolean; has_last_known_good: boolean; source_at: string } | null;
+}
+
+export interface KbObservationHistory {
+  schema_version: 1;
+  actor: string;
+  scope: ScopeSelection;
+  kb_id: string;
+  revision: number;
+  observations: KbObservation[];
+}
+
 export interface KbReviewDeclaration {
   generation: string;
   owner: string;

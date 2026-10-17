@@ -60,6 +60,23 @@ describe("vulnerabilityApi authoritative Exposure envelope", () => {
     expect(JSON.parse(calls[1][1].body)).toEqual({ ...declaration, expected_revision: 2 });
   });
 
+  it("separates retained KB observation reads from explicit server-acquired Silver capture", async () => {
+    const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(dimension => [dimension, ["one", "two"]]));
+    const fetchSpy = captureFetch({ data: {}, scope, evidence: [], warnings: [] });
+    const controller = new AbortController();
+    await kbApi.observations("KB6000001", scope, controller.signal);
+    await kbApi.captureObservation("KB6000001", scope, 3, "silver-patch:one");
+    const calls = fetchSpy.mock.calls.filter(([input]) => String(input).includes("/api/v1/"));
+    expect(calls).toHaveLength(2);
+    calls.forEach(([input]) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe("/api/v1/kbs/KB6000001/observations");
+      for (const dimension of SCOPE_DIMENSIONS) expect(url.searchParams.getAll(dimension)).toEqual(["one", "two"]);
+    });
+    expect(calls[0][1]).toMatchObject({ method: "GET", signal: controller.signal });
+    expect(JSON.parse(calls[1][1].body)).toEqual({ expected_revision: 3, generation: "silver-patch:one" });
+  });
+
   it("separates CVE receipt reads, explicit acquisition and retained-byte downloads with exact scope", async () => {
     const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(dimension => [dimension, ["one", "two"]]));
     const fetchSpy = captureFetch({ data: {}, evidence: [], scope, warnings: [] });

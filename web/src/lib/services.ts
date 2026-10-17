@@ -2025,6 +2025,16 @@ export const multiAgentApi = {
 };
 
 export const kbApi = {
+  /** Read personal retained KB source observations without provider acquisition. */
+  observations: (kbId: string, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").KbObservationHistory>(`/kbs/${encodeURIComponent(kbId)}/observations`, {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Explicitly retain the latest authorized Silver projection with optimistic revision. */
+  captureObservation: (kbId: string, scope: ScopeSelection, expectedRevision: number, generation: string) =>
+    apiRequest<import("./types").KbObservationHistory>(`/kbs/${encodeURIComponent(kbId)}/observations`, {
+      method: "POST", query: scopeToSearchParams(scope), body: { expected_revision: expectedRevision, generation },
+    }),
   /** Read private exact-scope KB declarations without refreshing provider data. */
   reviews: (kbId: string, scope: ScopeSelection, signal?: AbortSignal) =>
     apiRequest<import("./types").KbReviewHistory>(`/kbs/${encodeURIComponent(kbId)}/reviews`, {

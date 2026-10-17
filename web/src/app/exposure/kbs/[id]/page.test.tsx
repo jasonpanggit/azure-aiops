@@ -13,6 +13,8 @@ const api = vi.hoisted(() => ({
   detail: vi.fn(),
   reviews: vi.fn(),
   createReview: vi.fn(),
+  observations: vi.fn(),
+  captureObservation: vi.fn(),
   exposureOverview: vi.fn(),
   exposureItems: vi.fn(),
 }));
@@ -36,7 +38,8 @@ vi.mock("@/lib/services", async () => {
   );
   return {
     ...actual,
-    kbApi: { detail: api.detail, reviews: api.reviews, createReview: api.createReview },
+    kbApi: { detail: api.detail, reviews: api.reviews, createReview: api.createReview,
+      observations: api.observations, captureObservation: api.captureObservation },
     vulnerabilityApi: {
       ...actual.vulnerabilityApi,
       exposureOverview: api.exposureOverview,
@@ -262,6 +265,8 @@ describe("KB detail", () => {
     );
     api.detail.mockResolvedValue(kbEnvelope());
     api.reviews.mockResolvedValue({ data: { schema_version: 1, actor: "reader", kb_id: "KB600001", scope: authorizedScope, revision: 0, reviews: [] },
+      scope: authorizedScope, evidence: [], warnings: [] });
+    api.observations.mockResolvedValue({ data: { schema_version: 1, actor: "reader", kb_id: "KB600001", scope: authorizedScope, revision: 0, observations: [] },
       scope: authorizedScope, evidence: [], warnings: [] });
     api.exposureOverview.mockResolvedValue(overviewEnvelope());
     api.exposureItems.mockResolvedValue(findingsEnvelope());

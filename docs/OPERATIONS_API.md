@@ -1865,6 +1865,36 @@ remediation execution or proof of a fix. A `reviewed` disposition asserts only
 that the operator recorded that disposition. Retained reads remain possible when
 current KB metadata is unavailable; new reviews require its generation.
 
+### Retained KB source observations
+
+`GET /api/v1/kbs/{kb_id}/observations` reauthorizes the current principal and
+exact scope, then reads retained observations only. `POST` explicitly reacquires
+current authorized KB metadata through the existing SQL detail path and requires
+the displayed Silver generation and expected revision (0–20). Browsers cannot
+submit counts, targets, clocks, actors or provider evidence. A changed generation
+or stale revision returns 409; a stale revision/capacity preflight does not query
+sources. Reads do not refresh sources, create observations or replay writes.
+
+The allowlisted projection contains server ID/capture time, Silver generation
+and independent snapshot clock/coverage/freshness, whole-snapshot status counts
+(unknown for legacy sources), at most 100 target/status/source-time rows with
+explicit sample extent, and independent MSRC availability/staleness/clock.
+It excludes arbitrary provider payloads, execution declarations and asset metadata.
+Counts/categories and sample identities/statuses must agree. Corruption or invalid
+acquisition fails explicitly, never as an empty/successful history.
+`state/kb-observations/<identity-hash>.json` isolates exact principal/scope/KB
+and atomically appends using create-only/ETag CAS; 20 records/512 KiB are retained
+without automatic eviction. Unconfirmed writes require explicit retained reload,
+never automatic POST retry.
+
+The page can reopen these observations without available current metadata and
+compare two explicit captures without querying providers. Common sampled-target
+status differences are separate from sample membership differences; both snapshot
+population and independent catalog clocks/coverage may change. An inventory
+`installed` status is not portal execution or verified remediation. No complete
+estate movement, fixed cohort, causal maintenance linkage or post-deploy health
+is asserted; post-deploy health is not collected by this source.
+
 ### Situation handover annotations and observed comparisons
 
 `GET /api/v1/situations/{situation_id}/notes` reauthorizes the live Situation
