@@ -410,9 +410,9 @@ class FinOpsEngine:
                 {
                     "metric": "realized_savings",
                     "reason": (
-                        "No verified remediation-to-resource change is linked to "
-                        "comparable pre-change and post-change Cost Management actuals. "
-                        "Spend movement alone is not evidence of realized savings."
+                        "Observed Cost Management movement can be compared around a "
+                        "cleanly verified remediation, but the comparison does not "
+                        "establish causality or realized savings."
                     ),
                 },
                 {

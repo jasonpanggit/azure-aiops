@@ -140,13 +140,29 @@ to each group and includes its per-currency breakdown. Individual Advisor rows
 remain inspectable with their own amount and currency. The page keeps units
 separate in charts and breakdown tables and labels unreported amounts rather
 than displaying a cross-currency total. `unavailable_metrics` explicitly reports
-`realized_savings` as unavailable until a verified remediation-to-resource
-change is linked to comparable pre-change and post-change Cost Management
-actuals. Spend movement alone is not proof of savings. The page's review
-scenarios are temporary, read-only selections of Advisor opportunities; they
-sum only Azure-issued annualized amounts within each reported currency and do
-not establish approval, execution, or realized outcomes. Cost forecasting and
-anomaly detection are also unavailable.
+`realized_savings` as unavailable. `GET
+/api/v1/governance/finops/verified-remediations` lists only successful
+executions with a clean stored evidence reconciliation, filtered by the
+execution's own durable scope. `GET
+/api/v1/governance/finops/remediation-cost-comparison` accepts one such
+execution and caller-declared baseline/follow-up dates. It requires equal,
+non-overlapping windows of 1–30 days, a baseline ending before the recorded
+successful transition, and a follow-up starting after clean evidence
+reconciliation. It matches Cost Management rows to the exact immutable target resource,
+and returns a result only when every day has a finite cost row and all rows use
+one reported currency. Missing daily coverage, mixed/unreported currency, or a
+snapshot that does not reach the follow-up end returns `available: false`
+instead of treating missing rows as zero. The response includes both windows,
+daily coverage, source observation time, and limitations.
+
+The comparison is observed average-daily cost movement, not the
+`realized_savings` metric. It does not establish that remediation caused the
+movement or control for other cost drivers, so no causal or guaranteed savings
+amount is inferred. The page's review scenarios are temporary, read-only
+selections of Advisor opportunities; they sum only Azure-issued annualized
+amounts within each reported currency and do not establish approval, execution,
+or realized outcomes. Cost forecasting and anomaly detection are also
+unavailable.
 
 ## Asynchronous Agents investigations
 

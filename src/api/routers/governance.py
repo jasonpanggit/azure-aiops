@@ -17,8 +17,11 @@ Two properties hold across every route here:
 from __future__ import annotations
 
 import logging
+import math
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
@@ -54,9 +57,10 @@ from intelligence.governance.retained_exports import (
     RetainedAuditExportStore,
 )
 from intelligence.governance.settings import MAX_SETTINGS_REVISION, SettingsChange
+from intelligence.remediation.execution_store import execution_scope_attributes
 from storage.onelake_documents import DocumentConflictError
 
-from ..dependencies import Context, CurrentPrincipal, ReadScope, WritePrincipal
+from ..dependencies import Context, CurrentPrincipal, Page, ReadScope, WritePrincipal
 from ..errors import ApiError, ErrorCode
 from ..evidence import (
     CONFIDENCE_HIGH,
@@ -160,6 +164,330 @@ def finops_summary(context: Context, scope: ReadScope) -> dict[str, Any]:
         _finops(snapshot).summary(),
         # Savings figures are Azure Advisor's own computation, not ours.
         evidence=_evidence(snapshot, FINOPS_ENGINE),
+        scope=scope.to_dict(),
+        warnings=snapshot.warnings,
+    )
+
+
+def _verified_remediation_records(
+    context: Context, scope: Scope
+) -> list[dict[str, Any]]:
+    """Return only cleanly reconciled successful executions in the read scope."""
+    if context.execution_record_reader is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Stored remediation evidence is unavailable",
+            {"capability": "remediation_execution_records"},
+        )
+    try:
+        records = context.execution_record_reader()
+        if not isinstance(records, list) or any(
+            not isinstance(record, dict) for record in records
+        ):
+            raise ValueError("Stored execution collection is invalid")
+    except (ValueError, TypeError, RuntimeError, OSError) as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Stored remediation evidence could not be confirmed",
+            {"capability": "remediation_execution_records"},
+        ) from exc
+
+    verified: list[dict[str, Any]] = []
+    for record in records:
+        snapshot = record.get("execution_snapshot")
+        reconciliation = record.get("evidence_reconciliation")
+        target_id = (
+            str(snapshot.get("target_id") or "").strip()
+            if isinstance(snapshot, dict)
+            else ""
+        )
+        if (
+            record.get("status") != "succeeded"
+            or not isinstance(reconciliation, dict)
+            or reconciliation.get("status") != "reconciled_clean"
+            or not target_id
+            or not scope.matches(execution_scope_attributes(record))
+        ):
+            continue
+        successful_transition = next(
+            (
+                str(event.get("timestamp") or "").strip()
+                for event in reversed(record.get("history") or [])
+                if isinstance(event, dict)
+                and event.get("status") == "succeeded"
+                and event.get("timestamp")
+            ),
+            "",
+        )
+        verified_at = str(reconciliation.get("assessed_at") or "").strip()
+        try:
+            changed_moment = datetime.fromisoformat(successful_transition)
+            verified_moment = datetime.fromisoformat(verified_at)
+        except ValueError:
+            continue
+        if changed_moment.tzinfo is None:
+            changed_moment = changed_moment.replace(tzinfo=UTC)
+        if verified_moment.tzinfo is None:
+            verified_moment = verified_moment.replace(tzinfo=UTC)
+        changed_at = changed_moment.astimezone(UTC).isoformat().replace(
+            "+00:00", "Z"
+        )
+        verified_at = verified_moment.astimezone(UTC).isoformat().replace(
+            "+00:00", "Z"
+        )
+        execution_id = str(record.get("execution_id") or "")
+        if not execution_id:
+            continue
+        verified.append(
+            {
+                "execution_id": execution_id,
+                "target_resource_id": target_id,
+                "changed_at": changed_at,
+                "verified_at": verified_at,
+            }
+        )
+    return sorted(verified, key=lambda item: item["verified_at"], reverse=True)
+
+
+@router.get(
+    "/finops/verified-remediations",
+    summary="List cleanly verified remediation changes for cost review",
+)
+def finops_verified_remediations(
+    context: Context, scope: ReadScope, page: Page
+) -> dict[str, Any]:
+    records = _verified_remediation_records(context, scope)
+    limit = min(page.limit, 50)
+    return envelope(
+        {
+            "executions": records[page.offset : page.offset + limit],
+            "count": len(records),
+            "read_only": True,
+            "boundary": (
+                "Successful execution with clean stored evidence reconciliation; "
+                "not proof that the execution caused later cost movement."
+            ),
+        },
+        evidence=Evidence(
+            source_engine="intelligence.RemediationExecutionStore",
+            source_table="remediation_executions",
+            confidence=CONFIDENCE_HIGH,
+        ),
+        scope=scope.to_dict(),
+        pagination={
+            "offset": page.offset,
+            "limit": limit,
+            "total": len(records),
+            "next_offset": page.offset + limit if page.offset + limit < len(records) else None,
+        },
+    )
+
+
+@router.get(
+    "/finops/remediation-cost-comparison",
+    summary="Compare same-resource Cost Management windows around a verified change",
+)
+def finops_remediation_cost_comparison(
+    context: Context,
+    scope: ReadScope,
+    execution_id: Annotated[str, Query(min_length=1, max_length=128)],
+    baseline_start: date,
+    baseline_end: date,
+    followup_start: date,
+    followup_end: date,
+) -> dict[str, Any]:
+    """Compare observed resource costs without claiming remediation causality."""
+    baseline_days = (baseline_end - baseline_start).days + 1
+    followup_days = (followup_end - followup_start).days + 1
+    if (
+        baseline_days < 1
+        or followup_days != baseline_days
+        or baseline_days > 30
+        or baseline_end >= followup_start
+    ):
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "Cost comparison requires non-overlapping, equal-length windows of 1 to 30 days",
+        )
+
+    def window_days(start: date, end: date) -> list[date]:
+        return [
+            date.fromordinal(start.toordinal() + offset)
+            for offset in range((end - start).days + 1)
+        ]
+
+    records = _verified_remediation_records(context, scope)
+    execution = next(
+        (item for item in records if item["execution_id"] == execution_id),
+        None,
+    )
+    if execution is None:
+        # Do not reveal whether an execution exists outside this caller's scope.
+        raise ApiError(ErrorCode.NOT_FOUND, "Verified remediation not found")
+    changed_date = date.fromisoformat(execution["changed_at"][:10])
+    verified_date = date.fromisoformat(execution["verified_at"][:10])
+    if not baseline_end < changed_date or followup_start <= verified_date:
+        raise ApiError(
+            ErrorCode.INVALID_REQUEST,
+            "The baseline must end before execution, and the follow-up must start after clean verification",
+        )
+
+    snapshot = _snapshot(context, scope)
+    observed_at = snapshot.observed_at
+    try:
+        observed_date = date.fromisoformat(observed_at[:10])
+    except ValueError:
+        observed_date = None
+    if observed_date is None or observed_date < followup_end:
+        return envelope(
+            {
+                "available": False,
+                "reason": "The current Cost Management snapshot does not cover the end of the follow-up window.",
+                "execution": execution,
+                "coverage": {
+                    "snapshot_observed_at": observed_at,
+                    "expected_days_per_window": baseline_days,
+                    "baseline_days_observed": 0,
+                    "baseline_missing_days": [
+                        current.isoformat()
+                        for current in window_days(baseline_start, baseline_end)
+                    ],
+                    "followup_days_observed": 0,
+                    "followup_missing_days": [
+                        current.isoformat()
+                        for current in window_days(followup_start, followup_end)
+                    ],
+                    "cost_record_count": 0,
+                },
+                "limitations": [
+                    "Observed cost movement is not proof of savings or causality."
+                ],
+            },
+            evidence=_evidence(
+                snapshot,
+                FINOPS_ENGINE,
+                confidence=CONFIDENCE_UNKNOWN,
+                source_table="CostActual+remediation_executions",
+            ),
+            scope=scope.to_dict(),
+            warnings=snapshot.warnings,
+        )
+
+    target_id = execution["target_resource_id"].casefold()
+    rows = [
+        row
+        for row in snapshot.rows("CostActual")
+        if str(row.get("targetResourceId") or row.get("resourceId") or "")
+        .strip()
+        .casefold()
+        == target_id
+        and str(row.get("sourceSystem") or "").casefold() == "azure:costmanagement"
+    ]
+    totals: dict[date, float] = {}
+    currencies: set[str] = set()
+    row_count = 0
+    invalid_cost = False
+    for row in rows:
+        try:
+            usage_day = date.fromisoformat(str(row.get("usageDate") or "")[:10])
+        except ValueError:
+            continue
+        if not (
+            baseline_start <= usage_day <= baseline_end
+            or followup_start <= usage_day <= followup_end
+        ):
+            continue
+        currency_code = str(row.get("currency") or "").strip().upper()
+        currencies.add(currency_code)
+        try:
+            amount = float(row.get("cost"))
+        except (TypeError, ValueError):
+            invalid_cost = True
+            continue
+        if not math.isfinite(amount):
+            invalid_cost = True
+            continue
+        totals[usage_day] = totals.get(usage_day, 0.0) + amount
+        row_count += 1
+
+    def missing_days(start: date, end: date) -> list[str]:
+        return [current.isoformat() for current in window_days(start, end) if current not in totals]
+
+    baseline_missing = missing_days(baseline_start, baseline_end)
+    followup_missing = missing_days(followup_start, followup_end)
+    unavailable_reason = ""
+    if invalid_cost:
+        unavailable_reason = "One or more Cost Management amounts are invalid."
+    elif len(currencies) != 1 or not re.fullmatch(
+        r"[A-Z]{3}", next(iter(currencies), "")
+    ):
+        unavailable_reason = "The selected resource does not have one reported currency across both windows."
+    elif baseline_missing or followup_missing:
+        unavailable_reason = "Daily Cost Management coverage is incomplete for this resource and the selected windows."
+
+    coverage = {
+        "expected_days_per_window": baseline_days,
+        "baseline_days_observed": baseline_days - len(baseline_missing),
+        "baseline_missing_days": baseline_missing,
+        "followup_days_observed": followup_days - len(followup_missing),
+        "followup_missing_days": followup_missing,
+        "cost_record_count": row_count,
+        "snapshot_observed_at": observed_at,
+    }
+    limitations = [
+        "This is an observed cost comparison, not realized or causally attributed savings.",
+        "The comparison covers only the exact remediation target and selected dates; other cost drivers are not controlled.",
+        "A clean remediation evidence reconciliation verifies the recorded change, not its financial effect.",
+    ]
+    if unavailable_reason:
+        data: dict[str, Any] = {
+            "available": False,
+            "reason": unavailable_reason,
+            "execution": execution,
+            "baseline": {"start": baseline_start.isoformat(), "end": baseline_end.isoformat()},
+            "followup": {"start": followup_start.isoformat(), "end": followup_end.isoformat()},
+            "coverage": coverage,
+            "limitations": limitations,
+        }
+    else:
+        baseline_total = sum(
+            totals[baseline_start.fromordinal(baseline_start.toordinal() + offset)]
+            for offset in range(baseline_days)
+        )
+        followup_total = sum(
+            totals[followup_start.fromordinal(followup_start.toordinal() + offset)]
+            for offset in range(followup_days)
+        )
+        data = {
+            "available": True,
+            "execution": execution,
+            "baseline": {
+                "start": baseline_start.isoformat(),
+                "end": baseline_end.isoformat(),
+                "total_cost": baseline_total,
+                "average_daily_cost": baseline_total / baseline_days,
+            },
+            "followup": {
+                "start": followup_start.isoformat(),
+                "end": followup_end.isoformat(),
+                "total_cost": followup_total,
+                "average_daily_cost": followup_total / followup_days,
+            },
+            "currency": next(iter(currencies)),
+            "observed_average_daily_cost_change": (
+                baseline_total / baseline_days - followup_total / followup_days
+            ),
+            "coverage": coverage,
+            "limitations": limitations,
+        }
+    return envelope(
+        data,
+        evidence=_evidence(
+            snapshot,
+            FINOPS_ENGINE,
+            confidence=CONFIDENCE_UNKNOWN,
+            source_table="CostActual+remediation_executions",
+        ),
         scope=scope.to_dict(),
         warnings=snapshot.warnings,
     )

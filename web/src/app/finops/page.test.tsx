@@ -4,6 +4,8 @@ const { services, scope } = vi.hoisted(() => ({
   scope: {},
   services: {
     finopsSummary: vi.fn(),
+    finopsVerifiedRemediations: vi.fn(),
+    finopsRemediationCostComparison: vi.fn(),
     finopsOpportunities: vi.fn(),
     finopsWaste: vi.fn(),
     finopsAttribution: vi.fn(),
@@ -63,7 +65,7 @@ beforeEach(() => {
         {
           metric: "realized_savings",
           reason:
-            "No verified remediation-to-resource change is linked to comparable pre-change and post-change Cost Management actuals. Spend movement alone is not evidence of realized savings.",
+            "Observed Cost Management movement can be compared around a cleanly verified remediation, but the comparison does not establish causality or realized savings.",
         },
       ],
     }),
@@ -119,6 +121,31 @@ beforeEach(() => {
       ],
     }),
   );
+  services.finopsVerifiedRemediations.mockResolvedValue(
+    envelope({
+      executions: [],
+      count: 0,
+      read_only: true,
+      boundary: "Successful execution with clean stored evidence reconciliation.",
+    }),
+  );
+  services.finopsRemediationCostComparison.mockResolvedValue(
+    envelope({
+      available: false,
+      reason: "No comparison requested.",
+      execution: {
+        execution_id: "",
+        target_resource_id: "",
+        verified_at: "",
+      },
+      coverage: {
+        expected_days_per_window: 0,
+        baseline_days_observed: 0,
+        followup_days_observed: 0,
+      },
+      limitations: [],
+    }),
+  );
   services.finopsWaste.mockResolvedValue(envelope({ count: 0, waste: [] }));
   services.finopsAttribution.mockResolvedValue(
     envelope({
@@ -157,7 +184,109 @@ describe("FinOps currency normalization", () => {
     expect(screen.getAllByText(/currency unreported/).length).toBeGreaterThan(0);
     expect(screen.queryByText("350")).toBeNull();
     expect(screen.getByText("Realized Savings")).toBeTruthy();
-    expect(screen.getByText(/Spend movement alone is not evidence/)).toBeTruthy();
+    expect(screen.getByText(/does not establish causality/)).toBeTruthy();
+  });
+
+  it("shows the verified-change comparison entry point without implying realized savings", async () => {
+    render(<FinOpsPage />);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Compare cost around a verified change",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/No verified remediation changes in this scope/),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/not proof of realized savings or causality/i),
+    ).toBeTruthy();
+  });
+
+  it("compares only the selected verified change and caller-entered windows", async () => {
+    services.finopsVerifiedRemediations.mockResolvedValue(
+      envelope({
+        executions: [
+          {
+            execution_id: "execution-a",
+            target_resource_id: "/subscriptions/sub-a/vm-a",
+            changed_at: "2026-06-10T10:00:00Z",
+            verified_at: "2026-06-10T12:00:00Z",
+          },
+        ],
+        count: 1,
+        read_only: true,
+        boundary: "Not proof of causality.",
+      }),
+    );
+    services.finopsRemediationCostComparison.mockResolvedValue(
+      envelope({
+        available: true,
+        execution: {
+          execution_id: "execution-a",
+          target_resource_id: "/subscriptions/sub-a/vm-a",
+          changed_at: "2026-06-10T10:00:00Z",
+          verified_at: "2026-06-10T12:00:00Z",
+        },
+        baseline: {
+          start: "2026-06-01",
+          end: "2026-06-07",
+          total_cost: 70,
+          average_daily_cost: 10,
+        },
+        followup: {
+          start: "2026-06-14",
+          end: "2026-06-20",
+          total_cost: 35,
+          average_daily_cost: 5,
+        },
+        currency: "USD",
+        observed_average_daily_cost_change: 5,
+        coverage: {
+          expected_days_per_window: 7,
+          baseline_days_observed: 7,
+          followup_days_observed: 7,
+          snapshot_observed_at: "2026-06-21T00:00:00Z",
+        },
+        limitations: ["Observed movement is not causal."],
+      }),
+    );
+
+    render(<FinOpsPage />);
+    fireEvent.change(
+      await screen.findByLabelText("Verified remediation"),
+      { target: { value: "execution-a" } },
+    );
+    fireEvent.change(screen.getByLabelText("Baseline start"), {
+      target: { value: "2026-06-01" },
+    });
+    fireEvent.change(screen.getByLabelText("Baseline end"), {
+      target: { value: "2026-06-07" },
+    });
+    fireEvent.change(screen.getByLabelText("Follow-up start"), {
+      target: { value: "2026-06-14" },
+    });
+    fireEvent.change(screen.getByLabelText("Follow-up end"), {
+      target: { value: "2026-06-20" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Compare observed costs" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Observed cost movement" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/Average daily cost change: 5\.00 USD\/day/),
+    ).toBeTruthy();
+    expect(services.finopsRemediationCostComparison).toHaveBeenCalledWith(
+      {},
+      {
+        execution_id: "execution-a",
+        baseline_start: "2026-06-01",
+        baseline_end: "2026-06-07",
+        followup_start: "2026-06-14",
+        followup_end: "2026-06-20",
+      },
+    );
   });
 
   it("compares temporary scenarios without combining currencies or asserting outcomes", async () => {

@@ -3158,6 +3158,43 @@ export interface FinOpsSummary {
   unavailable_metrics: UnavailableMetric[];
 }
 
+export interface FinOpsVerifiedRemediation {
+  execution_id: string;
+  target_resource_id: string;
+  changed_at: string;
+  verified_at: string;
+}
+
+export interface FinOpsRemediationCostComparison {
+  available: boolean;
+  reason?: string;
+  execution: FinOpsVerifiedRemediation;
+  baseline?: {
+    start: string;
+    end: string;
+    total_cost?: number;
+    average_daily_cost?: number;
+  };
+  followup?: {
+    start: string;
+    end: string;
+    total_cost?: number;
+    average_daily_cost?: number;
+  };
+  currency?: string;
+  observed_average_daily_cost_change?: number;
+  coverage: {
+    expected_days_per_window: number;
+    baseline_days_observed: number;
+    baseline_missing_days?: string[];
+    followup_days_observed: number;
+    followup_missing_days?: string[];
+    cost_record_count?: number;
+    snapshot_observed_at?: string;
+  };
+  limitations: string[];
+}
+
 export interface SavingsOpportunity {
   recommendation_id: string;
   resource_id: string;

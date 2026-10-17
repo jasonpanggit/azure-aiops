@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CountBarChart } from "@/components/ui/CountBarChart";
@@ -17,6 +17,7 @@ import { buildFinOpsCopilotContext } from "@/lib/copilot/page-adapters";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
+import type { FinOpsVerifiedRemediation } from "@/lib/types";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
@@ -87,6 +88,23 @@ export default function FinOpsPage() {
   const { scope } = useScope();
   const [dimension, setDimension] = useState<Dimension>("subscription");
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [executionOffset, setExecutionOffset] = useState(0);
+  const [selectedExecution, setSelectedExecution] = useState<{
+    scopeKey: string;
+    executionId: string;
+  }>(() => ({ scopeKey: JSON.stringify(scope), executionId: "" }));
+  const [baselineStart, setBaselineStart] = useState("");
+  const [baselineEnd, setBaselineEnd] = useState("");
+  const [followupStart, setFollowupStart] = useState("");
+  const [followupEnd, setFollowupEnd] = useState("");
+  const [comparisonRequest, setComparisonRequest] = useState<{
+    scopeKey: string;
+    execution_id: string;
+    baseline_start: string;
+    baseline_end: string;
+    followup_start: string;
+    followup_end: string;
+  } | null>(null);
   const [scenarioSelection, setScenarioSelection] = useState<{
     scopeKey: string;
     a: Set<string>;
@@ -105,6 +123,23 @@ export default function FinOpsPage() {
   const summary = useApi(() => governanceApi.finopsSummary(scope), [scope]);
   const opportunities = useApi(() => governanceApi.finopsOpportunities(scope), [scope]);
   const waste = useApi(() => governanceApi.finopsWaste(scope), [scope]);
+  const verifiedRemediations = useApi(
+    () => governanceApi.finopsVerifiedRemediations(scope, executionOffset),
+    [scope, executionOffset],
+  );
+  const costComparison = useApi(
+    () =>
+      comparisonRequest?.scopeKey === scenarioScopeKey
+        ? governanceApi.finopsRemediationCostComparison(scope, {
+            execution_id: comparisonRequest.execution_id,
+            baseline_start: comparisonRequest.baseline_start,
+            baseline_end: comparisonRequest.baseline_end,
+            followup_start: comparisonRequest.followup_start,
+            followup_end: comparisonRequest.followup_end,
+          })
+        : Promise.resolve(null),
+    [scope, comparisonRequest],
+  );
   const attribution = useApi(
     () => governanceApi.finopsAttribution(dimension, scope),
     [scope, dimension],
@@ -183,6 +218,13 @@ export default function FinOpsPage() {
     () => attribution.data?.data.groups ?? [],
     [attribution.data],
   );
+  const remediationExecutions =
+    verifiedRemediations.data?.data.executions ?? [];
+  const selectedExecutionId =
+    selectedExecution.scopeKey === scenarioScopeKey
+      ? selectedExecution.executionId
+      : "";
+  const comparisonResult = costComparison.data?.data ?? null;
   const currencyBreakdownVisible =
     totals?.currency === "mixed" ||
     totals?.currency === "unreported" ||
@@ -279,6 +321,27 @@ export default function FinOpsPage() {
       return scenario === "A"
         ? { ...base, scopeKey: scenarioScopeKey, a: new Set() }
         : { ...base, scopeKey: scenarioScopeKey, b: new Set() };
+    });
+  };
+
+  const submitCostComparison = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (
+      !selectedExecutionId ||
+      !baselineStart ||
+      !baselineEnd ||
+      !followupStart ||
+      !followupEnd
+    ) {
+      return;
+    }
+    setComparisonRequest({
+      scopeKey: scenarioScopeKey,
+      execution_id: selectedExecutionId,
+      baseline_start: baselineStart,
+      baseline_end: baselineEnd,
+      followup_start: followupStart,
+      followup_end: followupEnd,
     });
   };
 
@@ -748,6 +811,226 @@ export default function FinOpsPage() {
                 Selections are held only in this page session. They do not save
                 a decision, approve an action, or trigger remediation.
               </p>
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <div>
+                <h2>Compare cost around a verified change</h2>
+                <p>
+                  Compare equal-length Cost Management windows for the exact
+                  resource in a successfully executed, cleanly reconciled
+                  remediation. This is observed cost movement, not proof of
+                  realized savings or causality.
+                </p>
+              </div>
+            </div>
+            <div className="card-body">
+              {verifiedRemediations.error ? (
+                <StatePanel
+                  title="Verified remediation evidence is unavailable"
+                  message={
+                    verifiedRemediations.error.message ??
+                    "Stored remediation evidence could not be confirmed."
+                  }
+                  tone="error"
+                />
+              ) : verifiedRemediations.loading ? (
+                <StatePanel
+                  title="Reading verified changes"
+                  message="Checking successful remediation records and their stored evidence reconciliation."
+                  tone="loading"
+                />
+              ) : remediationExecutions.length === 0 ? (
+                <StatePanel
+                  title="No verified remediation changes in this scope"
+                  message="Only successful executions with clean stored evidence reconciliation are eligible for a cost comparison."
+                />
+              ) : (
+                <>
+                  <form
+                    className="form-grid"
+                    onSubmit={submitCostComparison}
+                    aria-label="Compare cost around a verified change"
+                  >
+                    <label className="form-field form-span">
+                      <span>Verified remediation</span>
+                      <select
+                        value={selectedExecutionId}
+                        onChange={(event) => {
+                          setSelectedExecution({
+                            scopeKey: scenarioScopeKey,
+                            executionId: event.target.value,
+                          });
+                          setComparisonRequest(null);
+                        }}
+                        required
+                      >
+                        <option value="">Select a verified change</option>
+                        {remediationExecutions.map(
+                          (execution: FinOpsVerifiedRemediation) => (
+                            <option
+                              key={execution.execution_id}
+                              value={execution.execution_id}
+                            >
+                              {execution.changed_at.slice(0, 10)} —{" "}
+                              {execution.target_resource_id} (
+                              {execution.execution_id})
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    </label>
+                    <label className="form-field">
+                      <span>Baseline start</span>
+                      <input
+                        type="date"
+                        value={baselineStart}
+                        onChange={(event) => setBaselineStart(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>Baseline end</span>
+                      <input
+                        type="date"
+                        value={baselineEnd}
+                        onChange={(event) => setBaselineEnd(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>Follow-up start</span>
+                      <input
+                        type="date"
+                        value={followupStart}
+                        onChange={(event) => setFollowupStart(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>Follow-up end</span>
+                      <input
+                        type="date"
+                        value={followupEnd}
+                        onChange={(event) => setFollowupEnd(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <div className="form-actions">
+                      <button
+                        type="submit"
+                        disabled={costComparison.loading || !selectedExecutionId}
+                      >
+                        {costComparison.loading
+                          ? "Comparing…"
+                          : "Compare observed costs"}
+                      </button>
+                    </div>
+                  </form>
+                  {verifiedRemediations.data?.pagination?.next_offset !==
+                    undefined &&
+                    verifiedRemediations.data.pagination.next_offset !== null && (
+                      <div className="form-actions">
+                        <button
+                          type="button"
+                          disabled={executionOffset === 0}
+                          onClick={() =>
+                            setExecutionOffset((offset) => Math.max(0, offset - 50))
+                          }
+                        >
+                          Previous changes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExecutionOffset(
+                              verifiedRemediations.data?.pagination?.next_offset ?? 0,
+                            )
+                          }
+                        >
+                          Next changes
+                        </button>
+                      </div>
+                    )}
+                  {costComparison.error && (
+                    <StatePanel
+                      title="Cost comparison could not be completed"
+                      message={
+                        costComparison.error.message ??
+                        "The requested comparison was rejected."
+                      }
+                      tone="error"
+                    />
+                  )}
+                  {comparisonResult && (
+                    <div className="card" aria-live="polite">
+                      {comparisonResult.available &&
+                      comparisonResult.baseline &&
+                      comparisonResult.followup &&
+                      comparisonResult.currency &&
+                      typeof comparisonResult.baseline.average_daily_cost ===
+                        "number" &&
+                      typeof comparisonResult.followup.average_daily_cost ===
+                        "number" ? (
+                        <>
+                          <h3>Observed cost movement</h3>
+                          <p>
+                            Baseline average:{" "}
+                            {comparisonResult.baseline.average_daily_cost.toFixed(
+                              2,
+                            )}{" "}
+                            {comparisonResult.currency}/day (
+                            {comparisonResult.baseline.start} to{" "}
+                            {comparisonResult.baseline.end}). Follow-up average:{" "}
+                            {comparisonResult.followup.average_daily_cost.toFixed(
+                              2,
+                            )}{" "}
+                            {comparisonResult.currency}/day (
+                            {comparisonResult.followup.start} to{" "}
+                            {comparisonResult.followup.end}).
+                          </p>
+                          <p>
+                            Average daily cost change:{" "}
+                            {comparisonResult.observed_average_daily_cost_change?.toFixed(
+                              2,
+                            )}{" "}
+                            {comparisonResult.currency}/day; positive means the
+                            observed average was lower in the follow-up period.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <h3>Comparison unavailable</h3>
+                          <p>{comparisonResult.reason}</p>
+                        </>
+                      )}
+                      <p className="table-secondary">
+                        Coverage:{" "}
+                        {comparisonResult.coverage.baseline_days_observed}/
+                        {comparisonResult.coverage.expected_days_per_window}{" "}
+                        baseline days and{" "}
+                        {comparisonResult.coverage.followup_days_observed}/
+                        {comparisonResult.coverage.expected_days_per_window}{" "}
+                        follow-up days. Snapshot observed at{" "}
+                        {comparisonResult.coverage.snapshot_observed_at || "unknown"}.
+                      </p>
+                      <ul>
+                        {comparisonResult.limitations.map((limitation) => (
+                          <li key={limitation}>{limitation}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <p className="table-secondary">
+                    Windows must be equal length, non-overlapping, no more than
+                    30 days each, and fully covered by same-currency daily
+                    records. This read-only comparison does not approve or
+                    execute remediation.
+                  </p>
+                </>
+              )}
             </div>
           </section>
 

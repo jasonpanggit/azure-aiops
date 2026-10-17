@@ -93,6 +93,8 @@ import type {
   AutonomousAgent,
   MultiAgentLedger,
   FinOpsSummary,
+  FinOpsVerifiedRemediation,
+  FinOpsRemediationCostComparison,
   SavingsOpportunity,
   WasteItem,
   FinOpsAttributionGroup,
@@ -2201,6 +2203,42 @@ export const governanceApi = {
     apiRequest<FinOpsSummary>("/governance/finops/summary", {
       query: scopeToSearchParams(scope),
     }),
+
+  finopsVerifiedRemediations: (
+    scope: ScopeSelection = {},
+    offset = 0,
+    limit = 50,
+    signal?: AbortSignal,
+  ) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<{
+      executions: FinOpsVerifiedRemediation[];
+      count: number;
+      read_only: boolean;
+      boundary: string;
+    }>("/governance/finops/verified-remediations", { query, signal });
+  },
+
+  finopsRemediationCostComparison: (
+    scope: ScopeSelection,
+    input: {
+      execution_id: string;
+      baseline_start: string;
+      baseline_end: string;
+      followup_start: string;
+      followup_end: string;
+    },
+    signal?: AbortSignal,
+  ) => {
+    const query = scopeToSearchParams(scope);
+    for (const [name, value] of Object.entries(input)) query.set(name, value);
+    return apiRequest<FinOpsRemediationCostComparison>(
+      "/governance/finops/remediation-cost-comparison",
+      { query, signal },
+    );
+  },
 
   finopsOpportunities: (scope: ScopeSelection = {}) =>
     apiRequest<{ opportunities: SavingsOpportunity[]; count: number }>(

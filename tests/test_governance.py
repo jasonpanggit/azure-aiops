@@ -209,7 +209,7 @@ def test_summary_never_invents_spend_and_names_what_is_unavailable():
         item for item in summary["unavailable_metrics"]
         if item["metric"] == "realized_savings"
     )
-    assert "Spend movement alone is not evidence" in realized["reason"]
+    assert "does not establish causality" in realized["reason"]
 
 
 def test_summary_uses_cost_management_actuals_when_available():
@@ -1038,7 +1038,11 @@ def test_has_identity_data_distinguishes_empty_from_unsynced():
 # --------------------------------------------------------------------------
 
 
-def _client(tmp_path, snapshot: GovernanceSnapshot | None = None):
+def _client(
+    tmp_path,
+    snapshot: GovernanceSnapshot | None = None,
+    execution_records: list[dict] | None = None,
+):
     principals = {
         ADMIN_TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),)),
         READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),)),
@@ -1049,6 +1053,9 @@ def _client(tmp_path, snapshot: GovernanceSnapshot | None = None):
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
         governance_provider=lambda: snapshot,
+        execution_record_reader=(
+            (lambda: execution_records) if execution_records is not None else None
+        ),
         settings_store=EnterpriseSettingsStore(),
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
@@ -2273,7 +2280,186 @@ def test_finops_summary_exposes_unavailable_metrics(tmp_path):
     metrics = {item["metric"] for item in unavailable}
     assert "actual_spend" in metrics
     realized = next(item for item in unavailable if item["metric"] == "realized_savings")
-    assert "comparable pre-change and post-change" in realized["reason"]
+    assert "does not establish causality" in realized["reason"]
+
+
+def test_finops_cost_comparison_requires_clean_in_scope_execution_and_complete_windows(
+    tmp_path,
+):
+    target = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Compute/virtualMachines/vm-a"
+    )
+    costs = []
+    for day in range(1, 8):
+        costs.append(
+            _entity(
+                "CostActual",
+                f"/cost/{day}",
+                {
+                    "subscriptionId": "sub-a",
+                    "targetResourceId": target,
+                    "resourceId": target,
+                    "usageDate": f"2026-06-{day:02}",
+                    "cost": 10,
+                    "currency": "USD",
+                    "sourceSystem": "azure:CostManagement",
+                },
+            )
+        )
+    for day in range(14, 21):
+        costs.append(
+            _entity(
+                "CostActual",
+                f"/cost/{day}",
+                {
+                    "subscriptionId": "sub-a",
+                    "targetResourceId": target,
+                    "resourceId": target,
+                    "usageDate": f"2026-06-{day:02}",
+                    "cost": 5,
+                    "currency": "USD",
+                    "sourceSystem": "azure:CostManagement",
+                },
+            )
+        )
+    execution = {
+        "execution_id": "execution-a",
+        "status": "succeeded",
+        "scope_attributes": {"subscription": "sub-a"},
+        "execution_snapshot": {"target_id": target},
+        "evidence_reconciliation": {
+            "status": "reconciled_clean",
+            "assessed_at": "2026-06-11T12:00:00Z",
+        },
+        "history": [
+            {"status": "succeeded", "timestamp": "2026-06-10T10:00:00Z"}
+        ],
+    }
+    client = _client(
+        tmp_path,
+        snapshot=GovernanceSnapshot(costs, observed_at="2026-06-21T00:00:00Z"),
+        execution_records=[execution],
+    )
+
+    response = client.get(
+        "/api/v1/governance/finops/remediation-cost-comparison",
+        params={
+            "subscription": "sub-a",
+            "execution_id": "execution-a",
+            "baseline_start": "2026-06-01",
+            "baseline_end": "2026-06-07",
+            "followup_start": "2026-06-14",
+            "followup_end": "2026-06-20",
+        },
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["available"] is True
+    assert result["baseline"]["total_cost"] == 70
+    assert result["followup"]["total_cost"] == 35
+    assert result["observed_average_daily_cost_change"] == 5
+    assert result["currency"] == "USD"
+    assert result["coverage"]["baseline_days_observed"] == 7
+    assert result["coverage"]["followup_days_observed"] == 7
+    assert any("not realized" in item for item in result["limitations"])
+
+
+def test_finops_cost_comparison_fails_closed_for_out_of_scope_execution_and_gaps(
+    tmp_path,
+):
+    target = "/subscriptions/sub-b/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-b"
+    execution = {
+        "execution_id": "execution-b",
+        "status": "succeeded",
+        "scope_attributes": {"subscription": "sub-b"},
+        "execution_snapshot": {"target_id": target},
+        "evidence_reconciliation": {
+            "status": "reconciled_clean",
+            "assessed_at": "2026-06-11T12:00:00Z",
+        },
+        "history": [{"status": "succeeded", "timestamp": "2026-06-10T10:00:00Z"}],
+    }
+    client = _client(
+        tmp_path,
+        snapshot=GovernanceSnapshot([], observed_at="2026-06-21T00:00:00Z"),
+        execution_records=[execution],
+    )
+    params = {
+        "execution_id": "execution-b",
+        "baseline_start": "2026-06-01",
+        "baseline_end": "2026-06-07",
+        "followup_start": "2026-06-14",
+        "followup_end": "2026-06-20",
+    }
+
+    hidden = client.get(
+        "/api/v1/governance/finops/remediation-cost-comparison",
+        params={"subscription": "sub-a", **params},
+        headers=_headers(),
+    )
+    assert hidden.status_code == 404
+
+    scoped = client.get(
+        "/api/v1/governance/finops/remediation-cost-comparison",
+        params={"subscription": "sub-b", **params},
+        headers=_headers(),
+    )
+    assert scoped.status_code == 200
+    assert scoped.json()["data"]["available"] is False
+    assert scoped.json()["data"]["coverage"]["followup_days_observed"] == 0
+
+
+def test_finops_verified_remediations_excludes_unclean_or_unscoped_records(tmp_path):
+    records = [
+        {
+            "execution_id": "verified",
+            "status": "succeeded",
+            "scope_attributes": {"subscription": "sub-a"},
+            "execution_snapshot": {"target_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm"},
+            "evidence_reconciliation": {
+                "status": "reconciled_clean",
+                "assessed_at": "2026-06-11T12:00:00Z",
+            },
+            "history": [{"status": "succeeded", "timestamp": "2026-06-10T10:00:00Z"}],
+        },
+        {
+            "execution_id": "unclean",
+            "status": "succeeded",
+            "scope_attributes": {"subscription": "sub-a"},
+            "execution_snapshot": {"target_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm"},
+            "evidence_reconciliation": {"status": "reconciled_incomplete"},
+            "history": [{"status": "succeeded", "timestamp": "2026-06-10T10:00:00Z"}],
+        },
+        {
+            "execution_id": "outside",
+            "status": "succeeded",
+            "scope_attributes": {"subscription": "sub-b"},
+            "execution_snapshot": {"target_id": "/subscriptions/sub-b/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm"},
+            "evidence_reconciliation": {
+                "status": "reconciled_clean",
+                "assessed_at": "2026-06-11T12:00:00Z",
+            },
+            "history": [{"status": "succeeded", "timestamp": "2026-06-10T10:00:00Z"}],
+        },
+    ]
+    client = _client(
+        tmp_path,
+        snapshot=_snapshot(),
+        execution_records=records,
+    )
+
+    response = client.get(
+        "/api/v1/governance/finops/verified-remediations?subscription=sub-a",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert [item["execution_id"] for item in response.json()["data"]["executions"]] == [
+        "verified"
+    ]
 
 
 def test_access_review_pack_is_served_per_audience(tmp_path):
