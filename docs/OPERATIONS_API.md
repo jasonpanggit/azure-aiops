@@ -1697,6 +1697,36 @@ declaration. Ambiguous writes disable submission until explicit retained reload;
 there is no automatic POST replay. This is personal workflow state, not shared
 team ownership or audited provider repair evidence.
 
+### Defender image units, mapping evidence and owner review
+
+Exposure list/overview/facet responses can include `distinct_counts` with
+`targets`, `weaknesses` and `recorded_digests`. These are separate
+`COUNT_BIG(DISTINCT NULLIF(LOWER(identifier), ''))` aggregates in the existing
+authorized, generation-pinned, filtered SQL count query. They are not derived
+from loaded cursor rows. Missing aggregate fields remain unknown for older
+sources; an explicit zero recorded digest count means no nonblank digest strings
+in this query, not that no images are deployed. Empty identifiers are excluded;
+case is normalized. Counts are not distinct running-workload counts.
+
+Defender severity acquisition waits for the findings generation, validates both
+envelope/contract scope and generation, and rejects invalid/duplicate/over-total
+facet counts. Missing vocabulary never becomes a page-derived global critical
+headline. Partial classification charts state their classified-only denominator
+and expose the unclassified remainder. Independent errors offer explicit retry.
+Links to priorities preserve the effective scope, generation and filters.
+
+Per-finding image mapping inspection displays the recorded digest,
+deployment-state vocabulary and represented/total/unknown workload counts.
+Missing mapping fields remain unknown. Repeated image-finding rows must not
+be summed into unique workloads; recorded identifiers alone do not prove
+current deployment, reachability, ownership or remediation.
+
+Image owner review uses the same exact-principal/scope immutable review-batch
+API described above, with `target_kind=container_image` and the source selectors
+included in server reacquisition. Prior server batches remain explicitly
+identified in the shared personal history. Ownership is a personal declaration,
+not a notification, delivered assignment, execution plan or verification.
+
 ### Situation handover annotations and observed comparisons
 
 `GET /api/v1/situations/{situation_id}/notes` reauthorizes the live Situation

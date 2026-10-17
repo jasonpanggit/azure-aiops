@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   exposureItems: vi.fn(),
   exposureFacets: vi.fn(),
+  patchReviews: vi.fn(),
   defenderOverview: vi.fn(),
   defenderAlerts: vi.fn(),
   defenderAttackPaths: vi.fn(),
@@ -48,6 +49,7 @@ function envelope(nextCursor: string | null = null) {
   return {
     data: {
       total_count: 7,
+      distinct_counts: { targets: 2, weaknesses: 3, recorded_digests: 1 },
       generation,
       next_cursor: nextCursor,
       applied: {
@@ -116,6 +118,7 @@ function facetsEnvelope() {
       generation,
       completeness,
       freshness,
+      contract: envelope().data.contract,
       facets: {
         severity: [
           { value: "critical", count: 5 },
@@ -138,6 +141,8 @@ describe("DefenderPosturePage bounded read model", () => {
     authorized.scope = { subscription: ["sub-1"] };
     api.exposureItems.mockResolvedValue(envelope("opaque-next-cursor"));
     api.exposureFacets.mockResolvedValue(facetsEnvelope());
+    api.patchReviews.mockResolvedValue({ data: { schema_version: 1, actor: "reader", scope: { subscription: ["sub-1"] }, revision: 0, batches: [] },
+      scope: { subscription: ["sub-1"] }, evidence: [], warnings: [] });
     for (const method of [
       "defenderOverview",
       "defenderAlerts",
@@ -159,6 +164,13 @@ describe("DefenderPosturePage bounded read model", () => {
     expect(screen.getByText("CVE-2026-2001")).toBeInTheDocument();
     expect(screen.getByText("Update the affected image")).toBeInTheDocument();
     expect(screen.getByText("Review only. Nothing executes from Exposure.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Distinct image targets value")).toHaveTextContent("2");
+    expect(screen.getByLabelText("Distinct weakness identifiers value")).toHaveTextContent("3");
+    expect(screen.getByLabelText("Recorded image digest identifiers value")).toHaveTextContent("1");
+    fireEvent.click(screen.getByText("Inspect image mapping for CVE-2026-2001"));
+    expect(screen.getByText(/deployment mapping: unknown/)).toBeVisible();
+    expect(screen.getByText(/never sum them into distinct workload totals/)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Prepare an image owner review" })).toBeVisible();
 
     expect(api.exposureItems).toHaveBeenCalledTimes(1);
     const state = api.exposureItems.mock.calls[0][0];
@@ -192,8 +204,46 @@ describe("DefenderPosturePage bounded read model", () => {
       source_family: "defender_image",
       target_kind: "container_image",
     });
+    expect(state.generation).toBe(generation);
 
     expect(screen.getByLabelText("Critical findings value")).toHaveTextContent("5");
+  });
+
+  it("waits for the page generation before acquiring aggregates", async () => {
+    let resolve!: (value: ReturnType<typeof envelope>) => void;
+    api.exposureItems.mockImplementation(() => new Promise(done => { resolve = done; }));
+    render(<DefenderPosturePage />);
+    expect(api.exposureFacets).not.toHaveBeenCalled();
+    resolve(envelope());
+    await screen.findByText("Severity mix (all findings)");
+    expect(api.exposureFacets).toHaveBeenCalledTimes(1);
+    expect(api.exposureFacets.mock.calls[0][0].generation).toBe(generation);
+  });
+
+  it.each(["generation", "scope", "counts", "total"])("rejects inconsistent aggregate %s instead of a page-derived headline", async damage => {
+    const result = facetsEnvelope();
+    if (damage === "generation") result.data.generation = "other-generation";
+    else if (damage === "scope") result.scope = { subscription: ["other"] };
+    else if (damage === "counts") result.data.facets.severity[0].count = 8;
+    else result.data.total_count = 8;
+    api.exposureFacets.mockResolvedValue(result);
+    render(<DefenderPosturePage />);
+    await screen.findByText(damage === "counts" ? /counts are inconsistent/ : damage === "total" ? /total does not match/ : /do not match/);
+    expect(screen.getByLabelText("Critical findings value")).toHaveTextContent("—");
+    expect(screen.getByText("Severity mix (loaded rows only)")).toBeVisible();
+  });
+
+  it("keeps missing distinct counts and unclassified severity unknown", async () => {
+    api.exposureItems.mockResolvedValue({ ...envelope(), data: { ...envelope().data, distinct_counts: undefined } });
+    api.exposureFacets.mockResolvedValue({ ...facetsEnvelope(), data: { ...facetsEnvelope().data, facets: { severity: [{ value: "high", count: 2 }] } } });
+    render(<DefenderPosturePage />);
+    await screen.findByText("Severity mix (classified findings only)");
+    expect(screen.getByLabelText("Critical findings value")).toHaveTextContent("—");
+    expect(screen.getByLabelText("Distinct image targets value")).toHaveTextContent("—");
+    expect(screen.getByText(/5 matching findings are not represented/)).toBeVisible();
+    const target = new URL(screen.getByRole("link", { name: "Open all priorities" }).getAttribute("href")!, "http://localhost");
+    expect(target.searchParams.get("generation")).toBe(generation);
+    expect(target.searchParams.get("subscription")).toBe("sub-1");
   });
 
   it("shows an honest unavailable state when the bounded request fails", async () => {

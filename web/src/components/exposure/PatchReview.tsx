@@ -22,7 +22,7 @@ function validate(result: Envelope<PatchReviewHistory>, query: ExposureQueryStat
 }
 
 /** Explicit bounded personal review snapshots; no executable plans or approval transitions. */
-export function PatchReview({ query, rows, ready }: { query: ExposureQueryState; rows: ExposureFinding[]; ready: boolean }) {
+export function PatchReview({ query, rows, ready, imageOwner = false }: { query: ExposureQueryState; rows: ExposureFinding[]; ready: boolean; imageOwner?: boolean }) {
   const [history, setHistory] = useState<PatchReviewHistory | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [owner, setOwner] = useState(""), [note, setNote] = useState("");
@@ -64,12 +64,13 @@ export function PatchReview({ query, rows, ready }: { query: ExposureQueryState;
       setError(reason instanceof Error ? reason.message : "Patch review outcome unconfirmed."); setUncertain(true);
     } finally { if (active.current && id === requestId.current) setBusy(false); }
   }
-  return <section className="card queue-card exposure-recovery" aria-label="Review-only patch batches">
-    <div className="card-header"><div><h2>Prepare a review-only batch</h2>
+  return <section className="card queue-card exposure-recovery" aria-label={imageOwner ? "Review-only image owner batches" : "Review-only patch batches"}>
+    <div className="card-header"><div><h2>{imageOwner ? "Prepare an image owner review" : "Prepare a review-only batch"}</h2>
       <p>Select up to 25 findings from this page for a personal immutable review snapshot.</p></div></div>
     <div className="card-body">
       <p>The server reauthorizes and reads this exact generation and query page again. Selection is not an execution plan, approval, maintenance schedule or verified fix.
         Owner is a declaration, not a delivered assignment. Up to 20 batches and 256 KiB are retained without automatic eviction.</p>
+      {imageOwner && <p>This is the same private Exposure review history used by Patch priorities. Previous batches can include server findings; inspect each retained target kind and identity before review.</p>}
       <button type="button" className="button" disabled={busy} onClick={() => void load(false)}>Reload patch review batches</button>
       {busy && <p role="status">Reading patch review state…</p>}
       {error && <p role="alert">{error} No save success is asserted. Reload before retrying; a lost reply may still have persisted.</p>}
@@ -96,7 +97,7 @@ export function PatchReview({ query, rows, ready }: { query: ExposureQueryState;
           <h3>{batch.batch_id}</h3><p>{batch.note}</p>
           <p>Declared owner: {batch.owner || "unassigned"}; capture: {batch.captured_at}; generation: {batch.generation};
             source observed: {batch.source_observed_at || "unreported"}; source evidence: {batch.source_completeness}.</p>
-          <ul>{batch.findings.map(row => <li key={row.exposure_id}>{row.weakness_id}: {row.target_id}; severity {row.severity}; SLA {row.sla_state}; evidence {row.completeness}.</li>)}</ul>
+          <ul>{batch.findings.map(row => <li key={row.exposure_id}>{row.weakness_id}: {row.target_id}; target kind {row.target_kind}; severity {row.severity}; SLA {row.sla_state}; evidence {row.completeness}.</li>)}</ul>
         </div>)}
       </details>
     </div>

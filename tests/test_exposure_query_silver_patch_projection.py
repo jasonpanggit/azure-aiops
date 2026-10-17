@@ -88,3 +88,5 @@ def test_silver_patch_projection_derives_finding_title_from_update_name() -> Non
         schema="dbo",
     )
     assert "NULLIF([update_name], '') AS [finding_title]" in compiled.page_sql
+    for column in ("target_id", "weakness_id", "image_digest"):
+        assert f"COUNT_BIG(DISTINCT NULLIF(LOWER([{column}]), ''))" in compiled.count_sql

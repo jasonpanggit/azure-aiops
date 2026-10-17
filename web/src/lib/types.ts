@@ -952,6 +952,7 @@ export interface ExposureCursorPagination {
 }
 
 export interface ExposurePage<TItem = ExposureFinding> {
+  distinct_counts?: { targets?: number; weaknesses?: number; recorded_digests?: number };
   total_count: number;
   items: TItem[];
   next_cursor: string | null;
@@ -963,6 +964,7 @@ export interface ExposurePage<TItem = ExposureFinding> {
 }
 
 export interface ExposureOverview {
+  distinct_counts?: { targets?: number; weaknesses?: number; recorded_digests?: number };
   total_count: number;
   generation: string;
   applied: ExposureAppliedQuery;

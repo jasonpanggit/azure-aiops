@@ -473,6 +473,7 @@ class ExposureQueryPage:
     completeness: dict[str, Any] = field(default_factory=dict)
     freshness: dict[str, Any] = field(default_factory=dict)
     next_cursor: str | None = None
+    distinct_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1113,6 +1114,13 @@ class ExposureQueryService:
             else 0
         )
         count_row = count_rows[0] if count_rows else {}
+        distinct_counts = {}
+        for name in ("targets", "weaknesses", "recorded_digests"):
+            value = count_row.get(f"distinct_{name}")
+            if value is not None:
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > total_count:
+                    raise ValueError("Exposure distinct counts are inconsistent")
+                distinct_counts[name] = value
         self._metrics.record_query(
             operation="count",
             duration_ms=(self._clock() - count_started) * 1000.0,
@@ -1218,6 +1226,7 @@ class ExposureQueryService:
             completeness=completeness,
             freshness=freshness,
             next_cursor=next_cursor,
+            distinct_counts=distinct_counts,
         )
 
     def catalog_item(
@@ -1882,6 +1891,9 @@ def _compile_queries(
     count_sql = (
         f"{scoped_cte} "
         "SELECT COUNT_BIG(DISTINCT [exposure_id]) AS [total_count], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([target_id]), '')) AS [distinct_targets], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([weakness_id]), '')) AS [distinct_weaknesses], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([image_digest]), '')) AS [distinct_recorded_digests], "
         "MAX([timestamp]) AS [freshest_at], "
         "MIN(CASE WHEN [completeness] = 'complete' THEN 1 ELSE 0 END) "
         "AS [all_complete] "
@@ -2205,6 +2217,9 @@ def _compile_silver_patch_queries(
     all_parameters = (*parameters, *filter_parameters)
     count_sql = (
         f"{scoped_cte} SELECT COUNT_BIG(DISTINCT [exposure_id]) AS [total_count], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([target_id]), '')) AS [distinct_targets], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([weakness_id]), '')) AS [distinct_weaknesses], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([image_digest]), '')) AS [distinct_recorded_digests], "
         "MAX([timestamp]) AS [freshest_at], "
         "MIN(CASE WHEN [completeness] = 'complete' THEN 1 ELSE 0 END) AS [all_complete] "
         "FROM [scoped]"

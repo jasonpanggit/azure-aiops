@@ -5772,6 +5772,13 @@ body.topology-fullscreen-open {
 .exposure-recovery-event {
   padding-block: 16px;
   border-bottom: 1px solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+
+.exposure-defender-page .exposure-finding-row summary {
+  min-height: 44px;
+  padding-block: 10px;
+  cursor: pointer;
 }
 
 .exposure-recovery .patch-review-selection {

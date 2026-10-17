@@ -127,6 +127,33 @@ def test_invalid_requests_cannot_supply_source_or_execution_fields(tmp_path, mon
     assert client.post(PATH, headers=AUTH, json={**request().model_dump(), **extra}).status_code == 400
 
 
+def test_image_owner_review_reauthorizes_image_selectors_and_retains_target_kind(tmp_path, monkeypatch):
+    from api.routers import vulnerability
+    client, _, _ = routes(tmp_path, monkeypatch)
+    raw = source()
+    raw["items"][0].update(target_kind="container_image", target_id="sha256:" + "a" * 64, weakness_id="CVE-2026-2001")
+    calls = []
+
+    def acquire(**kwargs):
+        calls.append(kwargs)
+        return ExposureQueryPage(
+            items=tuple(raw["items"]), total_count=100, facets={}, generation="gen-one", applied_scope=SCOPE,
+            applied_filters=(), applied_sort={"field": "priority_score", "direction": "desc"}, next_position=None,
+            completeness=raw["completeness"], freshness=raw["freshness"],
+        )
+
+    monkeypatch.setattr(vulnerability, "_query_exposure_page", acquire)
+    response = client.post(PATH, headers=AUTH, json=request(filters={"target_kind": "container_image", "source_family": "defender_image"}).model_dump())
+    assert response.status_code == 201, response.text
+    assert calls[0]["target_kind"] == "container_image"
+    assert calls[0]["source_family"] == "defender_image"
+    assert calls[0]["generation_id"] == "gen-one"
+    finding = response.json()["data"]["batches"][0]["findings"][0]
+    assert finding["target_kind"] == "container_image"
+    assert finding["target_id"] == "sha256:" + "a" * 64
+    assert finding["weakness_id"] == "CVE-2026-2001"
+
+
 def test_failed_persistence_never_reports_success(tmp_path, monkeypatch):
     store = PatchReviewStore(OneLakeDocumentStore(tmp_path))
 
