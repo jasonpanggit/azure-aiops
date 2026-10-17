@@ -1727,6 +1727,29 @@ included in server reacquisition. Prior server batches remain explicitly
 identified in the shared personal history. Ownership is a personal declaration,
 not a notification, delivered assignment, execution plan or verification.
 
+### CVE fix evidence matrix
+
+The CVE portal matrix joins no external identifiers to inventory by inference.
+It separates durable MSRC KB associations and recorded `product_ids` from
+the authorized loaded finding rows that explicitly name a `missing_kb`.
+NVD KB associations without a durable MSRC record retain unknown provider status.
+Missing row mappings are unknown, not evidence that no update is required.
+Product/OS versions, prerequisites, supersedence, reboot requirements and verified
+fixed versions are outside the current catalog projection and remain unreported.
+Catalog identifiers are not an applicability or installation recommendation;
+the UI no longer chooses an update by alphabetical order.
+
+Both source envelopes must match the requested CVE/effective scope and query
+generation before the matrix is rendered. Catalog generation is a query binding,
+not proof that independently timestamped provider records were observed together.
+The matrix is page-local, with its loaded/matching denominator explicit.
+Source status, staleness, last-known-good presence and provider observation time
+remain visible. KB navigation pins the actual loaded finding generation.
+URL/scope/CVE changes remount local filters, dialogs and acquisition state so
+previous local filtering and asynchronous evidence cannot survive that boundary.
+Retained CVE revision comparisons and immutable evidence bundles are separate,
+not delivered by this current-source matrix.
+
 ### Situation handover annotations and observed comparisons
 
 `GET /api/v1/situations/{situation_id}/notes` reauthorizes the live Situation

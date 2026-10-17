@@ -5781,6 +5781,12 @@ body.topology-fullscreen-open {
   cursor: pointer;
 }
 
+.cve-fix-matrix summary {
+  min-height: 44px;
+  padding-block: 8px;
+  cursor: pointer;
+}
+
 .exposure-recovery .patch-review-selection {
   display: flex;
   align-items: center;

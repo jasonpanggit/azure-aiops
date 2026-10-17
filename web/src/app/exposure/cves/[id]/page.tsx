@@ -13,6 +13,7 @@ import {
   type RiskExceptionRevokeResult,
 } from "@/components/exposure/RiskExceptionDialog";
 import { SourceFreshnessRail } from "@/components/exposure/SourceFreshnessRail";
+import { CveFixMatrix } from "@/components/exposure/CveFixMatrix";
 import { AttackPathGraphView } from "@/components/ui/AttackPathGraphView";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -299,7 +300,7 @@ function catalogDetail(
     affected_applications: [],
     affected_business_services: [],
     findings: [],
-    recommended_patch: Array.from(associatedKbs).sort()[0] ?? "",
+    recommended_patch: "",
   };
 }
 
@@ -451,8 +452,7 @@ function Section({
   );
 }
 
-/** Scoped CVE detail with independent core, graph, and enrichment state. */
-export default function CveDetailPage({ params }: { params: { id: string } }) {
+function CveDetailBody({ params }: { params: { id: string } }) {
   const cveId = decodeURIComponent(params.id);
   const { scope } = useScope();
   const router = useRouter();
@@ -650,7 +650,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
         : "Validate applicability, reachability, and business impact before scheduling the recommended update through the governed remediation workflow.";
 
   const kbHref = (kbId: string) =>
-    exposureDetailHref("kbs", kbId, queryState, detailContext);
+    exposureDetailHref("kbs", kbId, { ...queryState, generation: findings.data?.generation ?? queryState.generation }, detailContext);
 
   async function recordRiskException(
     request: RiskExceptionRecordRequest,
@@ -987,17 +987,19 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
                 </div>
                 <p>{remediationGuidance}</p>
                 <p className="muted">
-                  Recommended update:{" "}
+                  Selected update:{" "}
                   {data?.recommended_patch ? (
                     <Link className="table-primary-link" href={kbHref(data.recommended_patch)}>
                       {data.recommended_patch}
                     </Link>
                   ) : (
-                    "No durable update mapping is available"
+                    "None. Catalog associations do not establish applicability; review the fix evidence matrix."
                   )}
                   . Approval and execution remain in the governed remediation workflow.
                 </p>
               </section>
+              <CveFixMatrix cveId={cveId} catalog={catalog.data} catalogScope={catalog.envelope?.scope ?? {}}
+                page={findingPage} pageScope={findings.envelope?.scope ?? {}} query={findingState} kbHref={kbHref} />
 
               {containerOnly ? (
                 <section role="region" aria-label="Attack path section">
@@ -1255,4 +1257,12 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
       />
     </div>
   );
+}
+
+/** Isolates local CVE filters, dialogs and asynchronous evidence at the URL/scope boundary. */
+export default function CveDetailPage({ params }: { params: { id: string } }) {
+  const { scope } = useScope();
+  const searchParams = useSearchParams();
+  const query = parseExposureQueryState(new URLSearchParams(searchParams.toString()), { authorizedScope: scope });
+  return <CveDetailBody key={`${params.id}:${exposureQueryKey(query)}`} params={params} />;
 }

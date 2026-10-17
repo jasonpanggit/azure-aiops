@@ -359,6 +359,7 @@ function deferred<T>() {
 describe("CVE detail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authorizedScope.subscription = ["sub-1"];
     navigation.params = new URLSearchParams(
       "subscription=sub-1&q=kernel&severity=critical&sort_by=severity&sort_direction=asc&page_size=25&origin=%2Fexposure%2Fpatch-priorities&row=exposure-1&scroll=640&generation=generation-25",
     );
@@ -793,6 +794,63 @@ describe("CVE detail", () => {
       reason: "Compensating network control is active",
       expires_at: expect.stringMatching(/^2026-10-01T\d{2}:30:00\.000Z$/),
     });
+  });
+
+  it("separates public fix associations from loaded asset applicability", async () => {
+    renderPage();
+    const matrix = await screen.findByRole("region", { name: "CVE fix evidence matrix" });
+    await within(matrix).findByRole("table");
+    expect(within(matrix).getByText("Unknown; no product identifiers recorded")).toBeVisible();
+    expect(within(matrix).getByText(/1 loaded rows explicitly name this KB/)).toBeVisible();
+    expect(within(matrix).getByText(/Applicability is unverified. Confirm product/)).toBeVisible();
+    expect(screen.getByText(/None. Catalog associations do not establish applicability/)).toBeVisible();
+    fireEvent.click(within(matrix).getByText("Inspect mapped targets for KB600001"));
+    expect(within(matrix).getByText(/server: server-1; finding exposure-1/)).toBeVisible();
+    const link = within(matrix).getByRole("link", { name: "KB600001" });
+    const destination = new URL(link.getAttribute("href")!, "http://localhost");
+    expect(destination.searchParams.get("generation")).toBe("generation-25");
+    expect(destination.searchParams.get("subscription")).toBe("sub-1");
+  });
+
+  it("displays recorded product identifiers with stale source status, never invented versions", async () => {
+    const catalog = externalCatalogEnvelope();
+    const source = catalog.data.item.sources["msrc:KB600001"];
+    source.payload = { ...source.payload, product_ids: ["product-a", "product-b"] };
+    source.stale = true;
+    api.exposureExternalCatalog.mockResolvedValue(catalog);
+    api.exposureItems.mockResolvedValue({ ...findingsEnvelope(), data: { ...findingsEnvelope().data,
+      items: [{ ...findingsEnvelope().data.items[0], missing_kb: undefined }] } });
+    renderPage();
+    const matrix = await screen.findByRole("region", { name: "CVE fix evidence matrix" });
+    await within(matrix).findByRole("table");
+    expect(within(matrix).getByText("product-a, product-b")).toBeVisible();
+    expect(within(matrix).getByText(/MSRC KB600001: succeeded; stale/)).toBeVisible();
+    expect(within(matrix).getByText(/1 loaded findings have no recorded per-row KB association/)).toBeVisible();
+    expect(within(matrix).getByText(/verified fixed versions are not supplied/)).toBeVisible();
+  });
+
+  it.each(["generation", "scope", "cve"])("refuses a mixed %s fix matrix", async damage => {
+    const catalog = externalCatalogEnvelope();
+    if (damage === "generation") catalog.data.generation = "other-generation";
+    else if (damage === "scope") catalog.scope = { subscription: ["other"] };
+    else catalog.data.item.cve_id = "CVE-2026-9999";
+    api.exposureExternalCatalog.mockResolvedValue(catalog);
+    renderPage();
+    const matrix = await screen.findByRole("region", { name: "CVE fix evidence matrix" });
+    expect(await within(matrix).findByText(/Fix evidence is unavailable until/)).toBeVisible();
+    expect(within(matrix).queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("remounts local finding state when the authorized scope changes", async () => {
+    const view = renderPage();
+    await screen.findByRole("heading", { name: "Findings" });
+    navigation.params = new URLSearchParams("generation=generation-25");
+    authorizedScope.subscription = ["sub-2"];
+    view.rerender(<FluentProvider theme={webLightTheme}><CveDetailPage params={{ id: "CVE-2026-0001" }} /></FluentProvider>);
+    await waitFor(() => expect(api.exposureItems.mock.lastCall?.[0].scope).toEqual({ subscription: ["sub-2"] }));
+    expect(api.exposureExternalCatalog.mock.lastCall?.[1]).toEqual({ subscription: ["sub-2"] });
+    const matrix = await screen.findByRole("region", { name: "CVE fix evidence matrix" });
+    expect(within(matrix).queryByRole("table")).not.toBeInTheDocument();
   });
 
   it("reports an audited success separately when post-record refresh fails", async () => {
