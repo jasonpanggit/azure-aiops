@@ -558,8 +558,32 @@ class NetworkTopology:
             name: [] for name in collection_totals
         }
 
-        def serialized_size(payload: dict[str, Any]) -> int:
-            return len(json.dumps(payload).encode())
+        serialized_value_sizes: dict[int, tuple[Any, int]] = {}
+
+        def serialized_size(value: Any) -> int:
+            if isinstance(value, (dict, list, tuple)):
+                cached = serialized_value_sizes.get(id(value))
+                if cached is not None and cached[0] is value:
+                    return cached[1]
+                if isinstance(value, dict):
+                    if any(not isinstance(key, str) for key in value):
+                        return len(json.dumps(value).encode())
+                    size = 2 + sum(
+                        len(json.dumps(key))
+                        + 2
+                        + serialized_size(item)
+                        + (2 if index else 0)
+                        for index, (key, item) in enumerate(value.items())
+                    )
+                else:
+                    size = 2 + sum(
+                        serialized_size(item)
+                        + (2 if index else 0)
+                        for index, item in enumerate(value)
+                    )
+                serialized_value_sizes[id(value)] = (value, size)
+                return size
+            return len(json.dumps(value).encode())
 
         def resource_payload(count: int) -> dict[str, Any]:
             return serialize(
@@ -1285,17 +1309,26 @@ def _topology_resources(
         for nic in snapshot.nics
         if detail == "full" or nic.attached_resource_id or nic.nsg_id
     )
-    nodes.extend(
-        _resource_node(
-            nsg,
-            details={
-                "rules": [_nsg_rule_summary(rule) for rule in nsg.ordered_rules()],
-                "custom_rule_count": len([rule for rule in nsg.rules if not rule.is_default]),
-                "effective_rule_count": len(nsg.effective_rules()),
-            },
+    for nsg in snapshot.nsgs:
+        effective_rules = nsg.effective_rules()
+        nodes.append(
+            _resource_node(
+                nsg,
+                details={
+                    "rules": [
+                        _nsg_rule_summary(rule)
+                        for rule in sorted(
+                            effective_rules,
+                            key=lambda rule: (rule.priority, rule.name),
+                        )
+                    ],
+                    "custom_rule_count": len(
+                        [rule for rule in nsg.rules if not rule.is_default]
+                    ),
+                    "effective_rule_count": len(effective_rules),
+                },
+            )
         )
-        for nsg in snapshot.nsgs
-    )
     if detail == "full":
         nodes.extend(_resource_node(rule) for nsg in snapshot.nsgs for rule in nsg.rules)
     nodes.extend(
