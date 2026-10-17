@@ -232,6 +232,156 @@
       "endpoint": "rule_findings",
       "path": ["evidence", "*", "freshness_source_family"],
       "introduced_by": "03.1-main-integration"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "region"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "criticality"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "support_team"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "destination_ip_groups"],
+      "introduced_by": "4fb378acf"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "fqdn_tags"],
+      "introduced_by": "4fb378acf"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "group_priority"],
+      "introduced_by": "4fb378acf"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rules", "*", "destination_ip_groups"],
+      "introduced_by": "4fb378acf"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rules", "*", "fqdn_tags"],
+      "introduced_by": "4fb378acf"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rule_collections", "*", "criticality"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rule_collections", "*", "group_priority"],
+      "introduced_by": "4fb378acf"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rule_collections", "*", "region"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rule_collections", "*", "support_team"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rule_collections", "*", "rules", "*", "criticality"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rule_collections", "*", "rules", "*", "destination_ip_groups"],
+      "introduced_by": "4fb378acf"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rule_collections", "*", "rules", "*", "fqdn_tags"],
+      "introduced_by": "4fb378acf"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rule_collections", "*", "rules", "*", "region"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "rule_collections", "*", "rules", "*", "support_team"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "routes", "*", "criticality"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "routes", "*", "region"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "resources", "*", "details", "routes", "*", "support_team"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "relationships", "*", "details", "criticality"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "relationships", "*", "details", "destination_ip_groups"],
+      "introduced_by": "4fb378acf"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "relationships", "*", "details", "fqdn_tags"],
+      "introduced_by": "4fb378acf"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "relationships", "*", "details", "region"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "relationships", "*", "details", "support_team"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "shared_services", "*", "criticality"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "shared_services", "*", "region"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "topology",
+      "path": ["data", "topology", "shared_services", "*", "support_team"],
+      "introduced_by": "a3bcbecb9"
+    },
+    {
+      "endpoint": "gaps",
+      "path": ["data", "gaps", "*", "reviewed_digest"],
+      "introduced_by": "db9eef319"
+    },
+    {
+      "endpoint": "rule_findings",
+      "path": ["data", "findings", "*", "reviewed_digest"],
+      "introduced_by": "db9eef319"
     }
   ],
   "canvas_interactivity": {

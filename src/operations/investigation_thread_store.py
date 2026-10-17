@@ -1005,10 +1005,18 @@ def configure_thread_store(
     exists on exactly one replica.
     """
 
-    _THREAD_STORE.documents = documents
-    if documents is not None:
-        for record in list(_THREAD_STORE._threads.values()):
-            _THREAD_STORE._persist(record)
+    with _THREAD_STORE._lock:
+        current_documents = _THREAD_STORE.documents
+        if current_documents is documents:
+            return _THREAD_STORE
+        if current_documents is not None:
+            _THREAD_STORE._threads.clear()
+            _THREAD_STORE._durable_continuation = None
+        _THREAD_STORE.documents = documents
+        if documents is not None:
+            for record in list(_THREAD_STORE._threads.values()):
+                if record.durability == DURABILITY_MEMORY_ONLY:
+                    _THREAD_STORE._persist(record)
     return _THREAD_STORE
 
 

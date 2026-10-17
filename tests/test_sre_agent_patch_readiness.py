@@ -1986,11 +1986,11 @@ def test_secret_metadata_rejects_secret_values() -> None:
     "secret_id",
     [
         (
-            "https://aiops-dev-kv-g6ludc.vault.azure.net/"
+            "https://aiops-example-kv.vault.azure.net/"
             "secrets/sre-agent-http-trigger-url"
         ),
         (
-            "https://aiops-dev-kv-g6ludc.vault.azure.net/"
+            "https://aiops-example-kv.vault.azure.net/"
             "secrets/wrong-name/00000000000000000000000000000001"
         ),
     ],
@@ -2033,7 +2033,7 @@ def test_same_name_and_version_in_other_vault_is_rejected() -> None:
     module = _load_module()
     secret = _fixture(SECRET_FIXTURE)
     other_id = (
-        "https://other-vault.vault.azure.net/secrets/"
+        "https://other-example-vault.vault.azure.net/secrets/"
         f"{module.SECRET_NAME}/{SECRET_VERSION}"
     )
     secret["secretReference"]["keyVaultSecretId"] = other_id

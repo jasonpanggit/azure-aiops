@@ -700,8 +700,14 @@ def test_unavailable_cve_recheck_uses_guarded_narration_and_qualifies_snapshot(
     narration = ledger["synthesis"]["narration"]
     assert ledger["synthesis"]["mode"] == "deterministic"
     assert "No affected resources exist" not in narration
-    assert "1 scoped findings" in narration
-    assert "qualified visible context, not current truth" in narration
+    assert (
+        "scoped exposure and affected active finding counts are unavailable"
+        in narration
+    )
+    assert (
+        "page snapshot is retained only as non-authoritative visible context"
+        in narration
+    )
 
 
 def test_empty_cve_recheck_uses_scoped_deterministic_narration(

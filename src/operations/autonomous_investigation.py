@@ -1554,7 +1554,14 @@ def configure_ledger_store(
         raise TypeError(
             "durable orchestration storage requires bounded thread listing and deletion"
         )
-    _LEDGER_STORE.documents = documents
+    current_documents = _LEDGER_STORE.documents
+    if current_documents is not documents:
+        if current_documents is not None:
+            _LEDGER_STORE.ledgers.clear()
+        _LEDGER_STORE.documents = documents
+    else:
+        configure_thread_store(documents)
+        return _LEDGER_STORE
     configure_thread_store(documents)
     if documents is not None:
         for ledger in list(_LEDGER_STORE.ledgers.values()):

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import yaml
 
 from fabric.commands import FabricCommandService
 from fabric.config import FabricRuntimeConfig
@@ -136,9 +137,13 @@ def test_fabric_runtime_config_preserves_onelake_source_root(
 
 
 def test_deploy_config_uses_durable_combined_snapshot_root() -> None:
-    config = FabricRuntimeConfig.load(
-        Path(__file__).parents[1] / "fabric.config.deploy.yaml"
-    )
+    config_path = Path(__file__).parents[1] / "fabric.config.deploy.yaml"
+    config = FabricRuntimeConfig.load(config_path)
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
     assert isinstance(config.source_data_root, str)
     assert config.source_data_root == DEPLOY_SOURCE_ROOT
+    assert raw["fabric"]["gold_grounding_agent"] == {
+        "item_id": "8a8cf431-f881-46a0-b669-463d4c1d5535",
+        "display_name": "AI Ops Data Agent",
+    }

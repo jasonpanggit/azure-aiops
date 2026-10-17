@@ -26,6 +26,7 @@ from tests.network_baseline import (
     BASELINE_PATH,
     BaselineArtifactInvalidError,
     BaselineArtifactMissingError,
+    _onboarding_for_snapshot,
     capture_default_responses,
     load_baseline,
     without_allowed_additive_keys,
@@ -120,6 +121,253 @@ EXPECTED_ADDITIVE_KEYS = {
         ("evidence", "*", "freshness_source_family"),
         "03.1-main-integration",
     ),
+    (
+        "topology",
+        ("data", "topology", "resources", "*", "details", "region"),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        ("data", "topology", "resources", "*", "details", "criticality"),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        ("data", "topology", "resources", "*", "details", "support_team"),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        ("data", "topology", "resources", "*", "details", "destination_ip_groups"),
+        "4fb378acf",
+    ),
+    (
+        "topology",
+        ("data", "topology", "resources", "*", "details", "fqdn_tags"),
+        "4fb378acf",
+    ),
+    (
+        "topology",
+        ("data", "topology", "resources", "*", "details", "group_priority"),
+        "4fb378acf",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "rules",
+            "*",
+            "destination_ip_groups",
+        ),
+        "4fb378acf",
+    ),
+    (
+        "topology",
+        ("data", "topology", "resources", "*", "details", "rules", "*", "fqdn_tags"),
+        "4fb378acf",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "rule_collections",
+            "*",
+            "criticality",
+        ),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "rule_collections",
+            "*",
+            "group_priority",
+        ),
+        "4fb378acf",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "rule_collections",
+            "*",
+            "region",
+        ),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "rule_collections",
+            "*",
+            "support_team",
+        ),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "rule_collections",
+            "*",
+            "rules",
+            "*",
+            "criticality",
+        ),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "rule_collections",
+            "*",
+            "rules",
+            "*",
+            "destination_ip_groups",
+        ),
+        "4fb378acf",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "rule_collections",
+            "*",
+            "rules",
+            "*",
+            "fqdn_tags",
+        ),
+        "4fb378acf",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "rule_collections",
+            "*",
+            "rules",
+            "*",
+            "region",
+        ),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "rule_collections",
+            "*",
+            "rules",
+            "*",
+            "support_team",
+        ),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        ("data", "topology", "resources", "*", "details", "routes", "*", "criticality"),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        ("data", "topology", "resources", "*", "details", "routes", "*", "region"),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        (
+            "data",
+            "topology",
+            "resources",
+            "*",
+            "details",
+            "routes",
+            "*",
+            "support_team",
+        ),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        ("data", "topology", "relationships", "*", "details", "criticality"),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        ("data", "topology", "relationships", "*", "details", "destination_ip_groups"),
+        "4fb378acf",
+    ),
+    (
+        "topology",
+        ("data", "topology", "relationships", "*", "details", "fqdn_tags"),
+        "4fb378acf",
+    ),
+    (
+        "topology",
+        ("data", "topology", "relationships", "*", "details", "region"),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        ("data", "topology", "relationships", "*", "details", "support_team"),
+        "a3bcbecb9",
+    ),
+    (
+        "topology",
+        ("data", "topology", "shared_services", "*", "criticality"),
+        "a3bcbecb9",
+    ),
+    ("topology", ("data", "topology", "shared_services", "*", "region"), "a3bcbecb9"),
+    (
+        "topology",
+        ("data", "topology", "shared_services", "*", "support_team"),
+        "a3bcbecb9",
+    ),
+    ("gaps", ("data", "gaps", "*", "reviewed_digest"), "db9eef319"),
+    ("rule_findings", ("data", "findings", "*", "reviewed_digest"), "db9eef319"),
 }
 EXPECTED_EXPORT_KEYS = (
     "exported_at",
@@ -255,8 +503,7 @@ def assert_final_topology_shape(
         for resource in topology["resources"]
     )
     assert all(
-        peer["peer_resolution"]
-        in {"not_ingested", "excluded_by_scope", "observed"}
+        peer["peer_resolution"] in {"not_ingested", "excluded_by_scope", "observed"}
         for peer in topology["unresolved_peers"]
     )
 
@@ -291,9 +538,7 @@ def assert_collection_coverage(response: dict[str, Any], collection: str) -> Non
     assert set(coverage) == {"total", "returned", "truncated"}
     assert coverage["returned"] == len(response["data"][collection])
     assert coverage["returned"] <= coverage["total"]
-    assert coverage["truncated"] is (
-        coverage["returned"] < coverage["total"]
-    )
+    assert coverage["truncated"] is (coverage["returned"] < coverage["total"])
     if coverage["truncated"]:
         assert response.get("warnings"), (
             f"bounded {collection} response omitted its envelope warning"
@@ -310,9 +555,7 @@ def measure_scale_gates(
 ) -> dict[str, dict[str, int | float | bool]]:
     """Measure G-1 through G-3 on the fixtures assigned by RESEARCH."""
     small_payload = build_topology(small_snapshot).to_dict(detail="summary")
-    enterprise_payload = build_topology(enterprise_snapshot).to_dict(
-        detail="summary"
-    )
+    enterprise_payload = build_topology(enterprise_snapshot).to_dict(detail="summary")
     for _ in range(G3_WARMUP_COUNT):
         build_topology(enterprise_snapshot).to_dict(detail="summary")
     latencies: list[float] = []
@@ -330,9 +573,7 @@ def measure_scale_gates(
         },
         "g2": {
             "nodes": len(enterprise_payload["resources"]),
-            "serialized_bytes": len(
-                json.dumps(enterprise_payload).encode("utf-8")
-            ),
+            "serialized_bytes": len(json.dumps(enterprise_payload).encode("utf-8")),
             "truncated": enterprise_payload["coverage"]["truncated"],
         },
         "g3": {
@@ -396,9 +637,7 @@ def phase_diff(
     diff_range = f"{phase_base_commit}..{phase_change_head}"
     changed = _git("diff", "--name-only", diff_range).stdout
     if not changed.strip():
-        raise PhaseDiffRangeError(
-            f"phase diff range is empty: {diff_range}"
-        )
+        raise PhaseDiffRangeError(f"phase diff range is empty: {diff_range}")
 
     args = ["diff"]
     if unified is not None:
@@ -456,6 +695,7 @@ class _NetworkContext:
 
     def __init__(self, service: NetworkIntelligenceService) -> None:
         self.service = service
+        self.onboarding = _onboarding_for_snapshot(service.snapshot)
 
     def resolve_provider(
         self,
@@ -523,7 +763,10 @@ def test_private_link_node_additions_require_registered_entity_types() -> None:
         **without_candidates,
         "resources": [
             *without_candidates["resources"],
-            {"id": "/subscriptions/sub-a/providers/example/widgets/new", "entity_type": "Widget"},
+            {
+                "id": "/subscriptions/sub-a/providers/example/widgets/new",
+                "entity_type": "Widget",
+            },
         ],
     }
     with pytest.raises(AssertionError, match=r"Widget.*not registered"):
@@ -569,9 +812,13 @@ def test_wr11_legacy_unresolved_peer_ids_remain_beside_reasoned_entries() -> Non
         remote_vnet_id=vnet_c_id,
         peering_state="Connected",
     )
-    payload = NetworkIntelligenceService(
-        NetworkSnapshot(vnets=(vnet_a, vnet_b), peerings=(peer_b, peer_c))
-    ).scoped(NetworkScope(subscription_ids=("sub-a",))).topology.to_dict()
+    payload = (
+        NetworkIntelligenceService(
+            NetworkSnapshot(vnets=(vnet_a, vnet_b), peerings=(peer_b, peer_c))
+        )
+        .scoped(NetworkScope(subscription_ids=("sub-a",)))
+        .topology.to_dict()
+    )
 
     assert payload["unresolved_peer_vnet_ids"] == [
         vnet_b.resource_id,
@@ -615,9 +862,7 @@ def test_agent_twin_and_mcp_consumers_process_the_scoped_final_payload() -> None
 
     twin = twin_graph(context, scope)
     twin_resources = [
-        entity
-        for entity in twin["data"]["entities"]
-        if entity["kind"] == "resource"
+        entity for entity in twin["data"]["entities"] if entity["kind"] == "resource"
     ]
     assert twin_resources
     assert all(
@@ -777,9 +1022,7 @@ def test_hygiene_a51_typography_uses_only_the_phase_scale() -> None:
         for match in typography.finditer(line):
             value = int(match.group("value"))
             allowed = (
-                {10, 11, 12, 13}
-                if match.group("property") == "size"
-                else {400, 700}
+                {10, 11, 12, 13} if match.group("property") == "size" else {400, 700}
             )
             if value not in allowed:
                 violations.append(line.strip())
@@ -791,8 +1034,7 @@ def test_hygiene_a51_typography_uses_only_the_phase_scale() -> None:
 
     assert not violations, f"A51 added off-scale typography: {violations}"
     assert not removed_declarations, (
-        "A51 changed pre-existing typography declarations: "
-        f"{removed_declarations}"
+        f"A51 changed pre-existing typography declarations: {removed_declarations}"
     )
 
 
@@ -808,9 +1050,7 @@ def test_hygiene_a38_a52_add_no_colour_or_spacing_literals() -> None:
     )
     added, _ = _added_and_removed_lines(diff)
     colour_literals = [
-        line.strip()
-        for line in added
-        if re.search(r"#[0-9a-fA-F]{3,8}\b", line)
+        line.strip() for line in added if re.search(r"#[0-9a-fA-F]{3,8}\b", line)
     ]
     spacing = re.compile(
         r"""(?:gap|padding(?:-[a-z]+)?|margin(?:-[a-z]+)?)["']?\s*:\s*["']?(\d+)px"""

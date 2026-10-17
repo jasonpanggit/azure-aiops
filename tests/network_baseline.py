@@ -9,6 +9,7 @@ import re
 import subprocess
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from api.dependencies import Pagination
@@ -37,6 +38,48 @@ class BaselineArtifactInvalidError(ValueError):
     """Raised when a baseline cannot prove which pre-phase commit it records."""
 
 
+def _onboarding_for_snapshot(snapshot: NetworkSnapshot) -> SimpleNamespace:
+    resource_groups = (
+        "vnets",
+        "subnets",
+        "nics",
+        "nsgs",
+        "route_tables",
+        "peerings",
+        "firewalls",
+        "firewall_policies",
+        "firewall_collections",
+        "private_endpoints",
+        "private_dns_zones",
+        "gateways",
+        "load_balancers",
+        "shared_services",
+        "private_link_resources",
+    )
+    connections = {
+        (
+            str(getattr(resource, "subscription_id", "") or "").strip(),
+            str(getattr(resource, "connection_id", "") or "").strip(),
+        )
+        for group_name in resource_groups
+        for resource in getattr(snapshot, group_name)
+        if getattr(resource, "subscription_id", "")
+    }
+    records = [
+        SimpleNamespace(
+            subscription_id=subscription_id,
+            connection_id=connection_id,
+            is_active=True,
+        )
+        for subscription_id, connection_id in sorted(connections)
+    ]
+    return SimpleNamespace(
+        registry=SimpleNamespace(
+            list=lambda *, include_disabled=False: records
+        )
+    )
+
+
 class _NetworkContext:
     """Small router context exposing only the provider seam those routes use."""
 
@@ -44,6 +87,7 @@ class _NetworkContext:
 
     def __init__(self, service: NetworkIntelligenceService) -> None:
         self._service = service
+        self.onboarding = _onboarding_for_snapshot(service.snapshot)
 
     def resolve_provider(self, name: str) -> NetworkIntelligenceService:
         if name != "network":
@@ -102,24 +146,46 @@ def without_allowed_additive_keys(
     """Remove explicitly registered additive fields for baseline comparison."""
     normalized = deepcopy(body)
 
-    def remove_path(parent: Any, path: list[str]) -> None:
+    def remove_path(
+        parent: Any,
+        path: list[str],
+        *,
+        missing_ok: bool = False,
+    ) -> int:
         segment = path[0]
         if segment == "*":
             if not isinstance(parent, list):
                 raise BaselineArtifactInvalidError(
                     f"registered additive wildcard requires a list: {'.'.join(path)}"
                 )
-            for child in parent:
-                remove_path(child, path[1:])
-            return
+            removed = sum(
+                remove_path(child, path[1:], missing_ok=True)
+                for child in parent
+            )
+            if not removed and not missing_ok:
+                raise BaselineArtifactInvalidError(
+                    f"registered additive key path is absent: {'.'.join(path)}"
+                )
+            return removed
         if not isinstance(parent, dict) or segment not in parent:
+            if missing_ok:
+                return 0
             raise BaselineArtifactInvalidError(
                 f"registered additive key path is absent: {'.'.join(path)}"
             )
         if len(path) == 1:
             del parent[segment]
-            return
-        remove_path(parent[segment], path[1:])
+            return 1
+        removed = remove_path(
+            parent[segment],
+            path[1:],
+            missing_ok=missing_ok,
+        )
+        if not removed and not missing_ok:
+            raise BaselineArtifactInvalidError(
+                f"registered additive key path is absent: {'.'.join(path)}"
+            )
+        return removed
 
     for addition in allowed_additive_keys:
         if addition.get("endpoint") != endpoint:

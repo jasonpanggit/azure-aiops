@@ -62,7 +62,7 @@ def _connection():
             kind="service_principal",
             tenant_id="tenant-1",
             client_id="client-1",
-            secret_ref="keyvault://vault/secrets/conn-1/v1",
+            secret_ref="keyvault://example-vault/secrets/conn-1/v1",
         ),
         is_active=True,
     )
@@ -508,7 +508,7 @@ def test_replaced_connection_identity_does_not_reuse_cached_subscription_data(
                 kind="service_principal",
                 tenant_id="tenant-a",
                 client_id="client-a",
-                secret_ref="keyvault://vault/secrets/conn-a/v1",
+                secret_ref="keyvault://example-vault/secrets/conn-a/v1",
             ),
             is_active=True,
         )
@@ -545,7 +545,7 @@ def test_replaced_connection_identity_does_not_reuse_cached_subscription_data(
             kind="service_principal",
             tenant_id="tenant-b",
             client_id="client-b",
-            secret_ref="keyvault://vault/secrets/conn-b/v1",
+            secret_ref="keyvault://example-vault/secrets/conn-b/v1",
         ),
         is_active=True,
     )

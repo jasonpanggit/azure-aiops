@@ -180,7 +180,7 @@ preflight. A future separately approved deployment may set:
 enable_sre_agent_patch_execution = true
 enable_sre_agent_patch_rbac      = true
 retain_sre_agent_thread_verification = false
-sre_agent_http_trigger_secret_id = "https://aiops-dev-kv-g6ludc.vault.azure.net/secrets/sre-agent-http-trigger-url/<version>"
+sre_agent_http_trigger_secret_id = "https://<your-vault-name>.vault.azure.net/secrets/sre-agent-http-trigger-url/<version>"
 sre_agent_trigger_id             = "<reviewed-trigger-id>"
 sre_agent_trigger_origin         = "https://<reviewed-trigger-origin>"
 sre_agent_endpoint               = "https://<agent-endpoint>"
@@ -356,7 +356,7 @@ Capture secret metadata without requesting a secret value, and capture the
 Container Apps reference separately:
 
 ```sh
-VAULT='aiops-dev-kv-g6ludc'
+VAULT='<your-vault-name>'
 az keyvault secret list --subscription "${SUB}" --vault-name "${VAULT}" \
   --query "[?name=='sre-agent-http-trigger-url'].{
     id:id,name:name,enabled:attributes.enabled,tags:tags
