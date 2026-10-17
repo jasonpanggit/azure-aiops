@@ -21,8 +21,9 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+for import_root in (REPO_ROOT, REPO_ROOT / "src"):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
 from src.operations.patching.models import OPERATION_INSTALL_PATCHES
 from src.operations.patching.sre_agent_adapter import (

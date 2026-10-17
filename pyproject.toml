@@ -26,7 +26,13 @@ api = [
 ]
 fabric-sql = ["pyodbc==5.3.0"]
 eval = ["arize-phoenix==20.4.0", "opentelemetry-sdk==1.44.0"]
-test = ["pytest>=9.0.3,<10", "ruff>=0.16,<0.17", "fastapi>=0.115,<1", "httpx>=0.27,<1"]
+test = [
+  "pytest>=9.0.3,<10",
+  "ruff>=0.16,<0.17",
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "opentelemetry-sdk>=1.29,<2",
+]
 
 [project.scripts]
 aiops-inventory = "onboarding.cli:main"

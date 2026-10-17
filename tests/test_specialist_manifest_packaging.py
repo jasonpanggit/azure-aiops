@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -1231,6 +1232,11 @@ def test_create_agent_rejects_azure_cli_auth_when_az_is_missing(tmp_path):
     env.pop("AZURE_CLIENT_ID")
     env.pop("AZURE_CLIENT_SECRET")
     (tmp_path / "bin" / "az").unlink()
+    for command in ("bash", "dirname"):
+        executable = shutil.which(command)
+        assert executable is not None
+        (tmp_path / "bin" / command).symlink_to(executable)
+    env["PATH"] = str(tmp_path / "bin")
 
     result = _run_rollout(env, tmp_path)
 
