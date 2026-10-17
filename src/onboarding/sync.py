@@ -403,7 +403,7 @@ class ConnectionSyncCoordinator:
         for attempt in range(self.transient_retry_attempts):
             try:
                 return self.ingestion_factory(connection).run()
-            except Exception as exc:  # noqa: BLE001 - re-raised below if not retried
+            except Exception as exc:
                 last_exc = exc
                 is_last_attempt = attempt == self.transient_retry_attempts - 1
                 if is_last_attempt or not _is_transient_sync_error(exc):
@@ -435,7 +435,7 @@ class ConnectionSyncCoordinator:
             try:
                 self._run_publish_with_timeout(connection, progress_callback)
                 return
-            except Exception as exc:  # noqa: BLE001 - re-raised below if not retried
+            except Exception as exc:
                 last_exc = exc
                 is_last_attempt = attempt == self.transient_retry_attempts - 1
                 if is_last_attempt or not _is_transient_sync_error(exc):
