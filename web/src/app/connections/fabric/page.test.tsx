@@ -7,6 +7,7 @@ import { FabricMedallionPanel } from "@/components/fabric/medallion";
 const {
   fabricCapabilities,
   fabricDataset,
+  fabricDatasetContract,
   fabricGovernance,
   fabricIngestionHistory,
   fabricLayers,
@@ -18,6 +19,7 @@ const {
 } = vi.hoisted(() => ({
   fabricCapabilities: vi.fn(),
   fabricDataset: vi.fn(),
+  fabricDatasetContract: vi.fn(),
   fabricGovernance: vi.fn(),
   fabricIngestionHistory: vi.fn(),
   fabricLayers: vi.fn(),
@@ -53,6 +55,7 @@ vi.mock("@/lib/services", async (importOriginal) => {
     fabricMedallionApi: {
       layers: fabricLayers,
       dataset: fabricDataset,
+      datasetContract: fabricDatasetContract,
       manifest: fabricManifest,
       governance: fabricGovernance,
       ingestionHistory: fabricIngestionHistory,
@@ -132,6 +135,13 @@ describe("Per-subscription Fabric medallion page", () => {
     fabricGovernance.mockReset();
     fabricIngestionHistory.mockReset();
     fabricDataset.mockReset();
+    fabricDatasetContract.mockReset();
+    fabricDatasetContract.mockResolvedValue(envelope({
+      table_name: "bronze_resources", evaluated_at: "2026-10-17T12:00:00Z",
+      declared_schema: { source: "fabric.schema_registry", version: "2.7.0", status: "not_registered", fields: [] },
+      deployed_schema_validation: "not_collected", producer_ownership: "not_collected", dataset_dependency_graph: "not_collected",
+      source_diagnostics: [],
+    }));
     buildFabricMedallionCopilotContext.mockClear();
     searchParams.current = new URLSearchParams();
 
@@ -310,6 +320,19 @@ describe("Per-subscription Fabric medallion page", () => {
       renderPage();
       expect(await screen.findByText("Freshness budget unavailable from this response.")).toBeInTheDocument();
       expect(screen.getByText("bronze_resources")).toBeInTheDocument();
+    });
+
+    it("reads a contract only on explicit inspection, preserves scope, and returns focus on close", async () => {
+      searchParams.current = new URLSearchParams({ subscription: connections[0].subscription_id });
+      renderPage();
+      const button = await screen.findByRole("button", { name: "Inspect contract and diagnostics for bronze_resources" });
+      expect(fabricDatasetContract).not.toHaveBeenCalled();
+      fireEvent.click(button);
+      expect(await screen.findByText("No declared schema registered")).toBeInTheDocument();
+      expect(fabricDatasetContract).toHaveBeenCalledWith("bronze_resources", { subscription: [connections[0].subscription_id] });
+      fireEvent.click(screen.getByRole("button", { name: "Close contract" }));
+      expect(screen.queryByRole("region", { name: "Dataset contract: bronze_resources" })).not.toBeInTheDocument();
+      expect(button).toHaveFocus();
     });
 
     it("renders a server budget on its dataset card", async () => {

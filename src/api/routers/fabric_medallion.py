@@ -13,7 +13,7 @@ from fabric.capacity_health import check_capacity_state
 from fabric.config import FabricRuntimeConfig
 from fabric.data_access_roles import list_roles
 from fabric.lineage import entity_lineage_summary, native_lineage_url
-from fabric.medallion_health import dataset_status
+from fabric.medallion_health import dataset_contract, dataset_status
 from fabric.table_maintenance import last_maintenance_status
 from ontology.publication_state import PublicationAttemptRecord
 from operations.gold_grounding_specialist import gold_grounding_configured
@@ -503,6 +503,22 @@ def medallion_dataset(table_name: str, context: Context, scope: ReadScope) -> di
             timestamp=max((_status_timestamp(row) for row in table_rows), default=""),
             freshness=status["freshness"],
         ),
+        scope=scope.to_dict(),
+    )
+
+
+@router.get("/datasets/{table_name}/contract", summary="Declared Fabric dataset contract and source diagnostics")
+def medallion_dataset_contract(table_name: str, context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Expose registry declarations only for a dataset registered in the effective scope."""
+    rows = _scoped_source_rows(context, scope)
+    if table_name not in set(_registered_tables(rows)):
+        raise not_found(table_name, "dataset")
+    return envelope(
+        dataset_contract(table_name, source_status=rows),
+        evidence=[
+            _evidence(source_engine="fabric.schema_registry", source_table=table_name),
+            _evidence(source_engine=SOURCE_ENGINE, source_table=SOURCE_TABLE),
+        ],
         scope=scope.to_dict(),
     )
 

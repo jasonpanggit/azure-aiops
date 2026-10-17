@@ -48,6 +48,27 @@ Page/embedded subscription selectors must preserve every global scope constraint
 out-of-scope bookmarks are blocked before reads. Failed layer reads are unknown,
 not zero tables, and missing registration evidence is not an empty layer.
 
+`GET /api/v1/fabric-medallion/datasets/{table_name}/contract` uses the same current
+read authorization and scoped registered-table check. An unauthorized or absent
+dataset is not discoverable through the schema registry. It returns the exact
+`fabric.schema_registry` version and declared field name/type/nullability, or
+`not_registered` when a scoped dataset has no declaration. It never probes the
+live table, reads dataset records, publishes data, or confers access.
+
+The connected explicit-inspection panel lists paginated declared fields and
+source diagnostics independently. Diagnostics preserve connection, requested
+scope **and source partition** identity; a fresh partition must not hide an older
+partition in the same connection. They show selected metadata clocks, recorded
+status/quality, lineage reference and bounded diagnostic codes, not raw provider
+error payloads. A lineage reference is an opaque recorded reference, not a
+verified dataset dependency edge or safe automatically-followed URL.
+`deployed_schema_validation`, `producer_ownership` and
+`dataset_dependency_graph` remain `not_collected`. The UI does not infer edges
+from medallion prefixes, treat a reference as complete lineage, claim dependency
+health or identify an unverified root cause. Closing, pagination and diagnostic
+review perform no refresh/mutation; retry explicitly repeats only the contract
+read. A response for a different dataset or inconsistent contract is rejected.
+
 ## Asynchronous Agents investigations
 
 `POST /agents/investigation-jobs` admits a strict `{job_id, objective,

@@ -31,6 +31,8 @@ from typing import Any
 
 import yaml
 
+from fabric.schema_registry import SCHEMA_VERSION, SCHEMAS
+
 # Safe-by-default: an unconfigured table still gets a real, dataset-scoped
 # SLO -- (default cadence * default multiplier) -- never a single hardcoded
 # constant shared by every dataset.
@@ -224,10 +226,13 @@ def _latest_per_scope(
         for row in rows
         if str(row.get("source_family") or row.get("table_name") or "") == table_name
     ]
-    latest: dict[tuple[tuple[str, tuple[str, ...]], ...], dict[str, Any]] = {}
+    latest: dict[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]], dict[str, Any]] = {}
     for row in applicable:
         scope = _source_scope(row)
-        key = tuple(sorted((name, tuple(sorted(values))) for name, values in scope.items()))
+        key = (
+            str(row.get("partition_key") or ""),
+            tuple(sorted((name, tuple(sorted(values))) for name, values in scope.items())),
+        )
         existing = latest.get(key)
         timestamp = _parse_timestamp(_status_timestamp(row))
         previous = _parse_timestamp(_status_timestamp(existing)) if existing else None
@@ -249,6 +254,7 @@ def _freshness_budget(rows: list[dict[str, Any]], table_name: str, config: Fresh
         state = "unknown" if age is None else "stale" if age > threshold else "fresh"
         sources.append({
             "scope": _source_scope(row), "status_at": timestamp, "state": state,
+            "partition_key": str(row.get("partition_key") or ""),
             "age_seconds": age, "remaining_seconds": None if age is None else threshold - age,
         })
     states = {row["state"] for row in sources}
@@ -407,7 +413,57 @@ def dataset_status(
     return result
 
 
+def dataset_contract(
+    table_name: str,
+    *,
+    source_status: Iterable[Mapping[str, Any]],
+    freshness_slo: FreshnessSloConfig | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> dict[str, Any]:
+    """Project a declared schema and recorded source diagnostics, never a live DAG."""
+    rows = _latest_per_scope(source_status, table_name)
+    status = dataset_status(table_name, source_status=rows, freshness_slo=freshness_slo, clock=clock)
+    schema = SCHEMAS.get(table_name)
+    diagnostics = []
+    for row, budget in zip(rows, status["freshness_budget"]["sources"], strict=True):
+        issues = []
+        if row.get("availability") == "unavailable":
+            issues.append("source_unavailable")
+        if row.get("status") == "failed":
+            issues.append("source_failed")
+        if budget["state"] != "fresh":
+            issues.append(f"freshness_{budget['state']}")
+        if row.get("quality") != "complete":
+            issues.append("quality_degraded" if row.get("quality") == "degraded" else "quality_unknown")
+        reference = str(row.get("lineage_ref") or "")
+        if not reference:
+            issues.append("lineage_unreported")
+        diagnostics.append({
+            "scope": budget["scope"], "partition_key": budget["partition_key"],
+            "status_at": budget["status_at"], "freshness": budget["state"],
+            "recorded_status": str(row.get("status") or "unknown"),
+            "recorded_quality": str(row.get("quality") or "unknown"),
+            "lineage_ref": reference, "issues": issues,
+        })
+    return {
+        "table_name": table_name, "evaluated_at": status["freshness_budget"]["evaluated_at"],
+        "declared_schema": {
+            "source": "fabric.schema_registry", "version": SCHEMA_VERSION,
+            "status": "available" if schema is not None else "not_registered",
+            "fields": [] if schema is None else [
+                {"name": field.name, "type": str(field.type), "nullable": field.nullable}
+                for field in schema
+            ],
+        },
+        "deployed_schema_validation": "not_collected",
+        "producer_ownership": "not_collected",
+        "dataset_dependency_graph": "not_collected",
+        "source_diagnostics": diagnostics,
+    }
+
+
 __all__ = [
     "FreshnessSloConfig",
+    "dataset_contract",
     "dataset_status",
 ]

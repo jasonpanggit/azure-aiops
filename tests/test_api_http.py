@@ -860,6 +860,30 @@ class TestFabricMedallionRouterTask1:
         )
         assert response.status_code == 404
 
+    def test_fabric_declared_contract_requires_authorization_and_registered_scope(self, fabric_medallion_client):
+        assert fabric_medallion_client.get("/api/v1/fabric-medallion/datasets/bronze_resources/contract").status_code == 401
+        hidden = fabric_medallion_client.get(
+            "/api/v1/fabric-medallion/datasets/gold_hidden/contract", headers=_auth(SCOPED_TOKEN),
+        )
+        assert hidden.status_code == 404
+        forbidden = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/bronze_resources/contract?subscription={SUB_B}", headers=_auth(SCOPED_TOKEN),
+        )
+        assert forbidden.status_code == 403
+        response = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/bronze_resources/contract?subscription={SUB_A}", headers=_auth(SCOPED_TOKEN),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["declared_schema"]["status"] == "available"
+        assert body["data"]["declared_schema"]["fields"]
+        assert body["data"]["deployed_schema_validation"] == body["data"]["dataset_dependency_graph"] == "not_collected"
+        assert body["scope"] == {"subscription": [SUB_A]}
+        assert body["evidence"][0]["source_engine"] == "fabric.schema_registry"
+        assert body["evidence"][1]["source_table"] == "metadata_source_status"
+        assert len(body["data"]["source_diagnostics"]) == 1
+        assert body["data"]["source_diagnostics"][0]["lineage_ref"] == "bronze-entity"
+
     def test_fabric_unknown_clock_stays_unknown_in_evidence_despite_recent_sibling(
         self, fabric_medallion_client, monkeypatch
     ):

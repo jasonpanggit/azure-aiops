@@ -257,6 +257,12 @@ export const fabricMedallionApi = {
       query: scopeToSearchParams(scope),
     }),
 
+  /** Read a declared schema and recorded source diagnostics without probing or publishing data. */
+  datasetContract: (tableName: string, scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").FabricDatasetContract>(`/fabric-medallion/datasets/${encodeURIComponent(tableName)}/contract`, {
+      query: scopeToSearchParams(scope),
+    }),
+
   manifest: (scope: ScopeSelection = {}) =>
     apiRequest<{ entries: FabricManifestEntry[] }>("/fabric-medallion/manifest", {
       query: scopeToSearchParams(scope),

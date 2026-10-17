@@ -4,7 +4,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from fabric.medallion_health import FreshnessSloConfig, dataset_status
+from fabric.medallion_health import FreshnessSloConfig, dataset_contract, dataset_status
+from fabric.schema_registry import SCHEMA_VERSION, SCHEMAS
 
 NOW = datetime(2026, 10, 17, 12, tzinfo=UTC)
 POLICY = FreshnessSloConfig(default_cadence_minutes=10, default_slo_multiplier=3)
@@ -97,6 +98,35 @@ def test_no_status_rows_cannot_establish_budget_or_observed_freshness():
     assert budget["state"] == "unknown" and budget["source_count"] == 0
     assert budget["remaining_seconds"] is None
 
+
+def test_independent_partitions_within_connection_cannot_mask_staleness():
+    result = status([row(partition_key="one", timestamp="2026-10-17T10:00:00Z"), row(partition_key="two")])
+    assert result["freshness"] == "stale" and result["row_count"] == 10
+    assert [source["partition_key"] for source in result["freshness_budget"]["sources"]] == ["one", "two"]
+
+
+def test_contract_matches_actual_registry_and_never_claims_deployed_schema_or_dataset_dag():
+    result = dataset_contract("silver_incidents", source_status=[row()], freshness_slo=POLICY, clock=lambda: NOW)
+    assert result["declared_schema"] == {
+        "source": "fabric.schema_registry", "version": SCHEMA_VERSION, "status": "available",
+        "fields": [{"name": field.name, "type": str(field.type), "nullable": field.nullable}
+                   for field in SCHEMAS["silver_incidents"]],
+    }
+    assert result["deployed_schema_validation"] == result["producer_ownership"] == result["dataset_dependency_graph"] == "not_collected"
+    assert result["source_diagnostics"][0]["issues"] == ["lineage_unreported"]
+
+
+def test_unknown_declared_contract_and_recorded_failures_are_explicit_without_inferred_edges():
+    result = dataset_contract("gold_custom", source_status=[
+        {**row(), "source_family": "gold_custom", "partition_key": "part-a", "status": "failed",
+         "availability": "unavailable", "quality": "degraded", "lineage_ref": "custom-table",
+         "ingested_at": "2026-10-17T10:00:00Z"},
+    ], freshness_slo=POLICY, clock=lambda: NOW)
+    assert result["declared_schema"]["status"] == "not_registered" and result["declared_schema"]["fields"] == []
+    source = result["source_diagnostics"][0]
+    assert source["partition_key"] == "part-a" and source["lineage_ref"] == "custom-table"
+    assert source["issues"] == ["source_unavailable", "source_failed", "freshness_stale", "quality_degraded"]
+    assert result["dataset_dependency_graph"] == "not_collected"
 
 def test_slo_uses_selected_config_path_and_discloses_default_or_table_policy(tmp_path, monkeypatch):
     path = tmp_path / "fabric.yaml"

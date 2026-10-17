@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 import { FabricFreshnessBudget } from "@/components/fabric/FabricFreshnessBudget";
+import { FabricDatasetContract } from "@/components/fabric/FabricDatasetContract";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { StatePanel } from "@/components/ui/StatePanel";
@@ -161,8 +162,11 @@ function FabricLayerSection({
   ]);
   const paging = useTablePagination(filteredRows);
   const label = FABRIC_LAYER_LABELS[layer];
+  const [selectedContract, setSelectedContract] = useState<string | null>(null);
+  const contractTrigger = useRef<HTMLButtonElement | null>(null);
 
   return (
+    <>
     <section id={`${layer}-layer`} className="card">
       <div className="card-header">
         <div>
@@ -214,6 +218,14 @@ function FabricLayerSection({
                     </div>
                   </dl>
                   <FabricFreshnessBudget budget={dataset.freshness_budget} />
+                  <button type="button" className="button" aria-expanded={selectedContract === dataset.table_name}
+                    aria-controls={`${layer}-dataset-contract`} onClick={event => {
+                      contractTrigger.current = event.currentTarget;
+                      setSelectedContract(dataset.table_name);
+                    }}
+                    aria-label={`Inspect contract and diagnostics for ${dataset.table_name}`}>
+                    Inspect contract &amp; diagnostics
+                  </button>
                 </article>
               ))}
             </div>
@@ -222,6 +234,12 @@ function FabricLayerSection({
         )}
       </div>
     </section>
+    {selectedContract && <FabricDatasetContract key={selectedContract} id={`${layer}-dataset-contract`}
+      tableName={selectedContract} scope={scope} refreshKey={refreshKey} onClose={() => {
+        setSelectedContract(null);
+        contractTrigger.current?.focus();
+      }} />}
+    </>
   );
 }
 
@@ -283,8 +301,8 @@ export function FabricSubscriptionSummary({
           </div>
         </div>
         <p className="fabric-summary-note">
-          <strong>Watermark</strong> is the newest upstream record a dataset&apos;s last sync consumed. &ldquo;Not yet
-          published&rdquo; means the dataset has no completed sync yet — it is not a health failure.
+          <strong>Recorded checkpoint</strong> can be a watermark or a fallback metadata-status time.
+          Its presence does not prove upstream catch-up; absence does not prove nonpublication.
         </p>
       </div>
     </section>

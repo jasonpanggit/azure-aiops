@@ -18,6 +18,7 @@ function validBudget(budget: Budget): boolean {
     !Array.isArray(budget.sources) || budget.source_count !== budget.sources.length ||
     !budget.sources.every(source =>
       source && typeof source.scope === "object" && source.scope !== null &&
+      (source.partition_key === undefined || typeof source.partition_key === "string") &&
       Object.values(source.scope).every(values => Array.isArray(values) && values.every(value => typeof value === "string")) &&
       typeof source.status_at === "string" &&
       (source.state === "unknown"
@@ -63,6 +64,7 @@ export function FabricFreshnessBudget({ budget }: { budget?: Budget }) {
           {budget.sources.slice(0, SOURCE_LIMIT).map((source, index) => (
             <li key={index}>
               <strong>{Object.entries(source.scope).map(([key, values]) => `${key}: ${values.join(", ")}`).join(" · ") || "Scope identity unreported"}</strong>
+              {source.partition_key && <div>Source partition: {source.partition_key}</div>}
               <div>{source.age_seconds === null ? "Unknown age (missing, invalid, unzoned, or future clock)" : `${duration(source.age_seconds)} old`} · {headroom(source.remaining_seconds)}</div>
               <div>Status clock: {source.status_at || "Unreported"}</div>
             </li>

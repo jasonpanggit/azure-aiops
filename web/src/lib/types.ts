@@ -1413,6 +1413,7 @@ export interface FabricFreshnessBudget {
   remaining_seconds: number | null;
   sources: Array<{
     scope: Record<string, string[]>;
+    partition_key?: string;
     status_at: string;
     state: "fresh" | "stale" | "unknown";
     age_seconds: number | null;
@@ -1433,6 +1434,31 @@ export interface FabricDataset {
   error: string;
   lineage_ref: string;
   freshness_budget?: FabricFreshnessBudget;
+}
+
+/** Registry declarations and scoped metadata references, not verified deployed schema or dataset edges. */
+export interface FabricDatasetContract {
+  table_name: string;
+  evaluated_at: string;
+  declared_schema: {
+    source: "fabric.schema_registry";
+    version: string;
+    status: "available" | "not_registered";
+    fields: Array<{ name: string; type: string; nullable: boolean }>;
+  };
+  deployed_schema_validation: "not_collected";
+  producer_ownership: "not_collected";
+  dataset_dependency_graph: "not_collected";
+  source_diagnostics: Array<{
+    scope: Record<string, string[]>;
+    partition_key: string;
+    status_at: string;
+    freshness: "fresh" | "stale" | "unknown";
+    recorded_status: string;
+    recorded_quality: string;
+    lineage_ref: string;
+    issues: string[];
+  }>;
 }
 
 export interface FabricManifestEntry {
