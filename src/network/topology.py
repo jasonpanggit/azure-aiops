@@ -307,6 +307,32 @@ class NetworkTopology:
         """
         all_resources = _topology_resources(self, detail=detail)
         omitted_ids = _summary_omitted_resource_ids(self.snapshot) if detail == "summary" else set()
+        summary_identity_cache: dict[
+            int, tuple[frozenset[str], frozenset[str]]
+        ] = {}
+
+        def summary_canvas_identity(
+            resources: list[dict[str, Any]],
+            unresolved_ids: tuple[str, ...] | list[str] = (),
+        ) -> tuple[set[str], set[str]]:
+            # Summary resource selections are prefixes of all_resources.
+            count = len(resources)
+            identities = summary_identity_cache.get(count)
+            if identities is None:
+                nodes, groups = _summary_canvas_identity(resources)
+                identities = (frozenset(nodes), frozenset(groups))
+                summary_identity_cache[count] = identities
+            node_ids, group_ids = map(set, identities)
+            for resource_id in unresolved_ids:
+                normalized_id = str(resource_id or "")
+                if not normalized_id:
+                    continue
+                node_ids.add(normalized_id.casefold())
+                group_id = _subscription_group_id(normalized_id)
+                if group_id:
+                    group_ids.add(group_id)
+            return node_ids, group_ids
+
         (
             relationships,
             dropped_relationships,
@@ -414,11 +440,11 @@ class NetworkTopology:
                         and not link.get("remote_vnet_observed")
                     )
                 )
-                returned_nodes, returned_groups = _summary_canvas_identity(
+                returned_nodes, returned_groups = summary_canvas_identity(
                     resources,
                     tuple(returned_unresolved_ids),
                 )
-                total_nodes, total_groups = _summary_canvas_identity(
+                total_nodes, total_groups = summary_canvas_identity(
                     all_resources,
                     [
                         *self.unresolved_peer_vnet_ids,
@@ -550,7 +576,7 @@ class NetworkTopology:
         low, high = 0, min(len(all_resources), SUMMARY_NODE_CAP)
         while low < high:
             candidate = (low + high + 1) // 2
-            candidate_nodes, candidate_groups = _summary_canvas_identity(
+            candidate_nodes, candidate_groups = summary_canvas_identity(
                 all_resources[:candidate]
             )
             if (
@@ -601,7 +627,7 @@ class NetworkTopology:
             if not folded_id or folded_id in resource_ids:
                 continue
             candidate_unresolved = (*allowed_unresolved_ids, folded_id)
-            candidate_nodes, candidate_groups = _summary_canvas_identity(
+            candidate_nodes, candidate_groups = summary_canvas_identity(
                 resources,
                 candidate_unresolved,
             )
