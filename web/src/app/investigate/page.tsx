@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { TopologyWorkspace } from "@/components/network/TopologyWorkspace";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { CopilotCitations } from "@/components/ui/CopilotCitations";
@@ -12,7 +12,8 @@ import { RiskGauge } from "@/components/ui/RiskGauge";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
-import { useScope } from "@/lib/scope-context";
+import { PageScopeProvider, useScope } from "@/lib/scope-context";
+import { SCOPE_DIMENSIONS, ScopeBookmarkError, scopedBookmark, scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import {
   contextApi,
   toCanonicalInvestigationView,
@@ -221,17 +222,72 @@ export default function InvestigationWorkspacePage() {
 }
 
 function InvestigationWorkspaceContent() {
-  const params = useSearchParams();
+  const query = useSearchParams().toString();
   const { scope } = useScope();
   const threadContinuity = useOptionalThreadContinuity();
-  const [entryType, setEntryType] = useState<EntryType>((params.get("type") as EntryType) || "BusinessService");
-  const [entryValue, setEntryValue] = useState(params.get("value") || "");
-  const [mode, setMode] = useState<Mode>((params.get("mode") as Mode) || "executive");
+  const bookmark = useMemo<{ error: string } | { scope: ScopeSelection; entryType: EntryType; entryValue: string; mode: Mode }>(() => {
+    try {
+      const params = new URLSearchParams(query);
+      const restoredScope = scopedBookmark(params, scope);
+      if (["type", "value", "mode"].some(key => params.getAll(key).length > 1)) {
+        throw new ScopeBookmarkError("Investigation entry parameters must not be repeated.");
+      }
+      const type = params.get("type") ?? "BusinessService";
+      const entryType = ENTRY_TYPES.find(candidate => candidate === type);
+      const mode = params.get("mode") ?? "executive";
+      const entryValue = params.get("value") ?? "";
+      if (!entryType || (mode !== "executive" && mode !== "engineer")) {
+        throw new ScopeBookmarkError("The investigation entry type or mode is unsupported.");
+      }
+      if (entryValue.length > 512 || /[\0\r\n]/.test(entryValue)) {
+        throw new ScopeBookmarkError("The investigation subject must be at most 512 characters without line breaks.");
+      }
+      return { scope: restoredScope, entryType, entryValue, mode };
+    } catch (error) {
+      if (!(error instanceof ScopeBookmarkError)) throw error;
+      return { error: error.message };
+    }
+  }, [query, scope]);
+  if ("error" in bookmark) {
+    return <div className="page-container"><StatePanel title="Investigation bookmark unavailable" message={bookmark.error} tone="error" action={<Link href="/investigate" className="button button-secondary">Start a new investigation</Link>} /></div>;
+  }
+  const shareRootContinuity = SCOPE_DIMENSIONS.every(dimension => {
+    const original = new Set((scope[dimension] ?? []).map(value => value.trim().toLowerCase()));
+    const effective = new Set((bookmark.scope[dimension] ?? []).map(value => value.trim().toLowerCase()));
+    return original.size === effective.size && Array.from(effective).every(value => original.has(value));
+  });
+  return (
+    <PageScopeProvider scope={bookmark.scope}>
+      <InvestigationWorkspace
+        key={JSON.stringify([bookmark, threadContinuity?.generation])}
+        scope={bookmark.scope}
+        initialEntryType={bookmark.entryType}
+        initialEntryValue={bookmark.entryValue}
+        initialMode={bookmark.mode}
+        shareRootContinuity={shareRootContinuity}
+      />
+    </PageScopeProvider>
+  );
+}
+
+function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, initialMode, shareRootContinuity }: {
+  scope: ScopeSelection;
+  initialEntryType: EntryType;
+  initialEntryValue: string;
+  initialMode: Mode;
+  shareRootContinuity: boolean;
+}) {
+  const rootContinuity = useOptionalThreadContinuity();
+  const threadContinuity = shareRootContinuity ? rootContinuity : null;
+  const [entryType, setEntryType] = useState<EntryType>(initialEntryType);
+  const [entryValue, setEntryValue] = useState(initialEntryValue);
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [selected, setSelected] = useState<FocusEntity | null>(null);
   const [state, setState] = useState<WorkspaceState>({ errors: [] });
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState<SavedInvestigation[]>([]);
   const [audit, setAudit] = useState<Array<{ at: string; action: string }>>([]);
+  const generation = useRef(0);
 
   const subject = entryValue.trim();
 
@@ -244,6 +300,9 @@ function InvestigationWorkspaceContent() {
 
   useEffect(() => {
     let active = true;
+    generation.current += 1;
+    setState({ errors: [] });
+    setSelected(null);
     setLoading(true);
     const loaders: Array<Promise<unknown>> = [
       operationsApi.incidents(scope, 0, 25),
@@ -307,6 +366,7 @@ function InvestigationWorkspaceContent() {
     });
     return () => {
       active = false;
+      generation.current += 1;
     };
   }, [entryType, subject, scope]);
 
@@ -315,6 +375,8 @@ function InvestigationWorkspaceContent() {
   const decision = decisionFrom(state);
   const topExposure = state.exposures?.data?.[0];
   const activeIncidents = state.incidents?.data.incidents ?? [];
+  const signalsAvailable = Boolean(state.incidents && state.exposures);
+  const hasSignals = activeIncidents.length > 0 || (state.exposures?.data.length ?? 0) > 0;
   const cveDetail = state.cveDetail;
   const owners = Array.from(
     new Set([
@@ -351,6 +413,9 @@ function InvestigationWorkspaceContent() {
   };
 
   const runCopilot = async () => {
+    if (loading) return;
+    const requestGeneration = generation.current;
+    const continuityGeneration = threadContinuity?.generation;
     const focusPrompt = selected ? ` Current focus is ${selected.kind} ${selected.label}: ${selected.reason ?? selected.id}.` : "";
     const question = `Summarize the investigation for ${entryType} ${subject || "current scope"}; explain business risk, affected dependencies, evidence, and recommended decision.${focusPrompt}`;
     const visibleIncidents = activeIncidents.slice(0, 25);
@@ -614,19 +679,27 @@ function InvestigationWorkspaceContent() {
         },
         scope,
       );
+      if (requestGeneration !== generation.current) return;
       const view = toCanonicalInvestigationView(result.data);
+      if (threadContinuity?.thread && (
+        view.threadId !== threadContinuity.thread.threadId
+        || view.threadRevision !== threadContinuity.thread.threadRevision + 1
+      )) {
+        throw new Error("The investigation response did not match the requested conversation revision.");
+      }
       // Mirror the server-issued thread into the shared root continuity so every
       // dedicated surface reflects one authorized handle (best-effort; the
       // provider is absent in isolated renders).
       if (view.threadId && view.threadRevision) {
-        threadContinuity?.acceptServerState({ threadId: view.threadId, threadRevision: view.threadRevision });
+        threadContinuity?.acceptServerState({ threadId: view.threadId, threadRevision: view.threadRevision }, continuityGeneration);
       }
       setState((current) => ({ ...current, copilot: result, copilotView: view }));
       pushAudit("Generated Copilot conclusion");
     } catch {
+      if (requestGeneration !== generation.current) return;
       setState((current) => ({ ...current, errors: [...current.errors, "copilot unavailable"] }));
     } finally {
-      setLoading(false);
+      if (requestGeneration === generation.current) setLoading(false);
     }
   };
 
@@ -656,7 +729,10 @@ function InvestigationWorkspaceContent() {
   };
 
   const share = async () => {
-    const query = new URLSearchParams({ type: entryType, value: subject, mode });
+    const query = scopeToSearchParams(scope);
+    query.set("type", entryType);
+    query.set("value", subject);
+    query.set("mode", mode);
     const url = `${window.location.origin}/investigate?${query.toString()}`;
     window.history.replaceState(null, "", `/investigate?${query.toString()}`);
     await navigator.clipboard?.writeText(url).catch(() => undefined);
@@ -664,7 +740,7 @@ function InvestigationWorkspaceContent() {
   };
 
   const exportInvestigation = () => {
-    const blob = new Blob([JSON.stringify({ entryType, entryValue: subject, mode, selected, audit, state }, null, 2)], {
+    const blob = new Blob([JSON.stringify({ scope, entryType, entryValue: subject, mode, selected, audit, state }, null, 2)], {
       type: "application/json",
     });
     const url = URL.createObjectURL(blob);
@@ -679,7 +755,6 @@ function InvestigationWorkspaceContent() {
   return (
     <div className={`page-container investigation-workspace investigation-mode-${mode}`}>
       <PageHeader
-        eyebrow="Executive investigation workspace"
         title={subject ? `${entryType}: ${subject}` : "Investigate business risk end to end"}
         description="One surface for business risk, dependencies, network paths, vulnerabilities, changes, incidents, evidence, Copilot reasoning, owners, and recommended actions."
         actions={
@@ -687,7 +762,7 @@ function InvestigationWorkspaceContent() {
             <button className="button button-secondary" type="button" onClick={saveInvestigation}>Save view locally</button>
             <button className="button button-secondary" type="button" onClick={share}>Share</button>
             <button className="button button-secondary" type="button" onClick={exportInvestigation}>Export</button>
-            <button className="button button-primary" type="button" onClick={runCopilot}>Generate conclusion</button>
+            <button className="button button-primary" type="button" onClick={runCopilot} disabled={loading}>Generate conclusion</button>
           </>
         }
         metadata={
@@ -744,7 +819,14 @@ function InvestigationWorkspaceContent() {
         </section>
         <section className="metric-grid investigation-summary-grid">
           <MetricCard label="Accountable owner" value={owner} detail={selected ? `Focused on ${selected.label}` : "Mapped from semantic ownership and incident impact"} size="text" />
-          <MetricCard label="Trend" value={timeline.length ? "Active" : "Quiet"} detail={`${activeIncidents.length} active situations, ${state.exposures?.data?.length ?? 0} vulnerability exposures`} tone={activeIncidents.length ? "warning" : "success"} />
+          <MetricCard
+            label="Current signals"
+            value={signalsAvailable ? (hasSignals ? "Present" : "None reported") : null}
+            detail={signalsAvailable
+              ? `${activeIncidents.length} situations, ${state.exposures?.data.length ?? 0} CVE summaries in the loaded subset; not a historical trend`
+              : "Incident or exposure evidence unavailable; no activity conclusion is available"}
+            tone={signalsAvailable && hasSignals ? "warning" : "default"}
+          />
           <MetricCard label="Required decision" value={decision} detail="Advisory only; operator approval remains required" tone="warning" size="text" />
         </section>
       </div>

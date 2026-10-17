@@ -88,7 +88,16 @@ A 20–30 minute walkthrough proving the end-to-end value chain:
 1. **Executive Investigation Workspace** (`/investigate`) — start from a
    Business Service. Show it summarizes risk, evidence, topology, timeline,
    vulnerabilities, and impact in one place, in both Executive and Engineer
-   modes.
+   modes. Shared entry links preserve all nine selected scope dimensions;
+   a bookmark cannot widen the current operating scope. Malformed entry
+   parameters fail before source reads. Changing the subject clears prior
+   evidence while replacement sources load; late Copilot responses cannot
+   publish into another subject, operating scope, or continuity generation.
+   Narrowed bookmarks do not reuse or rebind a broader root conversation.
+   Local saves remain browser-local navigation state, not team sharing or
+   retained evidence replay, and JSON exports include the effective scope.
+   Current-signal counts describe the loaded subset, not a historical trend;
+   unavailable incident or exposure sources do not imply quiet conditions.
 2. **Drill into a real finding** — pick a live vulnerability or network gap
    surfaced for the pilot's actual subscription; show the evidence trail
    (which ARG/Defender/Update Manager record backs the claim) and the
