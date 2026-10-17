@@ -1719,6 +1719,17 @@ export const vulnerabilityApi = {
       { query, signal: options.signal },
     );
   },
+  /** Read exact-principal/scope retained aggregates without current source acquisition. */
+  exposureHistory: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").ExposureHistory>("/vulnerabilities/exposure/history", {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Explicitly reacquire server aggregates and append against the reviewed history revision. */
+  captureExposureObservation: (scope: ScopeSelection, expectedRevision: number, generation?: string) =>
+    apiRequest<import("./types").ExposureHistory>("/vulnerabilities/exposure/history", {
+      method: "POST", query: scopeToSearchParams(scope),
+      body: { expected_revision: expectedRevision, ...(generation ? { generation } : {}) },
+    }),
   exposureCatalog: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
     apiRequest<ExposureQueryCatalog>("/vulnerabilities/exposure/catalog", {
       query: scopeToSearchParams(scope),

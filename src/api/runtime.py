@@ -4587,6 +4587,13 @@ def _overview_history_store():
     return OverviewHistoryStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _exposure_history_store():
+    """Retain explicit Exposure aggregates on the existing durable document root."""
+    from operations.exposure_history import ExposureHistoryStore
+
+    return ExposureHistoryStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 def _service_portfolio_store():
     """Retain authorized service portfolio observations on the existing durable root."""
     from operations.service_portfolio import ServicePortfolioStore
@@ -5856,6 +5863,7 @@ def build_context() -> ApiContext:
         rollout_store_provider=_remediation_execution_store,
         inventory_export_store=_inventory_export_store(),
         overview_history_store=_overview_history_store(),
+        exposure_history_store=_exposure_history_store(),
         service_portfolio_store=_service_portfolio_store(),
         resource_health_history_store=_resource_health_history_store(),
         network_intent_store=_network_intent_store(),

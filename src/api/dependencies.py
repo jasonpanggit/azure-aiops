@@ -20,6 +20,7 @@ from intelligence.inventory.exports import InventoryExportStore
 from network.history import NetworkHistoryStore
 from network.intents import NetworkIntentStore
 from onboarding.service import SubscriptionOnboardingService
+from operations.exposure_history import ExposureHistoryStore
 from operations.investigation_jobs import InvestigationJobStore
 from operations.investigation_workspaces import InvestigationWorkspaceStore
 from operations.overview_history import OverviewHistoryStore
@@ -114,6 +115,7 @@ class ApiContext:
     rollout_store_provider: Callable[[], Any] | None = None
     inventory_export_store: InventoryExportStore | None = None
     overview_history_store: OverviewHistoryStore | None = None
+    exposure_history_store: ExposureHistoryStore | None = None
     service_portfolio_store: ServicePortfolioStore | None = None
     service_objective_store: ServiceObjectiveStore | None = None
     service_request_metrics: Callable[[str, int, str], dict[str, Any]] | None = None

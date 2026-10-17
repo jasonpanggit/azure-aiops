@@ -1603,6 +1603,34 @@ not evidence of zero findings.
 Shared Exposure partial-state copy does not label generic represented-finding
 counts as connection coverage.
 
+### Explicit Exposure observations
+
+`GET /api/v1/vulnerabilities/exposure/history` reads private retained observations
+for the current principal and exact effective nine-dimensional scope. It does
+not acquire live providers. `POST` to the same path accepts only
+`expected_revision` and optional exact `generation`; browser-supplied counts,
+actors, evidence and execution fields are rejected. The server reacquires the
+authorized unfiltered facet response, validates generation/scope/count coherence,
+and persists an allowlisted aggregate receipt with an immutable `exo-` identity.
+The UI pins capture to its loaded generation; this is a new server read, not a
+copy of the displayed browser response.
+
+The existing local/OneLake document root holds at most 30 receipts and 256 KiB per
+principal/scope, with create-only/ETag compare-and-swap. Capacity conflicts never
+evict old evidence. Conflicting revisions return 409; missing storage, corrupt
+history, unusable source responses or failed persistence cannot return capture
+success. After an ambiguous POST reply, reload history and review its revision
+before explicitly trying another capture; there is no automatic retry.
+
+Receipts retain only finding totals, six bounded facet vocabularies (at most 40
+classifications each), source generation/table, completeness/freshness states,
+explicit connection counts if supplied, exclusions and source observation time.
+Raw findings, resource identifiers and provider payloads are not retained.
+Capture time is separate from source observation time. Comparisons are
+arithmetic aggregate differences, not new/resolved finding counts, verified
+remediation, continuous history or causal attribution. The UI exposes both
+generations and source extents; omitted facet groups remain unavailable.
+
 ### Situation handover annotations and observed comparisons
 
 `GET /api/v1/situations/{situation_id}/notes` reauthorizes the live Situation

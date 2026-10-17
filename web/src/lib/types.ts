@@ -981,6 +981,30 @@ export interface ExposureFacets extends ExposureOverview {
   facets: Record<string, ExposureFacetValue[]>;
 }
 
+export interface ExposureObservation {
+  observation_id: string;
+  captured_at: string;
+  generation: string;
+  total_count: number;
+  facets: Record<string, ExposureFacetValue[]>;
+  completeness_state: string;
+  represented_connections: number | null;
+  expected_connections: number | null;
+  excluded_count: number | null;
+  coverage_total_count: number | null;
+  freshness_state: string;
+  source_observed_at: string;
+  source_table: "gold_exposure_facts" | "silver_patch_snapshot_findings";
+}
+
+export interface ExposureHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  observations: ExposureObservation[];
+}
+
 export interface ExposureQueryCatalog {
   version: string;
   filters: Array<{

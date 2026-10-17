@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import { vulnerabilityApi } from "@/lib/services";
+import { SCOPE_DIMENSIONS } from "@/lib/scope";
 import type {
   Envelope,
   ExposureCollection,
@@ -38,6 +39,23 @@ function captureFetch<T, TPagination = Pagination>(body: Envelope<T, TPagination
 describe("vulnerabilityApi authoritative Exposure envelope", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("separates retained reads from explicit revision-bound capture across all scope dimensions", async () => {
+    const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(dimension => [dimension, ["one", "two"]]));
+    const fetchSpy = captureFetch({ data: {}, evidence: [], scope, warnings: [] });
+    const controller = new AbortController();
+    await vulnerabilityApi.exposureHistory(scope, controller.signal);
+    await vulnerabilityApi.captureExposureObservation(scope, 4, GENERATION);
+    const calls = fetchSpy.mock.calls.filter(([input]) => String(input).includes("/api/v1/"));
+    expect(calls).toHaveLength(2);
+    for (const [input] of calls) {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe("/api/v1/vulnerabilities/exposure/history");
+      for (const dimension of SCOPE_DIMENSIONS) expect(url.searchParams.getAll(dimension)).toEqual(["one", "two"]);
+    }
+    expect(calls[0][1]).toMatchObject({ method: "GET", signal: controller.signal });
+    expect(calls[1][1]).toMatchObject({ method: "POST", body: JSON.stringify({ expected_revision: 4, generation: GENERATION }) });
   });
 
   it("preserves findings, generation, counts, completeness, and source attribution", async () => {

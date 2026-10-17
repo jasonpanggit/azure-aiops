@@ -5,6 +5,7 @@ import { Suspense, useCallback, useMemo, useState, type ReactNode } from "react"
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
+import { ExposureMovement } from "@/components/exposure/ExposureMovement";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CountBarChart } from "@/components/ui/CountBarChart";
@@ -412,6 +413,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
       )}
 
       <div className="exposure-landing-sections">
+        <ExposureMovement scope={scope} generation={knowledgeVersion ?? generation} />
         <OverviewSection
           title="Exposure findings"
           description="Current findings in the authorized, generation-pinned Fabric SQL partition."

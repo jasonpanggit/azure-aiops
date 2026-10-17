@@ -5678,6 +5678,30 @@ body.topology-fullscreen-open {
   cursor: not-allowed;
 }
 
+.exposure-movement .overview-history-controls label {
+  flex: 1 1 280px;
+}
+
+.exposure-movement select,
+.exposure-movement .button {
+  min-height: 44px;
+}
+
+.exposure-movement select {
+  width: 100%;
+  min-width: 0;
+}
+
+.exposure-movement .card-body > p,
+.exposure-movement details p {
+  max-width: 75ch;
+  overflow-wrap: anywhere;
+}
+
+.exposure-movement details {
+  margin-top: 16px;
+}
+
 .compliance-policy-explanation,
 .compliance-policy-audit-entry {
   overflow-wrap: anywhere;

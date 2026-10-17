@@ -17,6 +17,7 @@ vi.mock("next/navigation", () => ({
 
 const api = vi.hoisted(() => ({
   exposureFacets: vi.fn(),
+  exposureHistory: vi.fn(),
   exposureItems: vi.fn(),
   summary: vi.fn(),
   patchPriorities: vi.fn(),
@@ -150,6 +151,7 @@ describe("ExposurePage bounded read model", () => {
     vi.clearAllMocks();
     navigation.search = new URLSearchParams();
     api.exposureFacets.mockResolvedValue(facetEnvelope());
+    api.exposureHistory.mockResolvedValue(envelope({ schema_version: 1, actor: "reader", scope: {}, revision: 0, observations: [] }));
     api.exposureItems.mockRejectedValue(new Error("exposureItems must not be called"));
     for (const method of [
       "summary",
