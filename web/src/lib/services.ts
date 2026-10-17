@@ -1730,6 +1730,16 @@ export const vulnerabilityApi = {
       method: "POST", query: scopeToSearchParams(scope),
       body: { expected_revision: expectedRevision, ...(generation ? { generation } : {}) },
     }),
+  /** Read retained-evidence candidates and personal workflow declarations, without providers. */
+  exposureRecovery: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").ExposureRecoveryState>("/vulnerabilities/exposure/recovery", {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Append one explicit revision-bound review declaration; never repairs sources. */
+  reviewExposureRecovery: (scope: ScopeSelection, review: import("./types").ExposureRecoveryReview) =>
+    apiRequest<import("./types").ExposureRecoveryState>("/vulnerabilities/exposure/recovery", {
+      method: "POST", query: scopeToSearchParams(scope), body: review,
+    }),
   exposureCatalog: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
     apiRequest<ExposureQueryCatalog>("/vulnerabilities/exposure/catalog", {
       query: scopeToSearchParams(scope),

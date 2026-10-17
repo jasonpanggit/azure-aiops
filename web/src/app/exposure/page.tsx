@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
 import { ExposureMovement } from "@/components/exposure/ExposureMovement";
+import { ExposureDecision } from "@/components/exposure/ExposureDecision";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CountBarChart } from "@/components/ui/CountBarChart";
@@ -413,6 +414,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
       )}
 
       <div className="exposure-landing-sections">
+        <ExposureDecision data={facetData} sourceStatus={facets.status} query={loadedQuery} />
         <ExposureMovement scope={scope} generation={knowledgeVersion ?? generation} />
         <OverviewSection
           title="Exposure findings"

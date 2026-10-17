@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { vulnerabilityApi } from "@/lib/services";
 import { SCOPE_DIMENSIONS, type ScopeSelection } from "@/lib/scope";
 import type { Envelope, ExposureHistory, ExposureObservation } from "@/lib/types";
+import { ExposureRecovery } from "./ExposureRecovery";
 
 function scoped(result: Envelope<ExposureHistory>, scope: ScopeSelection): ExposureHistory {
   const agrees = (actual: Record<string, string[]>) => SCOPE_DIMENSIONS.every(dimension =>
@@ -103,7 +104,7 @@ function MovementWorkspace({ scope, generation }: { scope: ScopeSelection; gener
         evidence {row.completeness_state}; connections {row.represented_connections ?? "unknown"} / {row.expected_connections ?? "unknown"};
         excluded findings {row.excluded_count ?? "unknown"}; source coverage total {row.coverage_total_count ?? "unknown"}.</p></div>;
   }
-  return <section className="card queue-card overview-history exposure-movement" aria-label="Retained Exposure movement">
+  return <><section className="card queue-card overview-history exposure-movement" aria-label="Retained Exposure movement">
     <div className="card-header"><div><h2>Compare retained exposure observations</h2>
       <p>Explicit server aggregate receipts for your principal and exact effective scope, not a continuous risk trend.</p></div></div>
     <div className="card-body">
@@ -147,5 +148,5 @@ function MovementWorkspace({ scope, generation }: { scope: ScopeSelection; gener
         </>}
       </>}
     </div>
-  </section>;
+  </section>{history ? <ExposureRecovery scope={scope} historyRevision={history.revision} /> : <section id="exposure-recovery" className="card queue-card" aria-label="Exposure recovery review"><div className="card-body"><h2>Recovery review requires retained observations</h2><p>Reload observation history above before reading recorded evidence gaps. Current provider health is not inferred from unavailable history.</p></div></section>}</>;
 }

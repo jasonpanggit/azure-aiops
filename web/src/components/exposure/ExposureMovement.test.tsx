@@ -5,6 +5,7 @@ import { ExposureMovement } from "./ExposureMovement";
 
 const api = vi.hoisted(() => ({ exposureHistory: vi.fn(), captureExposureObservation: vi.fn() }));
 vi.mock("@/lib/services", () => ({ vulnerabilityApi: api }));
+vi.mock("./ExposureRecovery", () => ({ ExposureRecovery: () => <div>Recovery review workspace</div> }));
 const scope = { subscription: ["sub-a"] }, generation = "generation-one";
 const observation = (index: number): ExposureObservation => ({
   observation_id: `exo-${String(index).padStart(32, "0")}`,

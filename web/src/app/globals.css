@@ -5702,6 +5702,78 @@ body.topology-fullscreen-open {
   margin-top: 16px;
 }
 
+.exposure-decision-list {
+  margin: 20px 0 0;
+  padding-left: 24px;
+}
+
+.exposure-decision-list li {
+  padding: 16px 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.exposure-decision-list p,
+.exposure-decision .card-body > p,
+.exposure-recovery .card-body p {
+  max-width: 75ch;
+  overflow-wrap: anywhere;
+}
+
+.exposure-decision-list h3 {
+  margin: 0 0 8px;
+}
+
+.exposure-decision-list .button {
+  margin-top: 8px;
+  min-height: 44px;
+}
+
+.exposure-recovery-field {
+  display: grid;
+  gap: 6px;
+  margin-block: 16px;
+  min-width: 0;
+}
+
+.exposure-recovery fieldset {
+  min-width: 0;
+  margin-block: 20px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.exposure-recovery .overview-history-controls label {
+  flex: 1 1 180px;
+}
+
+.exposure-recovery input,
+.exposure-recovery select,
+.exposure-recovery textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 12px;
+  color: var(--color-text);
+  font: inherit;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.exposure-recovery textarea {
+  resize: vertical;
+}
+
+.exposure-recovery .button {
+  min-height: 44px;
+}
+
+.exposure-recovery-event {
+  padding-block: 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
 .compliance-policy-explanation,
 .compliance-policy-audit-entry {
   overflow-wrap: anywhere;

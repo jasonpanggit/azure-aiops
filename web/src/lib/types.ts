@@ -1005,6 +1005,39 @@ export interface ExposureHistory {
   observations: ExposureObservation[];
 }
 
+export type ExposureRecoveryReason = "source_evidence" | "connection_coverage" | "freshness" | "classification" | "sla_unknown";
+export type ExposureRecoveryDisposition = "queued" | "in_review" | "review_closed";
+export interface ExposureRecoveryReview {
+  expected_revision: number;
+  observation_id: string;
+  reason: ExposureRecoveryReason;
+  disposition: ExposureRecoveryDisposition;
+  owner: string;
+  target_date: string;
+  note: string;
+}
+export interface ExposureRecoveryEvent extends ExposureRecoveryReview {
+  event_id: string;
+  recorded_at: string;
+  actor: string;
+}
+export interface ExposureRecoveryCandidate {
+  observation_id: string;
+  reason: ExposureRecoveryReason;
+  explanation: string;
+  generation: string;
+  captured_at: string;
+  review: ExposureRecoveryEvent | null;
+}
+export interface ExposureRecoveryState {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  events: ExposureRecoveryEvent[];
+  candidates: ExposureRecoveryCandidate[];
+}
+
 export interface ExposureQueryCatalog {
   version: string;
   filters: Array<{

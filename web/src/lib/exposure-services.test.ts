@@ -58,6 +58,27 @@ describe("vulnerabilityApi authoritative Exposure envelope", () => {
     expect(calls[1][1]).toMatchObject({ method: "POST", body: JSON.stringify({ expected_revision: 4, generation: GENERATION }) });
   });
 
+  it("separates recovery reads and explicit review declarations across all nine dimensions", async () => {
+    const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(dimension => [dimension, ["one", "two"]]));
+    const fetchSpy = captureFetch({ data: {}, evidence: [], scope, warnings: [] });
+    const controller = new AbortController();
+    const payload = {
+      expected_revision: 3, observation_id: `exo-${"1".repeat(32)}`, reason: "connection_coverage" as const,
+      disposition: "queued" as const, owner: "Operations", target_date: "2026-11-01", note: "Review recorded gap",
+    };
+    await vulnerabilityApi.exposureRecovery(scope, controller.signal);
+    await vulnerabilityApi.reviewExposureRecovery(scope, payload);
+    const calls = fetchSpy.mock.calls.filter(([input]) => String(input).includes("/api/v1/"));
+    expect(calls).toHaveLength(2);
+    for (const [input] of calls) {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe("/api/v1/vulnerabilities/exposure/recovery");
+      for (const dimension of SCOPE_DIMENSIONS) expect(url.searchParams.getAll(dimension)).toEqual(["one", "two"]);
+    }
+    expect(calls[0][1]).toMatchObject({ method: "GET", signal: controller.signal });
+    expect(calls[1][1]).toMatchObject({ method: "POST", body: JSON.stringify(payload) });
+  });
+
   it("preserves findings, generation, counts, completeness, and source attribution", async () => {
     const envelope: Envelope<ExposureCollection> = {
       data: {

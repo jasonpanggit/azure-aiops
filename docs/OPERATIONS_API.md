@@ -1631,6 +1631,43 @@ arithmetic aggregate differences, not new/resolved finding counts, verified
 remediation, continuous history or causal attribution. The UI exposes both
 generations and source extents; omitted facet groups remain unavailable.
 
+### Exposure evidence recovery review
+
+The landing page orders advisory review by evidence quality, reported critical
+severity, exact overdue SLA classification and high severity. It exposes the
+source generation/state and preserves all nine scope dimensions and generation
+on filtered collection links. It does not invent a combined score or infer
+exploitability, impact, fix readiness, scheduling or verified remediation.
+
+`GET /api/v1/vulnerabilities/exposure/recovery` derives up to five gap reasons per
+retained receipt: incomplete/excluded source evidence, absent or unequal
+connection coverage, unconfirmed freshness, missing/incomplete facet groups and
+unclassified SLA findings. A missing history has no candidates, not healthy
+provider status. Reads and reviews never acquire providers. Candidates remain
+bound to their immutable receipt, generation and capture time, even after later
+observations. Old candidates do not disappear when a new source looks healthier.
+
+`POST` to the same path accepts `expected_revision`, `observation_id`, one
+server-derived `reason`, `disposition` (`queued`, `in_review`, `review_closed`),
+`owner` (up to 160 characters), optional `target_date` (empty or YYYY-MM-DD), and
+a nonblank `note` (up to 1000 characters). A receipt/reason must exist under the
+current principal and exact effective scope. The first declaration must be
+`queued`; subsequent events may record review or closure, including reopening.
+Owner/date/note are operator declarations: no notification, cross-user
+assignment, source freshness, provider SLA or execution authorization follows.
+Closing review does not remove the gap or repair/verify provider data.
+
+The private document root `state/exposure-recovery` uses the same exact
+principal/scope hash and existing local/OneLake storage as observation history.
+At most 100 immutable server-attributed events and 256 KiB are stored, without
+eviction. Create-only/ETag writes and reviewed revisions prevent lost updates.
+409 requires explicit reload; malformed input is 400; absent candidates are
+404; missing/corrupt storage or failed persistence cannot return success.
+The UI checks scope, event continuity, immutable prefixes and the exact submitted
+declaration. Ambiguous writes disable submission until explicit retained reload;
+there is no automatic POST replay. This is personal workflow state, not shared
+team ownership or audited provider repair evidence.
+
 ### Situation handover annotations and observed comparisons
 
 `GET /api/v1/situations/{situation_id}/notes` reauthorizes the live Situation
