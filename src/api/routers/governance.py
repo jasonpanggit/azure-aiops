@@ -147,7 +147,7 @@ def _spn(snapshot: GovernanceSnapshot) -> SpnGovernanceEngine:
 
 def _identity_warnings(snapshot: GovernanceSnapshot) -> list[str]:
     warnings = list(snapshot.warnings)
-    if not snapshot.has_identity_data:
+    if not snapshot.rows("RoleAssignment"):
         warnings.append(_NO_IDENTITY_DATA)
     return list(dict.fromkeys(warnings))
 

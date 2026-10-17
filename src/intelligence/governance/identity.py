@@ -104,6 +104,7 @@ class PrincipalRisk:
     stale: bool
     last_changed: str
     blast_radius: dict[str, int] = field(default_factory=dict)
+    risk_evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -117,6 +118,7 @@ class PrincipalRisk:
             "stale": self.stale,
             "last_changed": self.last_changed,
             "blast_radius": dict(self.blast_radius),
+            "risk_evidence": dict(self.risk_evidence),
         }
 
 
@@ -215,15 +217,39 @@ class IdentityRiskEngine:
             return False
         return any(str(action).strip().lower() in _PRIVILEGED_ACTIONS for action in actions)
 
+    def _age_state(self, assignment: Mapping[str, Any]) -> str:
+        text = str(assignment.get("updatedOn") or assignment.get("createdOn") or "").strip()
+        try:
+            changed = datetime.fromisoformat(text)
+        except ValueError:
+            return "unknown"
+        if changed.tzinfo is None or changed.utcoffset() is None or changed > self._now:
+            return "unknown"
+        return "stale" if (self._now - changed).days > STALE_ACCESS_DAYS else "within_review_window"
+
     def _is_stale(self, assignment: Mapping[str, Any]) -> bool:
-        changed = _parse_timestamp(
-            assignment.get("updatedOn") or assignment.get("createdOn")
-        )
-        # An assignment with no timestamp is not assumed stale -- flagging it
-        # would fill the review queue with noise the reviewer cannot action.
-        if changed is None:
-            return False
-        return (self._now - changed).days > STALE_ACCESS_DAYS
+        return self._age_state(assignment) == "stale"
+
+    def _risk_evidence(self, assignments: list[dict[str, Any]], privileged: bool) -> dict[str, Any]:
+        unresolved = 0
+        for assignment in assignments:
+            definition = self._definitions.get(str(assignment.get("roleDefinitionId") or "").lower())
+            actions = definition.get("actions") if definition else None
+            if (
+                not definition or not str(definition.get("roleName") or "").strip()
+                or not isinstance(actions, list) or not actions
+                or not all(isinstance(action, str) and action.strip() for action in actions)
+            ):
+                unresolved += 1
+        states = [self._age_state(assignment) for assignment in assignments]
+        return {
+            "classification": "privileged_signal" if privileged else "incomplete" if unresolved else "no_classified_signal",
+            "unresolved_role_assignments": unresolved,
+            "unknown_age_assignments": states.count("unknown"),
+            "stale_assignments": states.count("stale"),
+            "age_evaluated_at": self._now.isoformat(),
+            "effective_access": "not_evaluated",
+        }
 
     def principals(self) -> list[PrincipalRisk]:
         """One risk record per principal, most privileged and widest first."""
@@ -275,6 +301,7 @@ class IdentityRiskEngine:
                     stale=any(self._is_stale(item) for item in assignments),
                     last_changed=latest.isoformat() if latest else "",
                     blast_radius=blast_radius,
+                    risk_evidence=self._risk_evidence(assignments, privileged),
                 )
             )
 
@@ -308,6 +335,7 @@ class IdentityRiskEngine:
                         assignment.get("createdOn") or assignment.get("updatedOn") or ""
                     ),
                     "stale": self._is_stale(assignment),
+                    "age_state": self._age_state(assignment),
                 }
             )
         owners.sort(key=lambda entry: (entry["subscription_id"], entry["principal_id"]))

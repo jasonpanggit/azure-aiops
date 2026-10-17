@@ -3209,6 +3209,14 @@ export interface PrincipalRisk {
   stale: boolean;
   last_changed: string;
   blast_radius: Record<string, number>;
+  risk_evidence?: {
+    classification: "privileged_signal" | "incomplete" | "no_classified_signal";
+    unresolved_role_assignments: number;
+    unknown_age_assignments: number;
+    stale_assignments: number;
+    age_evaluated_at: string;
+    effective_access: "not_evaluated";
+  };
 }
 
 export interface SubscriptionOwnerRecord {
@@ -3219,6 +3227,7 @@ export interface SubscriptionOwnerRecord {
   subscription_id: string;
   assigned_on: string;
   stale: boolean;
+  age_state?: "stale" | "within_review_window" | "unknown";
 }
 
 export interface StaleAccessRecord {

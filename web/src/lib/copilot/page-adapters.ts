@@ -2422,6 +2422,9 @@ export interface IdentityPrincipalObservation {
   widest_scope_breadth?: string;
   assignment_count?: number;
   roles?: string[];
+  risk_classification?: "privileged_signal" | "incomplete" | "no_classified_signal";
+  unresolved_role_assignments?: number;
+  unknown_age_assignments?: number;
 }
 
 /** A subscription-owner row projected before adapter typing. */
@@ -2431,6 +2434,7 @@ export interface IdentityOwnerObservation {
   subscription_id?: string;
   scope_breadth?: string;
   stale?: boolean;
+  age_state?: "stale" | "within_review_window" | "unknown";
 }
 
 /** A stale access-review assignment projected before adapter typing. */
@@ -5363,6 +5367,8 @@ function identityCoreInput(input: IdentityCopilotPageInput): CoreCopilotAdapterI
         stale_assignment_count: summary.stale_assignment_count,
         non_human_principal_count: summary.non_human_principal_count,
         assignment_count: summary.assignment_count,
+        classification_basis: "observed_rbac_role_name_action_heuristic",
+        effective_access: "not_evaluated",
       },
     }] : []),
     // Principals are non-ARM domain identities; the principal id is redacted
@@ -5377,8 +5383,14 @@ function identityCoreInput(input: IdentityCopilotPageInput): CoreCopilotAdapterI
       priority: index,
       data: {
         principal_type: principal.principal_type,
-        privileged: principal.privileged ?? false,
-        stale: principal.stale ?? false,
+        privileged: principal.privileged ?? null,
+        stale: principal.stale ?? null,
+        classification_basis: "observed_rbac_role_name_action_heuristic",
+        effective_access: "not_evaluated",
+        change_recency_does_not_establish_use_or_review: true,
+        risk_classification: principal.risk_classification ?? "unreported",
+        unresolved_role_assignments: principal.unresolved_role_assignments ?? null,
+        unknown_age_assignments: principal.unknown_age_assignments ?? null,
         widest_scope_breadth: principal.widest_scope_breadth,
         assignment_count: principal.assignment_count ?? 0,
         role_count: principal.roles?.length ?? 0,
@@ -5396,7 +5408,8 @@ function identityCoreInput(input: IdentityCopilotPageInput): CoreCopilotAdapterI
         principal_type: owner.principal_type,
         subscription_id: owner.subscription_id,
         scope_breadth: owner.scope_breadth,
-        stale: owner.stale ?? false,
+        stale: owner.stale ?? null,
+        change_age_state: owner.age_state ?? "unknown",
       },
     })),
     ...input.staleAccess.slice(0, 50).map((assignment, index) => ({

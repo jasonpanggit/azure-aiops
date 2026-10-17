@@ -449,6 +449,62 @@ def test_assignment_without_timestamp_is_not_assumed_stale():
     assert engine.principals()[0].stale is False
 
 
+@pytest.mark.parametrize("timestamp", ["", "not-a-clock", "2026-01-14T00:00:00", "2026-01-16T00:00:00Z"])
+def test_identity_unknown_age_is_explicit_not_current_or_stale(timestamp):
+    assignment = {**_assignment("a1", principal="p1", role="/roles/owner"), "updatedOn": timestamp, "createdOn": ""}
+    engine = _identity_engine(role_assignments=[assignment])
+    evidence = engine.principals()[0].to_dict()["risk_evidence"]
+    assert evidence["unknown_age_assignments"] == 1
+    assert evidence["stale_assignments"] == 0
+    assert evidence["age_evaluated_at"] == NOW.isoformat()
+    assert engine.stale_access() == []
+    assert engine.subscription_owners() == []  # Resource-group owner, not a subscription owner.
+
+
+def test_identity_unresolved_role_and_unknown_age_cannot_be_masked_by_recent_sibling():
+    assignments = [
+        _assignment("recent", principal="p1"),
+        {**_assignment("unknown", principal="p1", role="/roles/missing"), "updatedOn": ""},
+        _assignment("old", principal="p1", changed=NOW - timedelta(days=200)),
+    ]
+    evidence = _identity_engine(role_assignments=assignments).principals()[0].to_dict()["risk_evidence"]
+    assert evidence == {
+        "classification": "incomplete", "unresolved_role_assignments": 1,
+        "unknown_age_assignments": 1, "stale_assignments": 1,
+        "age_evaluated_at": NOW.isoformat(), "effective_access": "not_evaluated",
+    }
+
+
+@pytest.mark.parametrize("actions", [None, [], "*/read", [None], [""]])
+def test_identity_unusable_action_evidence_is_not_standard_access(actions):
+    engine = _identity_engine(
+        role_assignments=[_assignment("a1", principal="p1")],
+        role_definitions=[{**_definition("/roles/reader", "Reader"), "actions": actions}],
+    )
+    evidence = engine.principals()[0].to_dict()["risk_evidence"]
+    assert evidence["classification"] == "incomplete"
+    assert evidence["unresolved_role_assignments"] == 1
+
+
+def test_identity_privileged_heuristic_remains_qualified_with_unknown_sibling():
+    engine = _identity_engine(role_assignments=[
+        _assignment("owner", principal="p1", role="/roles/owner", scope="/subscriptions/sub-a"),
+        _assignment("missing", principal="p1", role="/roles/missing"),
+    ])
+    evidence = engine.principals()[0].to_dict()["risk_evidence"]
+    assert evidence["classification"] == "privileged_signal"
+    assert evidence["unresolved_role_assignments"] == 1
+    assert evidence["effective_access"] == "not_evaluated"
+    assert engine.subscription_owners()[0]["age_state"] == "within_review_window"
+
+
+def test_identity_known_role_has_no_classified_signal_not_effective_access_assurance():
+    evidence = _identity_engine(role_assignments=[_assignment("a1", principal="p1")]).principals()[0].risk_evidence
+    assert evidence["classification"] == "no_classified_signal"
+    assert evidence["unresolved_role_assignments"] == 0
+    assert evidence["effective_access"] == "not_evaluated"
+
+
 def test_subscription_owners_exclude_resource_group_owners():
     engine = _identity_engine(
         role_assignments=[
@@ -1920,6 +1976,13 @@ def test_empty_identity_data_is_warned_about_not_silently_empty(tmp_path):
     body = response.json()
     assert body["data"]["count"] == 0
     assert any("not a statement" in warning.lower() for warning in body["warnings"])
+
+
+def test_role_definitions_alone_do_not_claim_role_assignment_coverage(tmp_path):
+    snapshot = GovernanceSnapshot([_entity("RoleDefinition", "/roles/reader", _definition("/roles/reader", "Reader"))])
+    body = _client(tmp_path, snapshot).get("/api/v1/governance/identity/summary", headers=_headers()).json()
+    assert body["data"]["assignment_count"] == 0
+    assert any("No role assignment data" in warning for warning in body["warnings"])
 
 
 def test_governance_snapshot_warnings_reach_finops_and_identity_routes(tmp_path):

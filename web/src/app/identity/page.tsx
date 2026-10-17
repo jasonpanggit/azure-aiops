@@ -16,6 +16,7 @@ import { useApi } from "@/hooks/useApi";
 import { buildIdentityCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
+import { scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import { governanceApi } from "@/lib/services";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
@@ -31,12 +32,16 @@ function rotationTone(status: string): "critical" | "warning" | "success" | "neu
 /** Blast radius is a count per scope breadth; render it compactly. */
 function blastRadius(radius: Record<string, number>): string {
   const entries = Object.entries(radius ?? {});
-  if (entries.length === 0) return "None observed";
+  if (entries.length === 0) return "Scope breadth unreported";
   return entries.map(([key, value]) => `${value} ${titleize(key).toLowerCase()}`).join(", ");
 }
 
 export default function IdentityPage() {
   const { scope } = useScope();
+  return <IdentityWorkspace key={scopeToSearchParams(scope).toString()} scope={scope} />;
+}
+
+function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
   const [copilotOpen, setCopilotOpen] = useState(false);
 
   const summary = useApi(() => governanceApi.identitySummary(scope), [scope]);
@@ -55,15 +60,15 @@ export default function IdentityPage() {
   const { filteredRows: filteredPrincipals, filters: principalFilters, resetFilters: resetPrincipalFilters } = useColumnFilters(principalRows, [
     { id: "type", label: "Type", getValues: (row) => row.principal_type || "unknown", formatOption: titleize },
     { id: "scope", label: "Widest scope", getValues: (row) => row.widest_scope_breadth || "unknown", formatOption: titleize },
-    { id: "status", label: "Status", getValues: (row) => [row.privileged ? "privileged" : "", row.stale ? "stale" : "", !row.privileged && !row.stale ? "standard" : ""] },
+    { id: "status", label: "Status", getValues: (row) => [row.privileged ? "privileged signal" : row.risk_evidence?.classification === "no_classified_signal" ? "no classified signal" : "incomplete classification", row.stale ? "review overdue" : "", (row.risk_evidence?.unknown_age_assignments ?? 1) > 0 ? "unknown change age" : ""] },
   ]);
   const { filteredRows: filteredOwners, filters: ownerFilters, resetFilters: resetOwnerFilters } = useColumnFilters(ownerRows, [
     { id: "type", label: "Type", getValues: (row) => row.principal_type || "unknown", formatOption: titleize },
-    { id: "status", label: "Status", getValues: (row) => row.stale ? "stale" : "current" },
+    { id: "status", label: "Status", getValues: (row) => row.stale ? "review overdue" : row.age_state === "within_review_window" ? "within review window" : "unknown change age" },
   ]);
   const { filteredRows: filteredStale, filters: staleFilters, resetFilters: resetStaleFilters } = useColumnFilters(staleRows, [
     { id: "role", label: "Role", getValues: (row) => row.role || "Unresolved" },
-    { id: "status", label: "Status", getValues: (row) => row.privileged ? "privileged" : "standard" },
+    { id: "status", label: "Status", getValues: (row) => row.privileged ? "privileged signal" : "no classified signal" },
   ]);
   const { filteredRows: filteredNonHuman, filters: nonHumanFilters, resetFilters: resetNonHumanFilters } = useColumnFilters(nonHumanRows, [
     { id: "type", label: "Type", getValues: (row) => row.principal_type || "unknown", formatOption: titleize },
@@ -79,23 +84,22 @@ export default function IdentityPage() {
   const nonHumanPaging = useTablePagination(filteredNonHuman);
   const spnPaging = useTablePagination(filteredSpn);
 
-  const loading = summary.loading || principals.loading || spn.loading;
-  const error = summary.error ?? principals.error ?? spn.error;
+  const sources = [summary, principals, owners, stale, nonHuman, spn];
+  const loading = sources.some(source => source.loading);
+  const error = sources.find(source => source.error)?.error;
 
   const totals = summary.data?.data;
   const spnSummary = spn.data?.data.summary;
 
   // The API warns when identity data has never synced. Surfacing that is
   // essential: an empty table must never read as "no privileged access".
-  const warnings = [
-    ...(summary.data?.warnings ?? []),
-    ...(principals.data?.warnings ?? []),
-  ];
+  const warnings = Array.from(new Set(sources.flatMap(source => source.data?.warnings ?? [])));
+  const identityEvidence = sources.flatMap(source => source.data?.evidence ?? []);
 
   // Read-only contextual Copilot over already-loaded, server-authorized
   // identity evidence. Principals stay scope-safe domain identities; no
   // mutation path is exposed (D-03, D-05, D-06, D-08, D-09).
-  const identityAvailable = !error && Boolean(summary.data);
+  const identityAvailable = !error && sources.every(source => Boolean(source.data));
   const identityCopilot = buildIdentityCopilotContext({
     scope,
     summary: totals
@@ -115,6 +119,9 @@ export default function IdentityPage() {
       widest_scope_breadth: principal.widest_scope_breadth,
       assignment_count: principal.assignment_count,
       roles: principal.roles,
+      risk_classification: principal.risk_evidence?.classification,
+      unresolved_role_assignments: principal.risk_evidence?.unresolved_role_assignments,
+      unknown_age_assignments: principal.risk_evidence?.unknown_age_assignments,
     })),
     principalsTotalCount: principals.data?.data.count ?? principalRows.length,
     owners: ownerRows.map((owner) => ({
@@ -123,6 +130,7 @@ export default function IdentityPage() {
       subscription_id: owner.subscription_id,
       scope_breadth: owner.scope_breadth,
       stale: owner.stale,
+      age_state: owner.age_state,
     })),
     ownersTotalCount: owners.data?.data.count ?? ownerRows.length,
     staleAccess: staleRows.map((assignment) => ({
@@ -141,12 +149,13 @@ export default function IdentityPage() {
     })),
     spnTotalCount: spn.data?.data.count ?? spnRows.length,
     available: identityAvailable,
-    freshness: identityAvailable ? "fresh" : "unavailable",
-    evidence: [...(summary.data?.evidence ?? []), ...(principals.data?.evidence ?? [])],
+    freshness: !identityAvailable ? "unavailable" : identityEvidence.some(item => item.freshness === "stale") ? "stale"
+      : warnings.length === 0 && sources.every(source => Boolean(source.data?.evidence.length) && source.data?.evidence.every(item => item.freshness === "fresh")) ? "fresh" : "partial",
+    evidence: identityEvidence,
   });
 
   return (
-    <div className="page-container">
+    <div className="page-container identity-workspace">
       <PageHeader
         eyebrow="Access governance"
         title="Who has access, and how wide is it?"
@@ -174,7 +183,7 @@ export default function IdentityPage() {
       />
 
       <EvidenceBar
-        evidence={[...(summary.data?.evidence ?? []), ...(spn.data?.evidence ?? [])]}
+        evidence={identityEvidence}
         knowledgeVersion={summary.data?.knowledge_version}
         warnings={warnings}
       />
@@ -187,6 +196,7 @@ export default function IdentityPage() {
             "No governance response was returned. Sync a subscription connection first."
           }
           tone="error"
+          action={<button type="button" className="button" onClick={() => sources.filter(source => source.error).forEach(source => source.refetch())}>Retry failed identity reads</button>}
         />
       ) : loading ? (
         <StatePanel
@@ -203,16 +213,16 @@ export default function IdentityPage() {
               detail={`${totals?.assignment_count ?? 0} role assignments observed`}
             />
             <MetricCard
-              label="Privileged principals"
+              label="Classified privileged signals"
               value={totals?.privileged_principal_count ?? 0}
-              detail="Hold owner-equivalent or wildcard permissions"
-              tone={(totals?.privileged_principal_count ?? 0) > 0 ? "critical" : "success"}
+              detail="Role-name/action heuristic, not effective access"
+              tone={(totals?.privileged_principal_count ?? 0) > 0 ? "critical" : "default"}
             />
             <MetricCard
               label="Stale assignments"
               value={totals?.stale_assignment_count ?? 0}
               detail={`Unchanged for over ${totals?.stale_threshold_days ?? 90} days`}
-              tone={(totals?.stale_assignment_count ?? 0) > 0 ? "warning" : "success"}
+              tone={(totals?.stale_assignment_count ?? 0) > 0 ? "warning" : "default"}
             />
             <MetricCard
               label="Non-human identities"
@@ -224,10 +234,12 @@ export default function IdentityPage() {
           <section className="card">
             <div className="card-header">
               <div>
-                <h2>Principals and blast radius</h2>
+                <h2>Principals and observed grant breadth</h2>
                 <p>
-                  Each principal&apos;s widest scope determines how far a
-                  compromise of that identity would reach.
+                  Counts describe recorded assignments by scope breadth, not distinct
+                  reachable resources or a verified compromise blast radius. Group
+                  membership, deny assignments, PIM eligibility, conditions and
+                  data-plane permissions are not evaluated as effective access.
                 </p>
               </div>
             </div>
@@ -245,7 +257,8 @@ export default function IdentityPage() {
                   resultCount={filteredPrincipals.length}
                   totalCount={principalRows.length}
                 />
-                <div className="table-scroll">
+                <p className="identity-table-hint" id="identity-table-hint">Scroll horizontally to review every assignment column.</p>
+                <div className="table-scroll identity-principals-table" role="region" aria-label="Observed principal assignments" aria-describedby="identity-table-hint" tabIndex={0}>
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -253,7 +266,7 @@ export default function IdentityPage() {
                         <th>Type</th>
                         <th>Roles</th>
                         <th>Widest scope</th>
-                        <th>Blast radius</th>
+                        <th>Grant breadth</th>
                         <th>Status</th>
                       </tr>
                     </thead>
@@ -287,14 +300,19 @@ export default function IdentityPage() {
                           <td>{blastRadius(row.blast_radius)}</td>
                           <td>
                             {row.privileged && (
-                              <StatusBadge label="privileged" tone="critical" compact />
+                              <StatusBadge label="privileged signal" tone="critical" compact />
                             )}
                             {row.stale && (
-                              <StatusBadge label="stale" tone="warning" compact />
+                              <StatusBadge label="review overdue" tone="warning" compact />
                             )}
-                            {!row.privileged && !row.stale && (
-                              <StatusBadge label="standard" tone="success" compact />
+                            {!row.privileged && (
+                              <StatusBadge label={row.risk_evidence?.classification === "no_classified_signal" ? "no classified signal" : "incomplete classification"} tone="neutral" compact />
                             )}
+                            <div className="table-secondary">
+                              {row.risk_evidence
+                                ? `${row.risk_evidence.unresolved_role_assignments} unresolved role/action records; ${row.risk_evidence.unknown_age_assignments} unknown change ages`
+                                : "Classification coverage and change ages unreported"}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -370,8 +388,8 @@ export default function IdentityPage() {
                           <td>{formatDateTime(row.assigned_on)}</td>
                           <td>
                             <StatusBadge
-                              label={row.stale ? "stale" : "current"}
-                              tone={row.stale ? "warning" : "success"}
+                              label={row.stale ? "review overdue" : row.age_state === "within_review_window" ? "within review window" : "unknown change age"}
+                              tone={row.stale ? "warning" : "neutral"}
                               compact
                             />
                           </td>
@@ -407,8 +425,8 @@ export default function IdentityPage() {
             <div className="card-body">
               {(stale.data?.data.assignments.length ?? 0) === 0 ? (
                 <StatePanel
-                  title="No stale access"
-                  message="Every observed assignment has changed within the review window."
+                  title="No overdue change-age signal observed"
+                  message="Missing, future, malformed or unzoned change timestamps cannot establish assignment age. Change recency does not prove use, continued need or an access review."
                 />
               ) : (
                 <>
@@ -452,7 +470,7 @@ export default function IdentityPage() {
                           <td>{formatDateTime(row.last_changed)}</td>
                           <td>
                             <StatusBadge
-                              label={row.privileged ? "privileged" : "standard"}
+                              label={row.privileged ? "privileged signal" : "no classified signal"}
                               tone={row.privileged ? "critical" : "neutral"}
                               compact
                             />

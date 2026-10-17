@@ -120,6 +120,39 @@ def test_overdue_is_current_clock_not_a_reminder_or_source_refresh(tmp_path, mon
     assert later["source_sha256"] == row["source_sha256"]
 
 
+def test_optional_classification_evidence_is_frozen_without_rewriting_legacy_sources(tmp_path):
+    pack = document()
+    evidence = {
+        "classification": "privileged_signal", "unresolved_role_assignments": 0,
+        "unknown_age_assignments": 1, "stale_assignments": 0,
+        "age_evaluated_at": datetime.now(UTC).isoformat(), "effective_access": "not_evaluated",
+    }
+    pack["data"]["principals"][0]["risk_evidence"] = evidence
+    row = store(tmp_path).create(SCOPE, creation(), "admin", pack)["campaigns"][0]
+    retained = store(tmp_path).detail(SCOPE, row["campaign_id"])
+    content = json.loads(retained["source_content"])
+    assert content["data"]["principals"][0]["risk_evidence"] == evidence
+    assert "risk_evidence" not in content["data"]["principals"][1]
+    assert hashlib.sha256(retained["source_content"].encode()).hexdigest() == row["source_sha256"]
+
+
+@pytest.mark.parametrize("change", [
+    {"effective_access": "verified"}, {"unresolved_role_assignments": -1},
+    {"unknown_age_assignments": 2}, {"classification": "no_classified_signal"},
+    {"stale_assignments": 1}, {"age_evaluated_at": "no-clock"}, {"extra": "not-allowed"},
+])
+def test_campaign_rejects_malformed_or_inconsistent_classification_evidence(tmp_path, change):
+    pack = document()
+    pack["data"]["principals"][0]["risk_evidence"] = {
+        "classification": "privileged_signal", "unresolved_role_assignments": 0,
+        "unknown_age_assignments": 1, "stale_assignments": 0,
+        "age_evaluated_at": datetime.now(UTC).isoformat(), "effective_access": "not_evaluated",
+        **change,
+    }
+    with pytest.raises(ValueError):
+        store(tmp_path).create(SCOPE, creation(), "admin", pack)
+
+
 @pytest.mark.parametrize("seed", [False, True])
 def test_initial_and_existing_collection_cas_races(tmp_path, seed):
     first = store(tmp_path)

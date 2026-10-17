@@ -69,6 +69,40 @@ health or identify an unverified root cause. Closing, pagination and diagnostic
 review perform no refresh/mutation; retry explicitly repeats only the contract
 read. A response for a different dataset or inconsistent contract is rejected.
 
+## Identity classification evidence
+
+The existing scoped identity routes remain read-only over authorized connection
+generations. Principal records now include `risk_evidence`: role-name/action
+heuristic classification (`privileged_signal`, `incomplete`, or
+`no_classified_signal`), unresolved role/action-record count, unknown change-age
+count, overdue assignment count, and server evaluation time. Missing definitions
+or empty/malformed action lists are incomplete evidence, not standard access.
+Missing, malformed, unzoned and future assignment clocks have unknown age.
+The existing whole-day review threshold remains unchanged; a recent sibling
+assignment cannot mask an older or unknown-age grant.
+
+`effective_access` is explicitly `not_evaluated`. Observed role scope-breadth
+counts are assignment counts, not distinct reachable resources or verified
+compromise radius. Group membership, deny assignments, PIM eligibility,
+assignment conditions and data-plane permission evaluation are not provided.
+Change recency establishes neither sign-in/use nor an access review. Owner
+records expose `age_state`; missing state is unknown, not current. Definitions or
+managed identities alone cannot establish role-assignment collection coverage.
+
+The Identity page waits for all six reads and reports/retries failed sources
+rather than displaying a failed secondary source as an empty finding set.
+Warnings and freshness include every source; HTTP success is not freshness.
+An exact scope change remounts source/filter/drawer state and fences late replies.
+Copilot receives the heuristic/effective-access boundary and unknown coverage,
+not invented negative permissions. No acquisition, grant change or execution
+is added by this evidence clarification.
+
+Frozen access campaigns accept the optional strictly validated classification
+projection without reserializing or altering their retained source bytes. Older
+campaign sources without it remain readable and remain unreported, not backfilled
+from current data. Invalid counts, contradictory classifications, unknown fields
+or a claimed effective-access verdict are rejected.
+
 ## Asynchronous Agents investigations
 
 `POST /agents/investigation-jobs` admits a strict `{job_id, objective,

@@ -102,6 +102,16 @@ class _Closure(BaseModel):
     recorded_at: str = Field(max_length=40)
 
 
+class _RiskEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    classification: Literal["privileged_signal", "incomplete", "no_classified_signal"]
+    unresolved_role_assignments: int = Field(ge=0)
+    unknown_age_assignments: int = Field(ge=0)
+    stale_assignments: int = Field(ge=0)
+    age_evaluated_at: str = Field(max_length=40)
+    effective_access: Literal["not_evaluated"]
+
+
 class _ObservedPrincipal(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     principal_id: str = Field(min_length=1, max_length=2048)
@@ -114,6 +124,22 @@ class _ObservedPrincipal(BaseModel):
     widest_scope_breadth: str = Field(max_length=256)
     last_changed: str = Field(max_length=256)
     blast_radius: dict[str, int]
+    risk_evidence: _RiskEvidence | None = None
+
+    @model_validator(mode="after")
+    def coherent_evidence(self):
+        evidence = self.risk_evidence
+        if evidence is not None:
+            _time(evidence.age_evaluated_at)
+            expected = "privileged_signal" if self.privileged else "incomplete" if evidence.unresolved_role_assignments else "no_classified_signal"
+            if (
+                evidence.classification != expected
+                or evidence.unresolved_role_assignments > self.assignment_count
+                or evidence.unknown_age_assignments + evidence.stale_assignments > self.assignment_count
+                or self.stale != (evidence.stale_assignments > 0)
+            ):
+                raise ValueError("Campaign classification evidence is inconsistent")
+        return self
 
 
 class _Campaign(BaseModel):
