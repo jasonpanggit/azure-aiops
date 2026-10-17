@@ -117,6 +117,31 @@ campaign sources without it remain readable and remain unreported, not backfille
 from current data. Invalid counts, contradictory classifications, unknown fields
 or a claimed effective-access verdict are rejected.
 
+## FinOps currency-normalized evidence
+
+FinOps amounts remain in the currency reported by Azure; the API performs no
+foreign-exchange conversion. Reported three-letter currency codes are trimmed
+and normalized to uppercase. Summary and attribution aggregates are numeric only
+when every quantified amount in that aggregate has the same reported currency.
+For mixed or unreported currency, the aggregate is `null`; callers must not
+coerce it to zero or sum across currencies.
+
+`GET /api/v1/governance/finops/summary` exposes
+`identified_annual_savings_currency_totals` and, when Cost Management actuals
+exist, `actual_spend_currency_totals`. Each entry contains `currency`, `amount`,
+and `count`. An `unreported` entry has a `null` amount and counts source rows
+whose currency is absent or invalid; those values cannot be summed safely.
+When a single comparable currency exists, the legacy top-level amount and
+currency remain available. Mixed or unreported top-level totals are `null` and
+are named in `unavailable_metrics`.
+
+`GET /api/v1/governance/finops/attribution` applies the same rule independently
+to each group and includes its per-currency breakdown. Individual Advisor rows
+remain inspectable with their own amount and currency. The page keeps units
+separate in charts and breakdown tables and labels unreported amounts rather
+than displaying a cross-currency total. This does not provide realized savings,
+cost forecasting, anomaly detection, or a verified remediation outcome.
+
 ## Asynchronous Agents investigations
 
 `POST /agents/investigation-jobs` admits a strict `{job_id, objective,

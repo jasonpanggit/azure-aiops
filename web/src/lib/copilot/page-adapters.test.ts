@@ -4138,11 +4138,17 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     summary: {
       identified_annual_savings: 125000,
       currency: "USD",
+      identified_annual_savings_currency_totals: [
+        { currency: "USD", amount: 125000, count: 7 },
+      ],
       savings_opportunity_count: 10,
       quantified_opportunity_count: 7,
       waste_item_count: 4,
       actual_spend: 98000,
       actual_spend_currency: "USD",
+      actual_spend_currency_totals: [
+        { currency: "USD", amount: 98000, count: 31 },
+      ],
       actual_spend_period_start: "2026-08-01",
       actual_spend_period_end: "2026-08-31",
       unavailable_metrics: [
@@ -4155,6 +4161,10 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
         dimension: "business_service",
         group: "Payments",
         identified_annual_savings: 60000,
+        currency: "USD",
+        identified_annual_savings_currency_totals: [
+          { currency: "USD", amount: 60000, count: 4 },
+        ],
         savings_opportunity_count: 4,
         waste_item_count: 2,
       },
@@ -4224,6 +4234,12 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
         source_key: "finops-summary",
       },
       currency: "USD",
+      identified_annual_savings_currency_totals: [
+        { currency: "USD", amount: 125000, count: 7 },
+      ],
+      actual_spend_currency_totals: [
+        { currency: "USD", amount: 98000, count: 31 },
+      ],
       actual_spend_period_start: "2026-08-01",
       actual_spend_period_end: "2026-08-31",
       actionable: false,
@@ -4251,6 +4267,11 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     expect(rowByClaim(context, "cost_attribution")[0]?.data.entity).toMatchObject({
       type: "observation",
       source: "finops/attribution",
+    });
+    expect(rowByClaim(context, "cost_attribution")[0]?.data).toMatchObject({
+      identified_annual_savings_currency_totals: [
+        { currency: "USD", amount: 60000, count: 4 },
+      ],
     });
     expect(rowByClaim(context, "waste_item").length).toBe(1);
     expect(context.coverage.opportunities).toMatchObject({

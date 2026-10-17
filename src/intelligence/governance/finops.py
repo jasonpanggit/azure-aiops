@@ -68,6 +68,48 @@ def _savings_rank(opportunity: SavingsOpportunity) -> float:
     return opportunity.annual_savings if opportunity.annual_savings is not None else -1.0
 
 
+def _currency_code(value: Any) -> str | None:
+    """Return a normalized three-letter currency code when the source reports one."""
+    code = str(value or "").strip().upper()
+    return code if len(code) == 3 and code.isascii() and code.isalpha() else None
+
+
+def _currency_summary(
+    values: Iterable[tuple[float, str]],
+) -> tuple[float | None, str, list[dict[str, Any]]]:
+    """Aggregate only comparable values and retain unreported currency counts."""
+    amounts: dict[str, list[float]] = {}
+    unreported_count = 0
+    for amount, currency in values:
+        code = _currency_code(currency)
+        if code is None:
+            unreported_count += 1
+        else:
+            amounts.setdefault(code, []).append(amount)
+
+    breakdown = [
+        {
+            "currency": code,
+            "amount": round(sum(currency_amounts), 2),
+            "count": len(currency_amounts),
+        }
+        for code, currency_amounts in sorted(amounts.items())
+    ]
+    if unreported_count:
+        breakdown.append(
+            {"currency": "unreported", "amount": None, "count": unreported_count}
+        )
+
+    if len(amounts) == 1 and unreported_count == 0:
+        currency, currency_amounts = next(iter(amounts.items()))
+        return round(sum(currency_amounts), 2), currency, breakdown
+    if not amounts and not unreported_count:
+        return None, "", breakdown
+    if not amounts:
+        return None, "unreported", breakdown
+    return None, "mixed", breakdown
+
+
 @dataclass(frozen=True)
 class SavingsOpportunity:
     """One Advisor-issued cost recommendation, attributed to a business owner."""
@@ -169,12 +211,17 @@ class FinOpsEngine:
         ]
         if not rows:
             return None
-        currencies = {str(row.get("currency") or "") for row in rows if row.get("currency")}
+        total, currency, currency_totals = _currency_summary(
+            [
+                (_as_float(row.get("cost")) or 0.0, str(row.get("currency") or ""))
+                for row in rows
+            ]
+        )
         usage_dates = sorted(str(row.get("usageDate") or row.get("usage_date") or "") for row in rows)
-        total = sum(_as_float(row.get("cost")) or 0.0 for row in rows)
         return {
-            "actual_spend": round(total, 2),
-            "actual_spend_currency": currencies.pop() if len(currencies) == 1 else "mixed",
+            "actual_spend": total,
+            "actual_spend_currency": currency,
+            "actual_spend_currency_totals": currency_totals,
             "actual_spend_source": "azure_cost_management",
             "actual_spend_period_start": usage_dates[0] if usage_dates else "",
             "actual_spend_period_end": usage_dates[-1] if usage_dates else "",
@@ -189,7 +236,7 @@ class FinOpsEngine:
         ``annual_savings`` left as None rather than coerced to zero, so the
         UI can distinguish "no saving" from "saving not quantified".
         """
-        opportunities_by_key: dict[tuple[str, str, str, str], SavingsOpportunity] = {}
+        opportunities_by_key: dict[tuple[str, str, str, str, str], SavingsOpportunity] = {}
         for row in self._advisor:
             if not self._is_cost_recommendation(row):
                 continue
@@ -202,7 +249,7 @@ class FinOpsEngine:
             currency = ""
             for key in _CURRENCY_KEYS:
                 if extended.get(key):
-                    currency = str(extended[key])
+                    currency = _currency_code(extended[key]) or ""
                     break
             opportunity = SavingsOpportunity(
                 recommendation_id=str(row.get("id") or ""),
@@ -225,6 +272,7 @@ class FinOpsEngine:
                 opportunity.problem,
                 opportunity.solution,
                 opportunity.impact,
+                opportunity.currency,
             )
             existing = opportunities_by_key.get(key)
             if existing is None or _savings_rank(opportunity) > _savings_rank(existing):
@@ -317,8 +365,12 @@ class FinOpsEngine:
         """Roll savings and waste up, with explicit gaps for what is unknown."""
         opportunities = self.savings_opportunities()
         quantified = [item for item in opportunities if item.annual_savings is not None]
-        total = sum(item.annual_savings or 0.0 for item in quantified)
-        currencies = {item.currency for item in quantified if item.currency}
+        total, currency, currency_totals = _currency_summary(
+            [
+                (item.annual_savings or 0.0, item.currency)
+                for item in quantified
+            ]
+        )
         waste_items = self.waste()
 
         actual = self.actual_spend()
@@ -330,6 +382,26 @@ class FinOpsEngine:
                     "reason": (
                         "No Cost Management actual-cost rows were synced for this scope. "
                         "Grant Cost Management Query access and run discovery."
+                    ),
+                }
+            )
+        elif actual["actual_spend"] is None:
+            unavailable.append(
+                {
+                    "metric": "actual_spend",
+                    "reason": (
+                        "Cost Management rows report multiple or missing currencies. "
+                        "Amounts remain separated; no foreign-exchange conversion is applied."
+                    ),
+                }
+            )
+        if quantified and total is None:
+            unavailable.append(
+                {
+                    "metric": "identified_annual_savings",
+                    "reason": (
+                        "Advisor savings use multiple or missing currencies. "
+                        "Amounts remain separated; no foreign-exchange conversion is applied."
                     ),
                 }
             )
@@ -347,10 +419,9 @@ class FinOpsEngine:
         )
 
         summary = {
-            "identified_annual_savings": round(total, 2),
-            # A mixed-currency estate cannot be summed honestly; say so
-            # rather than presenting an arithmetically meaningless total.
-            "currency": currencies.pop() if len(currencies) == 1 else "mixed",
+            "identified_annual_savings": total,
+            "currency": currency,
+            "identified_annual_savings_currency_totals": currency_totals,
             "savings_opportunity_count": len(opportunities),
             "quantified_opportunity_count": len(quantified),
             "waste_item_count": len(waste_items),
@@ -372,26 +443,34 @@ class FinOpsEngine:
                 key,
                 {
                     dimension: key,
-                    "identified_annual_savings": 0.0,
                     "savings_opportunity_count": 0,
                     "waste_item_count": 0,
+                    "_savings": [],
                 },
             )
 
         for opportunity in self.savings_opportunities():
             entry = bucket(opportunity.attribution.get(dimension) or "unattributed")
             entry["savings_opportunity_count"] += 1
-            entry["identified_annual_savings"] += opportunity.annual_savings or 0.0
+            if opportunity.annual_savings is not None:
+                entry["_savings"].append((opportunity.annual_savings, opportunity.currency))
 
         for item in self.waste():
             bucket(item.attribution.get(dimension) or "unattributed")["waste_item_count"] += 1
 
         for entry in buckets.values():
-            entry["identified_annual_savings"] = round(entry["identified_annual_savings"], 2)
+            total, currency, currency_totals = _currency_summary(entry.pop("_savings"))
+            entry["identified_annual_savings"] = total
+            entry["currency"] = currency
+            entry["identified_annual_savings_currency_totals"] = currency_totals
 
         return sorted(
             buckets.values(),
-            key=lambda entry: (-entry["identified_annual_savings"], entry[dimension]),
+            key=lambda entry: (
+                entry["identified_annual_savings"] is None,
+                -(entry["identified_annual_savings"] or 0.0),
+                entry[dimension],
+            ),
         )
 
 

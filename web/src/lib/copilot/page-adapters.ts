@@ -17,6 +17,7 @@ import type {
   DurableSituation,
   Envelope,
   EvidenceItem,
+  FinOpsCurrencyTotal,
   NetworkGap,
   NetworkSummary,
   NetworkTopology,
@@ -2511,20 +2512,24 @@ export interface FinOpsWasteObservation {
 export interface FinOpsAttributionObservation {
   dimension: string;
   group: string;
-  identified_annual_savings: number;
+  identified_annual_savings: number | null;
+  currency?: string;
+  identified_annual_savings_currency_totals?: FinOpsCurrencyTotal[];
   savings_opportunity_count: number;
   waste_item_count: number;
 }
 
 /** FinOps summary aggregate the adapter cites (currency + observation window). */
 export interface FinOpsSummaryCopilotFields {
-  identified_annual_savings: number;
+  identified_annual_savings: number | null;
   currency: string;
+  identified_annual_savings_currency_totals?: FinOpsCurrencyTotal[];
   savings_opportunity_count: number;
   quantified_opportunity_count: number;
   waste_item_count: number;
-  actual_spend?: number;
+  actual_spend?: number | null;
   actual_spend_currency?: string;
+  actual_spend_currency_totals?: FinOpsCurrencyTotal[];
   actual_spend_period_start?: string;
   actual_spend_period_end?: string;
   unavailable_metrics: { metric: string; reason: string }[];
@@ -5498,11 +5503,14 @@ function finopsCoreInput(input: FinOpsCopilotPageInput): CoreCopilotAdapterInput
       data: {
         identified_annual_savings: summary.identified_annual_savings,
         currency: summary.currency,
+        identified_annual_savings_currency_totals:
+          summary.identified_annual_savings_currency_totals ?? [],
         savings_opportunity_count: summary.savings_opportunity_count,
         quantified_opportunity_count: summary.quantified_opportunity_count,
         waste_item_count: summary.waste_item_count,
         actual_spend: summary.actual_spend ?? null,
         actual_spend_currency: summary.actual_spend_currency,
+        actual_spend_currency_totals: summary.actual_spend_currency_totals ?? [],
         actual_spend_period_start: summary.actual_spend_period_start,
         actual_spend_period_end: summary.actual_spend_period_end,
       },
@@ -5518,6 +5526,9 @@ function finopsCoreInput(input: FinOpsCopilotPageInput): CoreCopilotAdapterInput
         dimension: group.dimension,
         group: group.group,
         identified_annual_savings: group.identified_annual_savings,
+        currency: group.currency,
+        identified_annual_savings_currency_totals:
+          group.identified_annual_savings_currency_totals ?? [],
         savings_opportunity_count: group.savings_opportunity_count,
         waste_item_count: group.waste_item_count,
       },

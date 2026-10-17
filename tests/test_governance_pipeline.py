@@ -258,6 +258,31 @@ class TestGovernancePipelineComparison:
         waste_findings = [f for f in fabric_findings if f.finding_type == "waste_item"]
         assert len(waste_findings) > 0, "Should detect waste items (unattached disk)"
 
+    def test_mixed_currency_summary_is_not_rendered_as_a_pipeline_total(self):
+        recommendations = [
+            {
+                "id": f"/advisor/{currency.lower()}",
+                "category": "Cost",
+                "targetResourceId": f"/vm/{currency.lower()}",
+                "problem": "Right-size virtual machine",
+                "solution": "Review the virtual machine size",
+                "impact": "Low",
+                "properties": {
+                    "extendedProperties": {
+                        "annualSavingsAmount": amount,
+                        "savingsCurrency": currency,
+                    }
+                },
+            }
+            for currency, amount in (("USD", 100), ("EUR", 200))
+        ]
+        pipeline = GovernancePipeline(advisor_recommendations=recommendations)
+
+        findings = pipeline.assess_finops()
+
+        assert sum(f.finding_type == "savings_opportunity" for f in findings) == 2
+        assert not any(f.finding_type == "finops_summary" for f in findings)
+
     def test_governance_pipeline_full_execution(self):
         """Full pipeline execution generates all three domain findings."""
         scenario = GOVERNANCE_COMPARISON_SCENARIO

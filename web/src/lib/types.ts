@@ -3135,14 +3135,22 @@ export interface UnavailableMetric {
   reason: string;
 }
 
-export interface FinOpsSummary {
-  identified_annual_savings: number;
+export interface FinOpsCurrencyTotal {
   currency: string;
+  amount: number | null;
+  count: number;
+}
+
+export interface FinOpsSummary {
+  identified_annual_savings: number | null;
+  currency: string;
+  identified_annual_savings_currency_totals?: FinOpsCurrencyTotal[];
   savings_opportunity_count: number;
   quantified_opportunity_count: number;
   waste_item_count: number;
-  actual_spend?: number;
+  actual_spend?: number | null;
   actual_spend_currency?: string;
+  actual_spend_currency_totals?: FinOpsCurrencyTotal[];
   actual_spend_source?: string;
   actual_spend_period_start?: string;
   actual_spend_period_end?: string;
@@ -3182,10 +3190,12 @@ export interface WasteItem {
 }
 
 export interface FinOpsAttributionGroup {
-  identified_annual_savings: number;
+  identified_annual_savings: number | null;
+  currency?: string;
+  identified_annual_savings_currency_totals?: FinOpsCurrencyTotal[];
   savings_opportunity_count: number;
   waste_item_count: number;
-  [dimension: string]: string | number;
+  [dimension: string]: string | number | null | FinOpsCurrencyTotal[] | undefined;
 }
 
 export interface IdentitySummary {

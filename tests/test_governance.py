@@ -158,6 +158,27 @@ def test_advisor_opportunities_for_different_resources_are_not_merged():
     assert {item.resource_id for item in opportunities} == {"/subscriptions/sub-a", "/subscriptions/sub-b"}
 
 
+def test_identical_advisor_opportunities_in_different_currencies_are_not_merged():
+    usd = _advisor_row("/vm/a", savings=500.0)
+    eur = {
+        **usd,
+        "properties": {
+            "extendedProperties": {
+                "annualSavingsAmount": 600.0,
+                "savingsCurrency": "eur",
+            }
+        },
+    }
+
+    opportunities = FinOpsEngine(advisor_recommendations=[usd, eur]).savings_opportunities()
+
+    assert len(opportunities) == 2
+    assert {(item.annual_savings, item.currency) for item in opportunities} == {
+        (500.0, "USD"),
+        (600.0, "EUR"),
+    }
+
+
 def test_non_cost_advisor_recommendations_are_ignored():
     engine = FinOpsEngine(
         advisor_recommendations=[
@@ -215,7 +236,39 @@ def test_mixed_currency_totals_are_labelled_rather_than_summed_silently():
             },
         ]
     )
-    assert engine.summary()["currency"] == "mixed"
+    summary = engine.summary()
+    assert summary["currency"] == "mixed"
+    assert summary["identified_annual_savings"] is None
+    assert summary["identified_annual_savings_currency_totals"] == [
+        {"currency": "EUR", "amount": 200.0, "count": 1},
+        {"currency": "USD", "amount": 100.0, "count": 1},
+    ]
+    assert any(
+        item["metric"] == "identified_annual_savings"
+        for item in summary["unavailable_metrics"]
+    )
+
+
+def test_mixed_or_unreported_cost_currencies_are_not_combined():
+    summary = FinOpsEngine(
+        cost_actuals=[
+            _cost_row("/vm/a", cost=12.25, usage_date="2026-01-14", currency="usd"),
+            _cost_row("/vm/b", cost=17.75, usage_date="2026-01-15", currency="EUR"),
+            _cost_row("/vm/c", cost=4.0, usage_date="2026-01-16", currency=""),
+        ]
+    ).summary()
+
+    assert summary["actual_spend"] is None
+    assert summary["actual_spend_currency"] == "mixed"
+    assert summary["actual_spend_currency_totals"] == [
+        {"currency": "EUR", "amount": 17.75, "count": 1},
+        {"currency": "USD", "amount": 12.25, "count": 1},
+        {"currency": "unreported", "amount": None, "count": 1},
+    ]
+    assert any(
+        item["metric"] == "actual_spend"
+        for item in summary["unavailable_metrics"]
+    )
 
 
 def test_waste_detects_unattached_disks_and_deallocated_vms():
@@ -299,7 +352,11 @@ def test_unattributed_savings_are_labelled_not_dropped():
     )
     groups = engine.by_dimension("application")
     assert groups[0]["application"] == "unattributed"
-    assert groups[0]["identified_annual_savings"] == 50.0
+    assert groups[0]["identified_annual_savings"] is None
+    assert groups[0]["currency"] == "unreported"
+    assert groups[0]["identified_annual_savings_currency_totals"] == [
+        {"currency": "unreported", "amount": None, "count": 1},
+    ]
 
 
 def test_unsupported_finops_dimension_is_rejected():
@@ -317,7 +374,7 @@ def test_malformed_savings_values_do_not_become_fake_numbers():
         ]
     )
     assert engine.savings_opportunities()[0].annual_savings is None
-    assert engine.summary()["identified_annual_savings"] == 0.0
+    assert engine.summary()["identified_annual_savings"] is None
     assert engine.summary()["quantified_opportunity_count"] == 0
 
 
