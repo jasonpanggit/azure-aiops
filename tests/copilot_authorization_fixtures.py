@@ -246,17 +246,6 @@ def install_valid_canary_evidence(monkeypatch) -> None:
         REPO_ROOT,
     )
 
-    def read_reviewed_tree_digest(root, include_roots, exclude_paths):
-        assert root == REPO_ROOT
-        assert tuple(include_roots) == tuple(payload["reviewed_tree"]["include_roots"])
-        assert tuple(exclude_paths) == tuple(payload["reviewed_tree"]["exclude_paths"])
-        return reviewed_tree_sha256
-
-    monkeypatch.setattr(
-        copilot_canary_authorization,
-        "reviewed_tree_digest",
-        read_reviewed_tree_digest,
-    )
     monkeypatch.setattr(
         copilot_canary_authorization,
         "_utc_now",
@@ -367,21 +356,6 @@ def enable_authorized_default(monkeypatch) -> None:
         encoding="utf-8",
     )
 
-    def read_default_reviewed_tree_digest(root, include_roots, exclude_paths):
-        assert root == REPO_ROOT
-        assert tuple(include_roots) == tuple(
-            default_payload["reviewed_tree"]["include_roots"]
-        )
-        assert tuple(exclude_paths) == tuple(
-            default_payload["reviewed_tree"]["exclude_paths"]
-        )
-        return default_reviewed_tree_sha256
-
-    monkeypatch.setattr(
-        copilot_canary_authorization,
-        "reviewed_tree_digest",
-        read_default_reviewed_tree_digest,
-    )
     monkeypatch.setenv(
         "AIOPS_DEFAULT_AUTHORIZATION_MANIFEST_SHA256",
         hashlib.sha256(
