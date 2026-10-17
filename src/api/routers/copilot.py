@@ -22,9 +22,9 @@ import time
 import uuid as _uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from operations.autonomous_investigation import ledger_store, run_context_investigation
@@ -2479,16 +2479,22 @@ def investigate_canonical(
 @router.get("/copilot/threads/{thread_id}/history", summary="Read exact retained historical turns")
 def retained_thread_history(
     thread_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal,
+    expected_revision: Annotated[int | None, Query(ge=1)] = None,
 ) -> dict[str, Any]:
     """Read one exact owned thread, without executing or renewing its lifetime."""
     if not re.fullmatch(r"thr-[a-f0-9]{32}", thread_id):
         raise ApiError(ErrorCode.NOT_FOUND, "Investigation thread not found")
     try:
         data = investigation_thread_store().read_snapshot(
-            thread_id, principal.subject, scope,
+            thread_id, principal.subject, scope, expected_revision=expected_revision,
         )
     except ThreadNotFound as exc:
         raise ApiError(ErrorCode.NOT_FOUND, "Investigation thread not found") from exc
+    except ThreadRevisionConflict as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Retained thread changed since the reviewed revision. No newer evidence was substituted.",
+        ) from exc
     except ThreadStoreUnavailable as exc:
         raise ApiError(
             ErrorCode.PROVIDER_UNAVAILABLE,

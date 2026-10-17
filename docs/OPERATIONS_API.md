@@ -68,6 +68,20 @@ or successful cancellation is fabricated. Scope changes discard local drafts
 and reject late responses. This does not implement server job cancellation or
 durable admission/progress for Agents.
 
+Typed answer findings retain their server finding IDs, confidence, freshness,
+uncertainty and citation references. Missing, duplicate or denied/unavailable
+references withhold finding navigation. Inspecting a source shows only returned
+citation metadata; a query version is not treated as a publication generation.
+Current-asset links use fixed internal inventory routes with the exact returned
+ARM identity and all scope dimensions; they are separately reauthorized reads,
+not historical evidence, execution or model-supplied destinations.
+
+Retained-evidence actions pin `thread_revision` in the Copilot URL and send
+`expected_revision` to the historical GET. After principal/scope authorization,
+a changed revision returns 409 without substituting newer evidence. This
+guards the current retained document; it does not invent immutable historical
+revisions or extend existing retention.
+
 ## Agents retained investigation links
 
 `/agents?ledger_id=<exact-id>` reads the existing principal-owned retained ledger

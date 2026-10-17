@@ -9870,6 +9870,15 @@ body.topology-fullscreen-open {
 .copilot-history-list { padding-inline-start: 20px; }
 .copilot-history-list > li { padding-block: 16px; border-block-end: 1px solid var(--color-border); }
 .copilot-thinking { flex-wrap: wrap; }
+.copilot-findings { margin-block: 20px; min-width: 0; overflow-wrap: anywhere; }
+.copilot-findings-list { padding-inline-start: 20px; }
+.copilot-findings-list > li { padding-block: 16px; border-block-end: 1px solid var(--color-border); }
+.copilot-findings-meta, .copilot-findings-sources > li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-block: 12px; }
+.copilot-findings-sources { list-style: none; padding: 0; }
+.copilot-findings .button { min-height: 44px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.copilot-findings-source { margin-block: 16px; padding-block: 16px; border-block: 1px solid var(--color-border); }
+.copilot-findings-source dl > div { margin-block: 12px; }
+.copilot-findings-source dd { margin: 0; }
 @media (max-width: 780px) {
   .agents-workspace .card-header { flex-wrap: wrap; }
   .agents-workspace .card-header > div:first-child { flex-basis: 100%; }

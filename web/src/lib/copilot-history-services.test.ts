@@ -7,6 +7,10 @@ vi.mock("./api-client", () => ({ apiRequest: mock.request, resolveApiBaseUrl: ()
 
 describe("Copilot history and interrupt transport contracts", () => {
   beforeEach(() => { mock.request.mockReset(); mock.request.mockResolvedValue({ data: {} }); });
+  it("pins a retained read to the reviewed revision", async () => {
+    await copilotApi.retainedHistory("thread", {}, { expectedRevision: 3 });
+    expect(mock.request.mock.calls[0][1].query.get("expected_revision")).toBe("3");
+  });
   it("reads one encoded identity with repeated nine-dimensional scope and AbortSignal", async () => {
     const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(key => [key, [`${key}-a`, `${key}-b`]]));
     const controller = new AbortController();

@@ -21,6 +21,13 @@ function open() {
 describe("Copilot exact historical reads", () => {
   beforeEach(() => { vi.clearAllMocks(); mocks.read.mockResolvedValue(envelope()); });
 
+  it("rejects a newer response instead of replacing the reviewed evidence", async () => {
+    render(<CopilotHistory threadId={id} scope={{}} pinned expectedRevision={1} />);
+    expect(await screen.findByText(/did not match the exact retained historical thread/)).toBeVisible();
+    expect(mocks.read).toHaveBeenCalledWith(id, {}, { signal: expect.any(AbortSignal), expectedRevision: 1 });
+    expect(screen.queryByRole("heading", { name: "Retained question" })).not.toBeInTheDocument();
+  });
+
   it("loads only on demand with nine-dimensional current scope and honest historical/storage labels", async () => {
     const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(key => [key, [`${key}-a`, `${key}-b`]]));
     render(<CopilotHistory threadId={id} scope={scope} />);

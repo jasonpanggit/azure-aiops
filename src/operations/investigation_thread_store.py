@@ -684,6 +684,8 @@ class InvestigationThreadStore:
         thread_id: str,
         principal_subject: str,
         current_scope: Scope,
+        *,
+        expected_revision: int | None = None,
     ) -> dict[str, Any]:
         """Read historical turns without renewing TTL, narrowing state or writing."""
         with self._lock:
@@ -691,6 +693,8 @@ class InvestigationThreadStore:
                 thread_id, principal_subject, current_scope, self._clock(),
                 maintenance=False,
             )
+            if expected_revision is not None and expected_revision != record.revision:
+                raise ThreadRevisionConflict(current_revision=record.revision)
             historical = deepcopy(record)
             self._age_retained_turns(historical)
             turns = self._project_history(historical, current_scope)

@@ -764,10 +764,13 @@ export interface CopilotToolSpec {
 
 export const copilotApi = {
   /** Read exact authorized historical turns without renewing or executing a thread. */
-  retainedHistory: (threadId: string, scope: ScopeSelection, options: { signal?: AbortSignal } = {}) =>
-    apiRequest<import("./types").RetainedCopilotHistory>(`/copilot/threads/${encodeURIComponent(threadId)}/history`, {
-      query: scopeToSearchParams(scope), signal: options.signal,
-    }),
+  retainedHistory: (threadId: string, scope: ScopeSelection, options: { signal?: AbortSignal; expectedRevision?: number } = {}) => {
+    const query = scopeToSearchParams(scope);
+    if (options.expectedRevision !== undefined) query.set("expected_revision", String(options.expectedRevision));
+    return apiRequest<import("./types").RetainedCopilotHistory>(`/copilot/threads/${encodeURIComponent(threadId)}/history`, {
+      query, signal: options.signal,
+    });
+  },
   /**
    * Asks the Operations Copilot. The API grounds an Azure AI Foundry prompt
    * agent on governed context, so `answer` is a narration of `results` — never

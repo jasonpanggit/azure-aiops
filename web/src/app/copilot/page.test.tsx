@@ -96,12 +96,19 @@ describe("Copilot scope continuity", () => {
         expect(mocks.continuity.acceptServerState).not.toHaveBeenCalled();
       });
 
-      it.each(["?thread_id=bad", `?thread_id=thr-${"a".repeat(32)}&thread_id=thr-${"b".repeat(32)}`, "?thread_id=&subscription=sub-a"])("rejects malformed or duplicate bookmark before any request: %s", query => {
+      it.each(["?thread_id=bad", `?thread_id=thr-${"a".repeat(32)}&thread_id=thr-${"b".repeat(32)}`, "?thread_id=&subscription=sub-a", "?thread_revision=1", `?thread_id=thr-${"a".repeat(32)}&thread_revision=0`, `?thread_id=thr-${"a".repeat(32)}&thread_revision=1&thread_revision=2`])("rejects malformed or duplicate bookmark before any request: %s", query => {
         mocks.query = query;
         render(<CopilotPage />);
         expect(screen.getByText("Copilot bookmark unavailable")).toBeVisible();
         expect(mocks.ask).not.toHaveBeenCalled();
         expect(mocks.history).not.toHaveBeenCalled();
+      });
+
+      it("passes exact reviewed revision to historical reading", async () => {
+        mocks.query = `?thread_id=thr-${"a".repeat(32)}&thread_revision=1`;
+        render(<CopilotPage />);
+        expect(await screen.findByText("No completed turns retained")).toBeVisible();
+        expect(mocks.history).toHaveBeenCalledWith(`thr-${"a".repeat(32)}`, {}, { signal: expect.any(AbortSignal), expectedRevision: 1 });
       });
 
       it("rejects bookmarked scope outside selected scope", () => {

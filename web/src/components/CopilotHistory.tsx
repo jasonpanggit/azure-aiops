@@ -9,34 +9,37 @@ import { StatePanel } from "./ui/StatePanel";
 import { StructuredData } from "./ui/StructuredData";
 
 /** Explicit owned historical reads never attach a thread or execute its turns. */
-export function CopilotHistory({ threadId, scope, pinned = false }: {
+export function CopilotHistory({ threadId, scope, pinned = false, expectedRevision }: {
   threadId: string;
   scope: ScopeSelection;
   pinned?: boolean;
+  expectedRevision?: number;
 }) {
   const [open, setOpen] = useState(pinned);
   return <details className="card copilot-history" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Retained Copilot history</summary>
     {open ? threadId
-      ? <HistoryRead key={`${threadId}:${JSON.stringify(scope)}`} threadId={threadId} scope={scope} pinned={pinned} />
+      ? <HistoryRead key={`${threadId}:${expectedRevision}:${JSON.stringify(scope)}`} threadId={threadId} scope={scope} pinned={pinned} expectedRevision={expectedRevision} />
       : <div className="card-body"><StatePanel title="No retained thread selected" message="A completed server response supplies a thread handle. No history is inferred or acquired from another session." /></div>
       : null}
   </details>;
 }
 
-function HistoryRead({ threadId, scope, pinned }: { threadId: string; scope: ScopeSelection; pinned: boolean }) {
+function HistoryRead({ threadId, scope, pinned, expectedRevision }: { threadId: string; scope: ScopeSelection; pinned: boolean; expectedRevision?: number }) {
   const report = useApi(async signal => {
-    const result = await copilotApi.retainedHistory(threadId, scope, { signal });
-    if (result.data.thread_id !== threadId || result.data.observation_status !== "historical") {
+    const result = await copilotApi.retainedHistory(threadId, scope, { signal, ...(expectedRevision !== undefined ? { expectedRevision } : {}) });
+    if (result.data.thread_id !== threadId || result.data.observation_status !== "historical" || (expectedRevision !== undefined && result.data.thread_revision !== expectedRevision)) {
       throw new Error("History response did not match the exact retained historical thread. No replacement was opened.");
     }
     return result;
-  }, [threadId, JSON.stringify(scope)]);
+  }, [threadId, expectedRevision, JSON.stringify(scope)]);
   const query = scopeToSearchParams(scope);
   const newHref = `/copilot${query.size ? `?${query}` : ""}`;
   query.set("thread_id", threadId);
+  if (expectedRevision !== undefined) query.set("thread_revision", String(expectedRevision));
   return <div className="card-body">
     <p>Exact thread: {threadId}. These are historical observations, not current evidence. Reading does not restart work, attach this thread to new questions, renew retention or authorize a change.</p>
+    {expectedRevision !== undefined ? <p>Only reviewed revision {expectedRevision} may be opened. If it changed, newer evidence is withheld.</p> : null}
     <div className="button-row">
       <button className="button" type="button" disabled={report.loading} onClick={report.refetch}>Reload retained history</button>
       {pinned ? <Link className="button" href={newHref}>Leave historical review</Link> : <Link className="button" href={`/copilot?${query}`}>Open exact historical thread</Link>}

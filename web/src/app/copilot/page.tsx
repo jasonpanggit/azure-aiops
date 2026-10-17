@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { CopilotHistory } from "@/components/CopilotHistory";
+import { CopilotFindings } from "@/components/CopilotFindings";
 import { useScope } from "@/lib/scope-context";
 import { ScopeBookmarkError, scopedBookmark, scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import {
@@ -19,7 +20,7 @@ import {
   ROOT_COPILOT_SESSION,
   SUPPORTED_SEARCH_PHRASES,
 } from "@/lib/services";
-import type { CanonicalCopilotCitation, EvidenceItem } from "@/lib/types";
+import type { CanonicalCopilotCitation, CanonicalSynthesisClaim, EvidenceItem } from "@/lib/types";
 import type { CopilotAnswer, CopilotToolCall } from "@/lib/services";
 import { useOptionalThreadContinuity } from "@/lib/copilot/thread-context";
 
@@ -35,6 +36,9 @@ interface ChatTurn {
   citations?: CanonicalCopilotCitation[];
   uncertainty?: string[];
   error?: string;
+  claims?: CanonicalSynthesisClaim[];
+  threadId?: string;
+  threadRevision?: number;
 }
 
 const TOOL_STATUS_TONE: Record<string, "success" | "warning" | "critical" | "info"> = {
@@ -64,13 +68,16 @@ function CopilotContent() {
     return <main className="page-container"><StatePanel title="Copilot bookmark unavailable" message={error.message} tone="error" /><Link className="button" href="/copilot">Clear Copilot bookmark</Link></main>;
   }
   const threadId = search.get("thread_id") ?? "";
-  const valid = !search.has("thread_id") || (search.getAll("thread_id").length === 1 && /^thr-[a-f0-9]{32}$/.test(threadId));
+  const rawRevision = search.get("thread_revision");
+  const revision = rawRevision === null ? undefined : Number(rawRevision);
+  const validRevision = rawRevision === null || (Boolean(threadId) && search.getAll("thread_revision").length === 1 && /^[1-9]\d*$/.test(rawRevision) && Number.isSafeInteger(revision));
+  const valid = validRevision && (!search.has("thread_id") || (search.getAll("thread_id").length === 1 && /^thr-[a-f0-9]{32}$/.test(threadId)));
   const query = scopeToSearchParams(effectiveScope);
   if (!valid) return <main className="page-container"><StatePanel title="Copilot bookmark unavailable" message="Use one exact server-issued thread identifier." tone="error" /><Link className="button" href={`/copilot${query.size ? `?${query}` : ""}`}>Clear historical thread selection</Link></main>;
-  return <CopilotWorkspace key={`${JSON.stringify(effectiveScope)}:${threadId}:${continuity?.generation ?? 0}`} scope={effectiveScope} pinnedThreadId={threadId} />;
+  return <CopilotWorkspace key={`${JSON.stringify(effectiveScope)}:${threadId}:${revision}:${continuity?.generation ?? 0}`} scope={effectiveScope} pinnedThreadId={threadId} pinnedRevision={revision} />;
 }
 
-function CopilotWorkspace({ scope, pinnedThreadId }: { scope: ScopeSelection; pinnedThreadId: string }) {
+function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision }: { scope: ScopeSelection; pinnedThreadId: string; pinnedRevision?: number }) {
   const searchParams = useSearchParams();
   const threadContinuity = useOptionalThreadContinuity();
   const contextLabel = searchParams.get("situation") ?? searchParams.get("service");
@@ -134,6 +141,9 @@ function CopilotWorkspace({ scope, pinnedThreadId }: { scope: ScopeSelection; pi
           degradationNote: view.degradationNote,
           citations: view.citations,
           uncertainty: view.uncertainty,
+          claims: view.synthesis?.claims ?? [],
+          threadId: view.threadId,
+          threadRevision: view.threadRevision,
         },
       ]);
     } catch (reason) {
@@ -176,7 +186,7 @@ function CopilotWorkspace({ scope, pinnedThreadId }: { scope: ScopeSelection; pi
         }
       />
 
-      <CopilotHistory threadId={pinnedThreadId || lastThreadId || threadContinuity?.thread?.threadId || ""} scope={scope} pinned={Boolean(pinnedThreadId)} />
+      <CopilotHistory threadId={pinnedThreadId || lastThreadId || threadContinuity?.thread?.threadId || ""} scope={scope} pinned={Boolean(pinnedThreadId)} expectedRevision={pinnedRevision} />
       {pinnedThreadId ? <StatePanel title="Historical review only" message="New questions are disabled while an exact historical thread is selected. Leave historical review to use the current active conversation; this read does not attach or resume the selected thread." /> : null}
       {recovery ? <StatePanel title="Request outcome unconfirmed" message={recovery} tone="partial" action={<button className="button" onClick={() => setRecovery("")}>I reviewed the outcome; enable a deliberate new question</button>} /> : null}
 
@@ -247,6 +257,7 @@ function CopilotWorkspace({ scope, pinnedThreadId }: { scope: ScopeSelection; pi
                     ariaLabel="Copilot citations"
                   />
                 ) : null}
+                {!turn.error ? <CopilotFindings claims={turn.claims ?? []} citations={turn.citations ?? []} scope={scope} threadId={turn.threadId} threadRevision={turn.threadRevision} /> : null}
                 {!turn.error && (
                   <EvidenceBar
                     evidence={turn.evidence}

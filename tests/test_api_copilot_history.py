@@ -22,6 +22,31 @@ PARAMS = {
 SCOPE = Scope.from_mapping(PARAMS)
 
 
+def test_exact_history_revision_conflict_after_authorization(tmp_path, monkeypatch):
+    client, _, _, thread, executor = _fixture(tmp_path, monkeypatch)
+    path = f"/api/v1/copilot/threads/{thread.thread_id}/history"
+    assert client.get(path, params={**PARAMS, "expected_revision": 1}, headers=_auth()).status_code == 200
+    response = client.get(path, params={**PARAMS, "expected_revision": 2}, headers=_auth())
+    assert response.status_code == 409
+    assert "No newer evidence was substituted" in response.text
+    assert "retained question" not in response.text
+    client.app.state.context.authenticator = StaticTokenAuthenticator({
+        TOKEN: Principal(subject="foreign", grants=(Grant("admin"),)),
+    })
+    assert client.get(path, params={**PARAMS, "expected_revision": 2}, headers=_auth()).status_code == 404
+    executor.assert_not_called()
+
+
+@pytest.mark.parametrize("revision", ["0", "-1", "abc"])
+def test_history_rejects_invalid_revision(tmp_path, monkeypatch, revision):
+    client, _, _, thread, _ = _fixture(tmp_path, monkeypatch)
+    response = client.get(
+        f"/api/v1/copilot/threads/{thread.thread_id}/history",
+        params={**PARAMS, "expected_revision": revision}, headers=_auth(),
+    )
+    assert response.status_code in {400, 422}
+
+
 def _fixture(tmp_path, monkeypatch):
     client, documents, clock = _client(tmp_path), FakeDocuments(), FakeClock()
     store = InvestigationThreadStore(documents=documents, clock=clock)
