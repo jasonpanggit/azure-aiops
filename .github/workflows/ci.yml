@@ -41,7 +41,7 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[test,api]"
-        working-directory: ..
+        working-directory: .
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
