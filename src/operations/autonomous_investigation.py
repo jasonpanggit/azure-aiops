@@ -27,6 +27,7 @@ from operations.cve_response import (
     deterministic_cve_narrative,
 )
 from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
+from operations.investigation_jobs import InvestigationExecutionControl
 from operations.investigation_thread_store import (
     OBSERVATION_HISTORICAL,
     ThreadDocumentStore,
@@ -577,6 +578,7 @@ def _agent_run(
     scope: Scope,
     principal: Any | None = None,
     contextual_subject: str = "",
+    execution_control: InvestigationExecutionControl | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     subject = _extract_subject(objective)
@@ -606,6 +608,8 @@ def _agent_run(
             args, _ = validate_tool_arguments(tool, args)
         except ValueError:
             continue
+        if execution_control is not None:
+            execution_control.checkpoint(f"tool:{agent.id}:{tool}")
         result = call_tool(
             tool,
             args,
@@ -614,8 +618,12 @@ def _agent_run(
             principal=principal,
         )
         attempts = 1
+        if execution_control is not None:
+            execution_control.checkpoint(f"returned:{agent.id}:{tool}")
         if result.status == STATUS_UNAVAILABLE:
             for _ in range(MAX_RETRIES):
+                if execution_control is not None:
+                    execution_control.checkpoint(f"retry:{agent.id}:{tool}")
                 retry = call_tool(
                     tool,
                     args,
@@ -623,6 +631,8 @@ def _agent_run(
                     scope=scope,
                     principal=principal,
                 )
+                if execution_control is not None:
+                    execution_control.checkpoint(f"returned:{agent.id}:{tool}")
                 attempts += 1
                 if retry.status != STATUS_UNAVAILABLE:
                     result = retry
@@ -904,6 +914,8 @@ def run_autonomous_investigation(
     scope: Scope,
     principal_subject: str,
     timeout_seconds: float = AGENT_TIMEOUT_SECONDS,
+    principal: Any | None = None,
+    execution_control: InvestigationExecutionControl | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     selected = _select_agents(objective)
@@ -911,41 +923,56 @@ def run_autonomous_investigation(
     agent_runs: list[dict[str, Any]] = []
     stop_reason = ""
 
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(6, max(1, len(independent))))
-    futures = {
-        executor.submit(_agent_run, agent, objective, context=context, scope=scope): agent
-        for agent in independent
-    }
-    try:
+    if execution_control is not None:
+        for agent in independent:
+            execution_control.checkpoint(f"specialist:{agent.id}")
+            agent_runs.append(_agent_run(
+                agent, objective, context=context, scope=scope,
+                principal=principal, execution_control=execution_control,
+            ))
+    else:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(6, max(1, len(independent))))
+        futures = {
+            executor.submit(_agent_run, agent, objective, context=context, scope=scope, principal=principal): agent
+            for agent in independent
+        }
         try:
-            completed = list(concurrent.futures.as_completed(futures, timeout=timeout_seconds))
-        except TimeoutError:
-            completed = [future for future in futures if future.done()]
-        for future in completed:
             try:
-                agent_runs.append(future.result(timeout=0))
-            except Exception as exc:
-                agent = futures[future]
-                _LOGGER.exception("agent %s failed during investigation", agent.id)
-                agent_runs.append(_failed_run(agent, f"failed: {exc.__class__.__name__}: {exc}"))
-        unfinished = [agent for future, agent in futures.items() if not future.done()]
-        if unfinished:
-            stop_reason = f"timeout after {timeout_seconds}s; unfinished agents: {', '.join(agent.id for agent in unfinished)}"
-            for future in futures:
-                future.cancel()
-            for agent in unfinished:
-                agent_runs.append(_failed_run(agent, "timed out before completing"))
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+                completed = list(concurrent.futures.as_completed(futures, timeout=timeout_seconds))
+            except TimeoutError:
+                completed = [future for future in futures if future.done()]
+            for future in completed:
+                try:
+                    agent_runs.append(future.result(timeout=0))
+                except Exception as exc:
+                    agent = futures[future]
+                    _LOGGER.exception("agent %s failed during investigation", agent.id)
+                    agent_runs.append(_failed_run(agent, f"failed: {exc.__class__.__name__}: {exc}"))
+            unfinished = [agent for future, agent in futures.items() if not future.done()]
+            if unfinished:
+                stop_reason = f"timeout after {timeout_seconds}s; unfinished agents: {', '.join(agent.id for agent in unfinished)}"
+                for future in futures:
+                    future.cancel()
+                for agent in unfinished:
+                    agent_runs.append(_failed_run(agent, "timed out before completing"))
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     agent_runs.sort(key=lambda row: row["agent_id"])
     reconciliation = _reconcile(agent_runs)
     executive = next(agent for agent in selected if agent.id == "executive_summary")
+    if execution_control is not None:
+        execution_control.checkpoint("synthesis")
     executive_run = _agent_run(executive, objective, context=context, scope=scope)
 
     # Synthesis is computed once: it may issue a Foundry narration call, and the
     # executive run must publish exactly the same conclusion the ledger reports.
-    synthesis = _synthesis(objective, agent_runs, reconciliation, foundry_agent=_resolve_foundry_agent(context))
+    foundry_agent = _resolve_foundry_agent(context)
+    if execution_control is not None:
+        execution_control.checkpoint("narration")
+    synthesis = _synthesis(objective, agent_runs, reconciliation, foundry_agent=foundry_agent)
+    if execution_control is not None:
+        execution_control.checkpoint("synthesis_returned")
     executive_run = {
         **executive_run,
         "status": STATUS_OK,
@@ -1439,14 +1466,20 @@ class InvestigationLedgerStore:
                 exc_info=True,
             )
 
-    def add(self, ledger: dict[str, Any]) -> dict[str, Any]:
+    def add(self, ledger: dict[str, Any], *, require_durable: bool = False) -> dict[str, Any]:
+        """Retain a ledger, optionally requiring confirmed storage before caching."""
+        if require_durable:
+            if self.documents is None:
+                raise RuntimeError("Durable ledger retention is not configured")
+            self.documents.put(_ledger_document_name(ledger["ledger_id"]), ledger)
         self.ledgers[ledger["ledger_id"]] = ledger
         self.ledgers.move_to_end(ledger["ledger_id"])
         # Eviction bounds memory only. A durable store keeps every ledger, so
         # evicting here costs nothing: `get` re-reads it on demand.
         while len(self.ledgers) > self.max_entries:
             self.ledgers.popitem(last=False)
-        self._persist(ledger)
+        if not require_durable:
+            self._persist(ledger)
         return ledger
 
     def get(self, ledger_id: str, principal_subject: str) -> dict[str, Any] | None:

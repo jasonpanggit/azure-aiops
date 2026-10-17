@@ -85,6 +85,16 @@ Before onboarding a pilot subscription, confirm:
 
 A 20–30 minute walkthrough proving the end-to-end value chain:
 
+For `/agents`, foreground investigation remains available. **Start background
+investigation** instead retains a caller-known request identity before dispatch.
+Use its scoped recovery link to inspect last reported progress without restarting
+tools. A running record is not worker-liveness proof; process loss leaves the
+outcome unconfirmed rather than automatically replaying. **Stop new scheduling**
+requests a checkpoint stop, not cancellation of already dispatched remote work.
+Completion loads only the exact durably retained ledger. Status polling is bounded
+and can be explicitly paused/resumed; request metadata expires after 24 hours
+without renewal. Creating a separate request can duplicate unconfirmed work.
+
 1. **Executive Investigation Workspace** (`/investigate`) — start from a
    Business Service. Show it summarizes risk, evidence, topology, timeline,
    vulnerabilities, and impact in one place, in both Executive and Engineer

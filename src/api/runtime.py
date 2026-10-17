@@ -4608,6 +4608,13 @@ def _investigation_workspace_store():
     return InvestigationWorkspaceStore(OneLakeDocumentStore(str(aiops_home())))
 
 
+def _investigation_job_store():
+    """Retain single-dispatch investigation jobs on the existing durable root."""
+    from operations.investigation_jobs import InvestigationJobStore
+
+    return InvestigationJobStore(OneLakeDocumentStore(str(aiops_home())))
+
+
 def _predeploy_history_store():
     """Retain explicit exact-scope assessment receipts on the existing durable root."""
     from operations.predeploy_history import PredeployHistoryStore
@@ -5077,10 +5084,9 @@ def build_context() -> ApiContext:
             onboarding.detail(scope.connection_id).get("sync_state") or {}
         ),
     )
-    # Investigation ledgers are the audit trail for operator decisions, so they
-    # are written through to OneLake and survive replica restarts. A local
-    # AIOPS_HOME has no document store; the ledger falls back to memory.
-    configure_ledger_store(_document_store())
+    # Async job completion requires confirmed ledger retention. Local homes use
+    # the same durable filesystem document contract as the OneLake home.
+    configure_ledger_store(OneLakeDocumentStore(str(aiops_home())))
     arg_config = (
         ConnectorConfig.load(os.environ[ENV_ARG_CONFIG])
         if os.environ.get(ENV_ARG_CONFIG, "").strip()
@@ -5856,6 +5862,7 @@ def build_context() -> ApiContext:
         network_history_store=_network_history_store(),
         saved_view_store=_saved_view_store(),
         investigation_workspace_store=_investigation_workspace_store(),
+        investigation_job_store=_investigation_job_store(),
         predeploy_history_store=_predeploy_history_store(),
         twin_history_store=_twin_history_store(),
         service_objective_store=_service_objective_store(),

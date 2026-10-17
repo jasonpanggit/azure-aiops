@@ -687,6 +687,24 @@ export interface InvestigationEvaluation {
   cost: Record<string, number>;
 }
 
+/** Durable dispatch metadata; neither last stage nor running status proves liveness. */
+export interface InvestigationJob {
+  revision: number;
+  job_id: string;
+  scope: Record<string, string[]>;
+  objective: string;
+  timeout_seconds: number;
+  created_at: number;
+  updated_at: number;
+  status: "accepted_outcome_unconfirmed" | "running" | "completed" | "stopped" | "failed";
+  stage: string;
+  stop_requested: boolean;
+  ledger_id: string;
+  durability: "durable";
+  liveness: "not_established";
+  cancellation: "scheduling_only";
+}
+
 export interface MultiAgentLedger {
   ledger_id: string;
   objective: string;

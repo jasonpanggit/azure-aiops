@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -10,6 +10,7 @@ import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { AgentRuntimeReadiness } from "@/components/AgentRuntimeReadiness";
+import { AgentInvestigationJob } from "@/components/AgentInvestigationJob";
 import { useScope } from "@/lib/scope-context";
 import { ScopeBookmarkError, scopedBookmark, scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import { multiAgentApi } from "@/lib/services";
@@ -32,16 +33,21 @@ function ScopedAgents() {
     return <main className="page-container"><StatePanel title="Investigation bookmark unavailable" message={error.message} tone="error" /><Link className="button" href="/agents">Clear investigation bookmark</Link></main>;
   }
   const ledgerId = search.get("ledger_id") ?? "";
-  const valid = !search.has("ledger_id") || (search.getAll("ledger_id").length === 1 && /^[A-Za-z0-9_-]{1,128}$/.test(ledgerId));
+  const jobId = search.get("job_id") ?? "";
+  const valid = (!search.has("ledger_id") || (search.getAll("ledger_id").length === 1 && /^[A-Za-z0-9_-]{1,128}$/.test(ledgerId)))
+    && (!search.has("job_id") || (search.getAll("job_id").length === 1 && /^job-[a-f0-9]{32}$/.test(jobId)))
+    && !(search.has("job_id") && search.has("ledger_id"));
   const query = scopeToSearchParams(effectiveScope);
-  if (!valid) return <main className="page-container"><StatePanel title="Investigation bookmark unavailable" message="Use one exact retained ledger identifier of at most 128 letters, digits, hyphens or underscores." tone="error" /><Link className="button" href={`/agents${query.size ? `?${query}` : ""}`}>Clear retained ledger selection</Link></main>;
-  return <AgentsWorkspace key={`${JSON.stringify(effectiveScope)}::${ledgerId}`} scope={effectiveScope} ledgerId={ledgerId} />;
+  if (!valid) return <main className="page-container"><StatePanel title="Investigation bookmark unavailable" message="Select either one exact retained ledger identifier or one job- identifier with 32 lowercase hexadecimal characters, not both." tone="error" /><Link className="button" href={`/agents${query.size ? `?${query}` : ""}`}>Clear retained ledger selection</Link></main>;
+  return <AgentsWorkspace key={`${JSON.stringify(effectiveScope)}::${ledgerId}`} scope={effectiveScope} ledgerId={ledgerId} jobId={jobId} />;
 }
 
-function AgentsWorkspace({ scope, ledgerId }: { scope: ScopeSelection; ledgerId: string }) {
+function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; ledgerId: string; jobId: string }) {
   const [catalog, setCatalog] = useState<AutonomousAgent[]>([]);
   const [objective, setObjective] = useState(DEFAULT_OBJECTIVE);
-  const [ledger, setLedger] = useState<Envelope<MultiAgentLedger> | null>(null);
+  const [storedLedger, setLedger] = useState<Envelope<MultiAgentLedger> | null>(null);
+  const [ledgerJobId, setLedgerJobId] = useState("");
+  const ledger = (jobId || ledgerJobId) && ledgerJobId !== jobId ? null : storedLedger;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [owner, setOwner] = useState("Service owner");
@@ -51,7 +57,33 @@ function AgentsWorkspace({ scope, ledgerId }: { scope: ScopeSelection; ledgerId:
   const [catalogError, setCatalogError] = useState("");
   const [reviewUncertain, setReviewUncertain] = useState(false);
   const [reload, setReload] = useState(0);
+  const [jobActive, setJobActive] = useState(Boolean(jobId));
   const requestId = useRef(0);
+  const previousJobId = useRef(jobId);
+  const receiveJobResult = useCallback((result: Envelope<MultiAgentLedger>, sourceJobId: string) => {
+    requestId.current += 1;
+    setLedgerJobId(sourceJobId);
+    setLedger(result);
+    setObjective(result.data.objective);
+    setSelectedFindingId("");
+    setDecisionReason("");
+    setReviewUncertain(false);
+    setError("");
+    setLoading(false);
+  }, []);
+  useEffect(() => {
+    if (previousJobId.current === jobId) return;
+    previousJobId.current = jobId;
+    requestId.current += 1;
+    setLedger(null);
+    setLedgerJobId("");
+    setSelectedFindingId("");
+    setDecisionReason("");
+    setError("");
+    setReviewUncertain(false);
+    setLoading(false);
+    if (!jobId) setObjective(DEFAULT_OBJECTIVE);
+  }, [jobId]);
 
   useEffect(() => {
     let active = true;
@@ -92,7 +124,7 @@ function AgentsWorkspace({ scope, ledgerId }: { scope: ScopeSelection; ledgerId:
 
   async function runInvestigation() {
     const nextObjective = objective.trim();
-    if (!nextObjective || loading || ledgerId) return;
+    if (!nextObjective || loading || ledgerId || jobActive || jobId) return;
     const id = ++requestId.current;
     setLoading(true);
     setError("");
@@ -109,7 +141,7 @@ function AgentsWorkspace({ scope, ledgerId }: { scope: ScopeSelection; ledgerId:
   }
 
   async function applyAction(action: string, payload: Record<string, unknown> = {}) {
-    if (!ledger || loading || reviewUncertain) return;
+    if (!ledger || loading || reviewUncertain || jobActive) return;
     const id = ++requestId.current;
     setLoading(true);
     setError("");
@@ -130,7 +162,7 @@ function AgentsWorkspace({ scope, ledgerId }: { scope: ScopeSelection; ledgerId:
   }
 
   const evidence = ledger?.data.agent_runs.flatMap((run) => run.evidence) ?? [];
-  const reviewBlocked = loading || reviewUncertain;
+  const reviewBlocked = loading || reviewUncertain || jobActive;
   const findings = ledger?.data.agent_runs.flatMap((run) => run.findings) ?? [];
   const selectedFinding = findings.find((finding) => finding.finding_id === selectedFindingId);
   const activeAgents = ledger?.data.agent_runs.length ?? 0;
@@ -154,7 +186,7 @@ function AgentsWorkspace({ scope, ledgerId }: { scope: ScopeSelection; ledgerId:
         title="What can evidence reconciliation answer?"
         description="Select specialist definitions and run governed local tools; Foundry activation status is shown explicitly and never inferred."
         actions={
-          <button className="button button-primary" type="button" onClick={runInvestigation} disabled={loading || Boolean(ledgerId) || !objective.trim()}>
+          <button className="button" type="button" onClick={runInvestigation} disabled={loading || Boolean(ledgerId) || Boolean(jobId) || jobActive || !objective.trim()} title="Foreground request. Background investigation below retains admission and progress for recovery.">
             Run deterministic investigation
           </button>
         }
@@ -191,7 +223,7 @@ function AgentsWorkspace({ scope, ledgerId }: { scope: ScopeSelection; ledgerId:
         <div className="card-body agents-objective">
           <label>
             Investigation objective
-            <textarea value={objective} readOnly={Boolean(ledgerId)} onChange={(event) => setObjective(event.target.value)} rows={3} />
+            <textarea value={jobId && !ledger ? "" : objective} placeholder={jobId ? "See admitted objective in Background investigation below." : undefined} readOnly={Boolean(ledgerId) || Boolean(jobId) || jobActive} onChange={(event) => setObjective(event.target.value)} rows={3} />
           </label>
           <div className="entity-pill-row" aria-label="Available specialized agents">
             {catalog.map((agent) => {
@@ -218,6 +250,7 @@ function AgentsWorkspace({ scope, ledgerId }: { scope: ScopeSelection; ledgerId:
         </div>
       </section>
 
+      {!ledgerId ? <AgentInvestigationJob objective={objective} scope={scope} jobId={jobId} disabled={loading} onResult={receiveJobResult} onActiveChange={setJobActive} /> : null}
       <AgentRuntimeReadiness scope={scope} agents={catalog} catalogLoading={catalogLoading} catalogError={catalogError} />
 
       {ledger ? (

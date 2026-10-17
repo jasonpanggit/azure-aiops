@@ -9980,6 +9980,15 @@ body.topology-fullscreen-open {
 .agents-continuation { overflow-wrap: anywhere; }
 .agents-continuation .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .agents-continuation :is(button, .button) { min-height: 44px; }
+.agents-job { overflow-wrap: anywhere; }
+.agents-job .card-body { display: grid; gap: 16px; }
+.agents-job .card-body > p { max-width: 75ch; margin: 0; }
+.agents-job dl { display: grid; gap: 12px; margin: 0; }
+.agents-job dl > div { min-width: 0; }
+.agents-job dt { font-weight: 600; }
+.agents-job dd { margin: 4px 0 0; }
+.agents-job .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.agents-job :is(button, .button) { min-height: 44px; }
 .agents-readiness { overflow-wrap: anywhere; }
 .agents-readiness summary { padding: 16px 20px; min-height: 44px; cursor: pointer; font-weight: 600; }
 .agents-readiness h2 { margin-block: 24px 12px; }

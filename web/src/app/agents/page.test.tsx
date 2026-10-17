@@ -3,17 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider, useScope } from "@/lib/scope-context";
 import { SCOPE_DIMENSIONS } from "@/lib/scope";
 
-const { action, catalog, investigate, readLedger, searchParams } = vi.hoisted(() => ({
+const { action, catalog, investigate, readLedger, readJob, searchParams } = vi.hoisted(() => ({
   action: vi.fn(),
   catalog: vi.fn(),
   investigate: vi.fn(),
   readLedger: vi.fn(),
+  readJob: vi.fn(),
   searchParams: { current: new URLSearchParams() },
 }));
 
 vi.mock("next/navigation", () => ({ useSearchParams: () => searchParams.current }));
 vi.mock("@/lib/services", () => ({
-  multiAgentApi: { action, catalog, investigate, ledger: readLedger },
+  multiAgentApi: { action, catalog, investigate, ledger: readLedger, job: readJob },
 }));
 
 import MultiAgentInvestigationPage from "./page";
@@ -111,6 +112,31 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
     expect(action).not.toHaveBeenCalled();
   });
 
+  it("hides the prior completed ledger immediately when another exact job or a fresh workspace is selected", async () => {
+    const first = `job-${"a".repeat(32)}`, second = `job-${"b".repeat(32)}`;
+    const job = {
+      revision: 4, job_id: first, scope: {}, objective: ledger.objective,
+      timeout_seconds: 30, created_at: 1800000000, updated_at: 1800000001,
+      status: "completed", stage: "ledger_retained", stop_requested: false,
+      ledger_id: ledger.ledger_id, durability: "durable",
+      liveness: "not_established", cancellation: "scheduling_only",
+    };
+    readJob.mockResolvedValueOnce(envelope(job));
+    searchParams.current = new URLSearchParams({ job_id: first });
+    const rendered = renderPage();
+    expect(await screen.findByRole("heading", { name: "Specialist plan activity" })).toBeVisible();
+    readJob.mockReturnValueOnce(new Promise(() => {}));
+    searchParams.current = new URLSearchParams({ job_id: second });
+    rendered.rerender(<ScopeProvider><MultiAgentInvestigationPage /><ScopeSwitcher /></ScopeProvider>);
+    expect(screen.queryByRole("heading", { name: "Specialist plan activity" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run deterministic investigation" })).toBeDisabled();
+    expect(investigate).not.toHaveBeenCalled();
+    searchParams.current = new URLSearchParams();
+    rendered.rerender(<ScopeProvider><MultiAgentInvestigationPage /><ScopeSwitcher /></ScopeProvider>);
+    expect(screen.queryByRole("heading", { name: "Specialist plan activity" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Start background investigation" })).toBeEnabled();
+  });
+
   it.each(SCOPE_DIMENSIONS)("rejects a wider %s bookmark before any acquisition", dimension => {
     searchParams.current = new URLSearchParams({ ledger_id: "mai-123", [dimension]: "outside" });
     render(<ScopeProvider initialScope={{ [dimension]: ["authorized"] }}><MultiAgentInvestigationPage /></ScopeProvider>);
@@ -119,7 +145,11 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
     expect(catalog).not.toHaveBeenCalled();
   });
 
-  it.each(["ledger_id=", "ledger_id=../private", "ledger_id=first&ledger_id=second", `ledger_id=${"a".repeat(129)}`])("refuses malformed exact ledger selection: %s", query => {
+  it.each(["ledger_id=", "ledger_id=../private", "ledger_id=first&ledger_id=second", `ledger_id=${"a".repeat(129)}`,
+    "job_id=", "job_id=../private", `job_id=job-${"A".repeat(32)}`,
+    `job_id=job-${"a".repeat(32)}&job_id=job-${"b".repeat(32)}`,
+    `ledger_id=mai-123&job_id=job-${"a".repeat(32)}`,
+  ])("refuses malformed exact ledger selection: %s", query => {
     searchParams.current = new URLSearchParams(query);
     renderPage();
     expect(screen.getByText("Investigation bookmark unavailable")).toBeVisible();

@@ -9,6 +9,52 @@ Azure AI Operations Workbench UI.
 Layer and explicitly requested telemetry through authorized domain adapters.
 No handler reads Fabric, ontology tables, or Azure Resource Graph directly.
 
+## Asynchronous Agents investigations
+
+`POST /agents/investigation-jobs` admits a strict `{job_id, objective,
+timeout_seconds}` request. The caller knows `job-<32 lowercase hex>` before
+submission; objective is 1..1024 characters and the wall-clock budget is 1..30
+seconds (checked at call boundaries, not a forced provider timeout). The server
+retains the authenticated subject and exact effective nine-dimensional scope.
+First admission is create-only and returns 202 before background execution.
+Identical subsequent admissions return existing metadata without dispatch; changed
+payload/scope, expired identities and admission races return 409. Never change an
+identity to work around an uncertain response.
+
+`GET /agents/investigation-jobs/{job_id}` reads exact caller/scope metadata only.
+`POST /agents/investigation-jobs/{job_id}/stop` idempotently requests that the
+worker stop **new scheduling** at its next checkpoint. It does not kill an
+in-flight call or establish that nested/timed-out remote work has stopped.
+`stop_requested=true` is separate from worker-acknowledged `status=stopped`;
+completion can win a late stop request. The older ledger action
+`stop_investigation` remains only a completed-ledger review decision.
+
+The process admits at most two local background workers; capacity exhaustion or
+missing/unavailable storage returns 503 without memory-only admission.
+Workers claim once through durable CAS and record bounded last-stage metadata
+before/after governed calls, synthesis and retention. Async legacy specialists
+are serial so no local sibling work is scheduled behind a stopped call; the
+existing synchronous endpoint preserves its parallel behavior and rollout
+authorization. Only confirmed durable ledger retention permits `completed` and
+its exact ledger ID; failures never masquerade as retained success.
+
+**This is single-dispatch execution, not a durable queue or guaranteed delivery.**
+Process loss before dispatch or during a provider call can leave accepted/running
+metadata indefinitely unconfirmed. There is no lease reclaim, automatic replay,
+restart continuation or worker-liveness claim. A checkpoint timestamp is not a
+source observation time, provider heartbeat or coverage guarantee. Status/stop
+reads never renew the 24-hour access window; expired IDs cannot be reused.
+Documents use the existing local/OneLake durable root and require administrative
+retention/cleanup; expiry does not delete an audit document.
+
+The Agents page keeps the foreground action and offers a distinct background
+action. It writes the exact recovery ID into the scoped URL before admission.
+Reopening reads metadata only; completed results load the exact retained ledger,
+never reacquire sources. New admissions poll metadata every two seconds, at most
+60 checks, with explicit pause/resume/check controls. A failed or lost response
+preserves that ID rather than resubmitting. Creating a separate request is an
+explicit action that may duplicate work whose outcome remains unknown.
+
 ## Team investigation workspaces and operator hypotheses
 
 `POST /investigation-workspaces` creates private navigation using a caller-known

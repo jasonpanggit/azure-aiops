@@ -1936,6 +1936,22 @@ export const twinApi = {
 };
 
 export const multiAgentApi = {
+  /** Admit one caller-known background job; the same identity never redispatches. */
+  startJob: (jobId: string, objective: string, scope: ScopeSelection = {}, timeoutSeconds = 30) =>
+    apiRequest<import("./types").InvestigationJob>("/agents/investigation-jobs", {
+      method: "POST", query: scopeToSearchParams(scope),
+      body: { job_id: jobId, objective, timeout_seconds: timeoutSeconds },
+    }),
+  /** Recover exact outcome metadata without acquiring sources or restarting work. */
+  job: (jobId: string, scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<import("./types").InvestigationJob>(`/agents/investigation-jobs/${encodeURIComponent(jobId)}`, {
+      query: scopeToSearchParams(scope), signal: options.signal,
+    }),
+  /** Request stop of new scheduling; already dispatched provider work is not cancelled. */
+  stopJob: (jobId: string, scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").InvestigationJob>(`/agents/investigation-jobs/${encodeURIComponent(jobId)}/stop`, {
+      method: "POST", query: scopeToSearchParams(scope),
+    }),
   /** Read cached provider observations without refreshing or starting tools. */
   runtimeReadiness: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
     apiRequest<import("./types").AgentRuntimeReadiness>("/agents/runtime-readiness", { query: scopeToSearchParams(scope), signal: options.signal }),
