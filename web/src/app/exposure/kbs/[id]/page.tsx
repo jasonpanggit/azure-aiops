@@ -14,6 +14,8 @@ import {
   type PageHeaderCompleteness,
 } from "@/components/ui/PageHeader";
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
+import { KbUpdateEvidence } from "@/components/exposure/KbUpdateEvidence";
+import { validateKbEvidence } from "@/lib/kb-evidence";
 import { SourceFreshnessRail } from "@/components/exposure/SourceFreshnessRail";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
@@ -393,7 +395,7 @@ function aggregateEnrichmentFamily(
     );
 }
 
-export default function KbDetailPage({ params }: { params: { id: string } }) {
+function KbDetailBody({ params }: { params: { id: string } }) {
   const decodedKbId = decodeURIComponent(params.id).trim().toLocaleUpperCase("en-US");
   const kbMatch = /^(?:KB)?(\d{4,})$/.exec(decodedKbId);
   const kbId = kbMatch ? `KB${kbMatch[1]}` : decodedKbId;
@@ -429,7 +431,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
   const detail = useExposureSection<KbDetail>({
     queryKey: `kb-detail|${kbId}|${JSON.stringify(findingState.scope)}`,
     load: ({ signal }) =>
-      cursorEnvelope(kbApi.detail(kbId, findingState.scope, { signal })),
+      cursorEnvelope(kbApi.detail(kbId, findingState.scope, { signal }).then(result => validateKbEvidence(result, kbId, findingState.scope))),
     isEmpty: () => false,
   });
   const findings = useExposureSection<ExposurePage<KbFindingRow>>({
@@ -515,7 +517,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
   // Read-only contextual Copilot over the already-loaded KB evidence. Governed
   // remediation stays behind the existing server workflow (D-03, D-04, D-10).
   const kbCopilot = buildKbDetailCopilotContext({
-    scope,
+    scope: findingState.scope,
     kbId,
     kb: data
       ? {
@@ -687,10 +689,10 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                 <div className="exposure-key-facts">
                   <MetricCard
                     label="Missing targets"
-                    value={findingPage?.contract.counts.represented ?? data?.affected_server_count ?? null}
+                    value={data?.affected_server_count ?? null}
                     unit="targets"
-                    detail={`${findingPage?.contract.counts.excluded ?? "Unknown"} excluded from represented scope`}
-                    completeness={metricCompleteness(findingsState.status)}
+                    detail="Latest KB snapshot missing / installation-failed targets; not filtered finding rows"
+                    completeness={metricCompleteness(metadataState.status)}
                   />
                   <MetricCard
                     label="Loaded asset sample"
@@ -699,7 +701,9 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                     detail={
                       data?.affected_servers_truncated
                         ? `${data.affected_server_count?.toLocaleString("en-US") ?? "Unknown"} total; sample is truncated`
-                        : "Complete loaded asset list"
+                        : data?.affected_servers_truncated === false && data.affected_server_count === data.affected_servers.length
+                          ? "Complete snapshot missing / failed target sample"
+                          : "Snapshot sample extent unknown"
                     }
                     completeness={metricCompleteness(metadataState.status)}
                   />
@@ -728,7 +732,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                         <th>CVE</th>
                         <th>Severity / CVSS</th>
                         <th>EPSS / KEV</th>
-                        <th>Affected targets</th>
+                        <th>Asset association</th>
                         <th>Metadata state</th>
                         <th>Open</th>
                       </tr>
@@ -764,9 +768,9 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                                     : "KEV —"}
                               </div>
                             </td>
-                            <td data-label="Affected targets">
-                              {findingPage?.contract.counts.represented?.toLocaleString("en-US") ?? "—"}
-                              <div className="table-secondary">KB-scoped represented targets</div>
+                            <td data-label="Asset association">
+                              Per-CVE target mapping unreported
+                              <div className="table-secondary">KB-wide findings do not prove per-CVE applicability</div>
                             </td>
                             <td data-label="Metadata state">
                               <StatusBadge label={metadata.label} tone={metadata.tone} compact />
@@ -784,6 +788,7 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
                 </div>
               </Section>
 
+              <KbUpdateEvidence kbId={kbId} detail={data} />
               <Section
                 label="Affected assets"
                 sourceName="Affected findings"
@@ -952,4 +957,12 @@ export default function KbDetailPage({ params }: { params: { id: string } }) {
       />
     </div>
   );
+}
+
+/** Remount local filters/drawers/acquisition state at every URL, KB or scope boundary. */
+export default function KbDetailPage({ params }: { params: { id: string } }) {
+  const { scope } = useScope();
+  const searchParams = useSearchParams();
+  const query = parseExposureQueryState(new URLSearchParams(searchParams.toString()), { authorizedScope: scope });
+  return <KbDetailBody key={`${params.id}:${exposureQueryKey(query)}`} params={params} />;
 }

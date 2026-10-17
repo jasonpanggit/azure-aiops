@@ -1796,6 +1796,46 @@ those same bytes to download, without reserialization. Hashes provide integrity,
 not signatures, trusted provider attestations, applicability or execution approval.
 Exports contain private asset identifiers; sharing is an operator decision.
 
+### KB latest-snapshot installation evidence
+
+`GET /api/v1/kbs/{kb_id}` resolves the latest authorized Silver KB snapshot,
+independently of the filtered finding page and its generation. Within the
+existing tenant/scope/snapshot/KB SQL predicates, rows are deduplicated per
+subscription/target first; `COUNT_BIG` window aggregates then report distinct
+`observed_targets`, `missing`, `installation_failed`, `installed`, and `other`.
+Only after those whole-snapshot aggregates are computed is the target sample
+bounded to 100 rows. Categories must sum to the observed population, agree
+across result rows, agree with the missing/failed count, and contain all sampled
+statuses. Contradictory, negative, noninteger or unsafe counts fail explicitly.
+An absent legacy aggregate projection remains unknown, never a sample-derived
+distribution.
+
+`target_status_observations` retains the bounded source target/status/timestamp
+projection in the response, with an explicit truncation indicator (unknown if
+the full extent is unreported). These are current source observations, not
+retained history. Recorded `installed` means the source's latest status: it
+does not prove portal execution, remediation verification or post-deploy health.
+Missing/failed snapshot targets are not filtered finding counts; KB-wide
+membership is not proof of per-CVE target applicability.
+
+`update_guidance` exposes recorded MSRC `product_ids`, not inferred product
+names from update titles. The current durable catalog does not collect
+prerequisites, servicing-stack dependencies, supersedence graphs, reboot or
+OS/build requirements. `dependency_capability=not_collected` keeps these
+unknown; it does not mean no dependencies/reboot. Provider status/staleness,
+last-known-good presence and source observation clocks remain independent from
+the Silver snapshot. Fixed Microsoft reference links are navigation only;
+the portal does not fetch or attest their content.
+
+The KB page validates exact returned KB/scope/count bindings before accepting
+metadata and remounts local filters, drawers and asynchronous source state at
+URL/KB/effective-scope boundaries. Contextual Copilot uses the narrowed page
+scope. The underlying SQL authorization currently supports subscription and
+subscription-connection selectors; unsupported dimensions remain errors, never
+silently dropped or widened. Maintenance-review declarations and retained
+verification observations are separate, not implemented by this current-source
+projection.
+
 ### Situation handover annotations and observed comparisons
 
 `GET /api/v1/situations/{situation_id}/notes` reauthorizes the live Situation

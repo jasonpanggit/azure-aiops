@@ -529,4 +529,59 @@ describe("KB detail", () => {
     recovery.resolve(kbEnvelope());
     expect((await screen.findAllByRole("link", { name: "CVE-2026-0001" })).length).toBeGreaterThan(0);
   });
+
+  it("does not promote filtered finding counts into distinct missing targets or per-CVE applicability", async () => {
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+    const value = await screen.findByLabelText("Missing targets value");
+    await waitFor(() => expect(value).toHaveTextContent("137"));
+    expect(screen.getByText("Per-CVE target mapping unreported")).toBeVisible();
+    expect(screen.getByText("Latest KB snapshot missing / installation-failed targets; not filtered finding rows")).toBeVisible();
+    const section = screen.getByRole("region", { name: "KB update evidence" });
+    expect(within(section).getByText(/Whole-snapshot status counts are unavailable/)).toBeVisible();
+    expect(within(section).getByText("Unknown; no product identifiers recorded")).toBeVisible();
+    expect(within(section).getByRole("link", { name: "Microsoft support article for KB600001" })).toHaveAttribute("href", "https://support.microsoft.com/help/600001");
+    expect(within(section).getByText(/Unknown is not “no prerequisites”/)).toBeVisible();
+  });
+
+  it("rejects metadata for another KB instead of rendering plausible update evidence", async () => {
+    const wrong = kbEnvelope(); wrong.data.kb_id = "KB9999999"; api.detail.mockResolvedValueOnce(wrong);
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+    expect((await screen.findAllByText(/KB evidence does not match/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Contoso kernel security update")).not.toBeInTheDocument();
+    expect(screen.getByText("server-1")).toBeVisible(); // Independent authorized findings remain available.
+  });
+
+  it("remounts local target filters when the effective URL scope changes", async () => {
+    const user = userEvent.setup();
+    const view = render(<KbDetailPage params={{ id: "KB600001" }} />);
+    await screen.findByRole("heading", { name: "Affected assets" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by Target kind" }), "container_image");
+    await waitFor(() => expect(api.exposureItems.mock.calls.at(-1)?.[0].filters.target_kind).toBe("container_image"));
+    const narrowed = { ...kbEnvelope(), scope: { subscription: ["sub-1"], environment: ["prod"] } };
+    api.detail.mockResolvedValue(narrowed);
+    navigation.params = new URLSearchParams("subscription=sub-1&environment=prod&generation=generation-25");
+    view.rerender(<KbDetailPage params={{ id: "KB600001" }} />);
+    await waitFor(() => expect(api.exposureItems.mock.calls.at(-1)?.[0].scope).toEqual({ subscription: ["sub-1"], environment: ["prod"] }));
+    expect(api.exposureItems.mock.calls.at(-1)?.[0].filters.target_kind).toBeUndefined();
+    await waitFor(() => expect(copilot.inputs.at(-1)?.scope).toEqual({ subscription: ["sub-1"], environment: ["prod"] }));
+  });
+
+  it("shows exact snapshot status counts and sampled observations without inventing dependency facts", async () => {
+    const value = kbEnvelope("failed");
+    api.detail.mockResolvedValueOnce({ ...value, data: { ...value.data, generation: "silver-patch:one",
+      affected_server_count: 103, installation_status_counts: { observed_targets: 1000, missing: 100, installation_failed: 3, installed: 800, other: 97 },
+      target_status_observations: [{ target_id: "sampled-server", status: "installation_failed", observed_at: "2026-09-06T07:00:00Z" }],
+      target_status_observations_truncated: true, update_guidance: { source: "msrc", product_ids: ["recorded-product-one"], dependency_capability: "not_collected" },
+    } });
+    render(<KbDetailPage params={{ id: "KB600001" }} />);
+    const section = await screen.findByRole("region", { name: "KB update evidence" });
+    expect(await within(section).findByText("800")).toBeVisible();
+    expect(within(section).getByText("recorded-product-one")).toBeVisible();
+    expect(within(section).getByText(/failed; not marked stale; last-known-good absent/)).toBeVisible();
+    expect(within(section).getByText("Unknown; no provider relationship graph is available")).toBeVisible();
+    await userEvent.click(within(section).getByText("Inspect sampled target status observations"));
+    expect(within(section).getByText(/sampled-server: installation_failed/)).toBeVisible();
+    expect(within(section).getByText(/1 loaded \/ 1000 observed targets; sample is truncated/)).toBeVisible();
+    expect(within(section).getByText(/not proof that this portal executed an update/)).toBeVisible();
+  });
 });

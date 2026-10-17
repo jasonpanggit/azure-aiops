@@ -1720,6 +1720,22 @@ export interface ExposureEnrichmentState {
 }
 
 export interface KbDetail {
+  generation?: string;
+  snapshot_freshness_at?: string;
+  installation_status_counts?: {
+    observed_targets: number;
+    missing: number;
+    installation_failed: number;
+    installed: number;
+    other: number;
+  } | null;
+  target_status_observations?: { target_id: string; status: string; observed_at: string }[];
+  target_status_observations_truncated?: boolean | null;
+  update_guidance?: {
+    source: "msrc";
+    product_ids: string[];
+    dependency_capability: "not_collected";
+  };
   snapshot?: {
     completeness: string;
     freshness: string;

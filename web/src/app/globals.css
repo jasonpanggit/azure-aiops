@@ -5811,6 +5811,38 @@ body.topology-fullscreen-open {
   white-space: normal;
 }
 
+.kb-update-evidence p {
+  max-width: 75ch;
+  margin-block: 12px;
+}
+
+.kb-update-evidence h3 {
+  margin-block: 24px 12px;
+}
+
+.kb-update-evidence summary {
+  min-height: 44px;
+  padding-block: 10px;
+  cursor: pointer;
+}
+
+.kb-update-evidence .data-table {
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.kb-update-evidence .data-table th,
+.kb-update-evidence .data-table td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.kb-update-evidence caption {
+  padding: 12px 20px;
+  text-align: left;
+  white-space: normal;
+}
+
 .exposure-defender-page .exposure-finding-row summary {
   min-height: 44px;
   padding-block: 10px;
