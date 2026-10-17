@@ -284,7 +284,8 @@ describe("KB detail", () => {
         expect.objectContaining({ key: "nvd" }),
       ]),
     );
-    expect(screen.getAllByText(/1 of 2 connections represented/).length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByText(/1 of 2 connections represented/)).toBeInTheDocument();
+    expect(screen.getAllByText(/1 of 2 represented/).length).toBeGreaterThanOrEqual(2);
     // Excluded counts/reasons come from each section's own contract now, not
     // the shared overview — only "Affected assets" (findings) carries its
     // own completeness with excluded connections in this fixture.

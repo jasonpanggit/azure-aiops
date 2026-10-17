@@ -88,7 +88,7 @@ function coverageCopy(state: ExposureSectionPresentation): string {
     parts.push(
       `${represented.toLocaleString("en-US")} of ${expected.toLocaleString(
         "en-US",
-      )} connections represented`,
+      )} represented`,
     );
   } else if (represented !== undefined) {
     parts.push(`${represented.toLocaleString("en-US")} represented`);
@@ -183,7 +183,7 @@ export function SourceSectionState({
     state.status === "stale"
       ? `Showing last successful ${sourceName} data from ${observedCopy(state.metadata.observedAt)}. The latest refresh failed${state.error?.message ? `: ${state.error.message}` : ""}, so do not treat missing rows as resolved.`
       : state.status === "partial"
-        ? `Showing ${state.metadata.represented ?? "—"} of ${state.metadata.expected ?? "—"} connections represented. Results and totals exclude unavailable connections.${state.metadata.safeErrorMessage ? ` ${state.metadata.safeErrorMessage}` : ""}`
+        ? `Showing partial evidence. Finding counts do not establish connection coverage.${state.metadata.safeErrorMessage ? ` ${state.metadata.safeErrorMessage}` : ""}`
         : `${sourceName} is current.`;
 
   return (

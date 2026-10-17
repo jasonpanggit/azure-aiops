@@ -548,7 +548,8 @@ describe("CVE detail", () => {
     ]) {
       expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
     }
-    expect(screen.getAllByText(/1 of 2 connections represented/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/1 of 2 connections represented/)).toBeInTheDocument();
+    expect(screen.getAllByText(/1 of 2 represented/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/2 excluded/).length).toBeGreaterThanOrEqual(2);
     // "excluded"/"total" must come from each section's own contract, not the
     // shared CVE-wide overview — sections without their own count (e.g.

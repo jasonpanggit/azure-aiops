@@ -1586,6 +1586,23 @@ values do not cross the redirect. Migration logs contain only a count,
 allowlisted translated parameter names, and the number of discarded keys,
 never query values, connection IDs, or unknown raw parameter names.
 
+Exposure Overview restores all nine repeated scope dimensions and an optional
+exact generation before reading its single bounded aggregate response. Malformed
+generation values, repeated generation selections, invalid scope values, or
+bookmarks outside a constrained global selector fail before reads. Overview
+links to child collections and CVE/KB details preserve the selected scope and
+loaded generation. An unconstrained browser selector still allows a bookmark to
+narrow a collection; the Operations API remains the RBAC authority.
+
+The Overview SLA rate divides only recorded `overdue` findings by the sum of
+`overdue` and `within_sla` findings. Other states are reported separately and
+excluded, not counted as compliant. Without a classified denominator, the rate
+is unavailable rather than zero. This is a represented-partition classification
+rate, not an estate-wide SLA measure. An omitted facet vocabulary is unknown,
+not evidence of zero findings.
+Shared Exposure partial-state copy does not label generic represented-finding
+counts as connection coverage.
+
 ### Situation handover annotations and observed comparisons
 
 `GET /api/v1/situations/{situation_id}/notes` reauthorizes the live Situation

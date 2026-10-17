@@ -241,7 +241,7 @@ describe("Patch priorities", () => {
     expect(screen.getByText(/2 excluded findings/)).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 1 of 2 connections represented. Results and totals exclude unavailable connections.",
+        "Showing partial evidence. Finding counts do not establish connection coverage.",
       ),
     ).toBeInTheDocument();
     expect(

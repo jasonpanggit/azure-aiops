@@ -2,13 +2,17 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ScopeProvider } from "@/lib/scope-context";
+import { parseExposureQueryState } from "@/lib/exposure-query-state";
+import { SCOPE_DIMENSIONS } from "@/lib/scope";
 
 const navigation = vi.hoisted(() => ({
   push: vi.fn(),
+  search: new URLSearchParams(),
 }));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: navigation.push }),
+  useSearchParams: () => navigation.search,
 }));
 
 const api = vi.hoisted(() => ({
@@ -144,6 +148,7 @@ function itemsEnvelope() {
 describe("ExposurePage bounded read model", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    navigation.search = new URLSearchParams();
     api.exposureFacets.mockResolvedValue(facetEnvelope());
     api.exposureItems.mockRejectedValue(new Error("exposureItems must not be called"));
     for (const method of [
@@ -158,7 +163,7 @@ describe("ExposurePage bounded read model", () => {
     }
   });
 
-  it("renders every Overview section from two bounded SQL requests", async () => {
+  it("renders every Overview section from one atomic bounded SQL request", async () => {
     render(<ScopeProvider><ExposurePage /></ScopeProvider>);
 
     expect(await screen.findByLabelText("Current exposure findings value")).toHaveTextContent("77857");
@@ -169,6 +174,7 @@ describe("ExposurePage bounded read model", () => {
     expect(screen.getByLabelText("Indeterminate SLA findings value")).toHaveTextContent("77857");
     expect(screen.getByText("CVE-2026-0001")).toBeInTheDocument();
     expect(screen.queryByText("Exposure intelligence is unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText(/77,857 of.*connections represented/)).not.toBeInTheDocument();
 
     expect(api.exposureFacets).toHaveBeenCalledTimes(1);
     expect(api.exposureItems).not.toHaveBeenCalled();
@@ -208,10 +214,12 @@ describe("ExposurePage bounded read model", () => {
   it("keeps the priority detail link generation-bound", async () => {
     render(<ScopeProvider><ExposurePage /></ScopeProvider>);
     const preview = await screen.findByLabelText("Priority preview state");
-    expect(within(preview).getByRole("link", { name: "Open CVE-2026-0001" })).toHaveAttribute(
-      "href",
-      `/exposure/cves/CVE-2026-0001?generation=${generation}&origin=%2Fexposure`,
-    );
+    const href = within(preview).getByRole("link", { name: "Open CVE-2026-0001" }).getAttribute("href")!;
+    const link = new URL(href, "http://localhost");
+    expect(link.pathname).toBe("/exposure/cves/CVE-2026-0001");
+    expect(link.searchParams.get("generation")).toBe(generation);
+    expect(link.searchParams.get("origin")).toBe("/exposure");
+    expect(link.searchParams.get("row")).toBe("exposure-1");
   });
 
   it("does not include other Defender families in the image metric", async () => {
@@ -233,5 +241,75 @@ describe("ExposurePage bounded read model", () => {
     render(<ScopeProvider><ExposurePage /></ScopeProvider>);
 
     expect(await screen.findByLabelText("Update Manager findings value")).toHaveTextContent("24");
+  });
+
+  it("keeps indeterminate SLA evidence out of an all-clear gauge", async () => {
+    render(<ScopeProvider><ExposurePage /></ScopeProvider>);
+    expect(await screen.findByText("SLA rate unavailable")).toBeVisible();
+    expect(screen.queryByRole("img", { name: /Overdue findings:/ })).not.toBeInTheDocument();
+  });
+
+  it("divides overdue only by explicitly classified findings", async () => {
+    const response = facetEnvelope();
+    response.data.facets.sla_state = [
+      { value: "overdue", count: 5 }, { value: "within_sla", count: 5 },
+      { value: "indeterminate", count: 90 }, { value: "not_overdue", count: 10 },
+    ];
+    api.exposureFacets.mockResolvedValue(response);
+    render(<ScopeProvider><ExposurePage /></ScopeProvider>);
+    expect(await screen.findByRole("img", { name: "Overdue findings: 50 out of 100, High" })).toBeVisible();
+    expect(screen.getByText(/5 overdue \/ 10 classified findings. 100 unclassified findings excluded/)).toBeVisible();
+  });
+
+  it("does not turn an absent severity vocabulary into zero known findings", async () => {
+    const response = facetEnvelope();
+    Reflect.deleteProperty(response.data.facets, "severity");
+    api.exposureFacets.mockResolvedValue(response);
+    render(<ScopeProvider><ExposurePage /></ScopeProvider>);
+    expect(await screen.findByLabelText("Critical findings value")).not.toHaveTextContent("0");
+    expect(screen.getByLabelText("High findings value")).not.toHaveTextContent("0");
+  });
+
+  it.each(["generation=", "generation=one&generation=two", "generation=invalid%2Fgeneration", "subscription=%0A"])(
+    "rejects malformed bookmarks before reads: %s", async query => {
+      navigation.search = new URLSearchParams(query);
+      render(<ScopeProvider><ExposurePage /></ScopeProvider>);
+      expect(await screen.findByText("Exposure bookmark unavailable")).toBeVisible();
+      expect(api.exposureFacets).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects an out-of-selection scope instead of reading another partition", async () => {
+    navigation.search = new URLSearchParams({ subscription: "outside" });
+    render(<ScopeProvider initialScope={{ subscription: ["selected"] }}><ExposurePage /></ScopeProvider>);
+    expect(await screen.findByText("Exposure bookmark unavailable")).toBeVisible();
+    expect(api.exposureFacets).not.toHaveBeenCalled();
+  });
+
+  it("keeps all nine narrowed dimensions and generation on reads and child collections/details", async () => {
+    const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(dimension => [dimension, [`${dimension}-one`, `${dimension}-two`]]));
+    for (const dimension of SCOPE_DIMENSIONS) for (const value of scope[dimension]) navigation.search.append(dimension, value);
+    navigation.search.set("generation", generation);
+    render(<ScopeProvider><ExposurePage /></ScopeProvider>);
+    await screen.findByText("CVE-2026-0001");
+    expect(api.exposureFacets.mock.calls[0][0]).toMatchObject({ scope, generation });
+    for (const name of ["Open Patch priorities", "Open Defender exposure", "Review priorities", "Open CVE-2026-0001"]) {
+      const href = screen.getByRole("link", { name }).getAttribute("href")!;
+      const query = new URL(href, "http://localhost").searchParams;
+      for (const dimension of SCOPE_DIMENSIONS) expect(query.getAll(dimension)).toEqual(scope[dimension]);
+      expect(query.get("generation")).toBe(generation);
+      expect(parseExposureQueryState(query, { authorizedScope: {} }).scope).toEqual(scope);
+    }
+  });
+
+  it("hides prior partition findings synchronously when a bookmark changes", async () => {
+    navigation.search = new URLSearchParams({ subscription: "first" });
+    const rendered = render(<ScopeProvider><ExposurePage /></ScopeProvider>);
+    await screen.findByText("CVE-2026-0001");
+    api.exposureFacets.mockReturnValueOnce(new Promise(() => {}));
+    navigation.search = new URLSearchParams({ subscription: "second" });
+    rendered.rerender(<ScopeProvider><ExposurePage /></ScopeProvider>);
+    expect(screen.queryByText("CVE-2026-0001")).not.toBeInTheDocument();
+    await waitFor(() => expect(api.exposureFacets.mock.calls.at(-1)?.[0].scope).toEqual({ subscription: ["second"] }));
   });
 });

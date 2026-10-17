@@ -206,6 +206,12 @@ function authorizedUrlScope(
       if (authorized.length) resolved[dimension] = [...authorized];
       continue;
     }
+    if (!authorized.length) {
+      // An unconstrained browser selector is not an empty RBAC allowlist.
+      // Preserve bookmark narrowing; the API still authorizes the principal.
+      resolved[dimension] = requested;
+      continue;
+    }
 
     const authorizedByFoldedValue = new Map(
       authorized.map((value) => [value.toLocaleLowerCase("en-US"), value]),
