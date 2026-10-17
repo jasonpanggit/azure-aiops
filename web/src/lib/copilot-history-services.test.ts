@@ -7,6 +7,24 @@ vi.mock("./api-client", () => ({ apiRequest: mock.request, resolveApiBaseUrl: ()
 
 describe("Copilot history and interrupt transport contracts", () => {
   beforeEach(() => { mock.request.mockReset(); mock.request.mockResolvedValue({ data: {} }); });
+  it("transmits explicit same-key admission while preserving keyless existing callers", async () => {
+    await askCanonicalInvestigation("Review evidence", {}, { requestKey: "exact-key" });
+    expect(mock.request.mock.calls[0][1].body.request_key).toBe("exact-key");
+    await askCanonicalInvestigation("Review evidence");
+    expect(mock.request.mock.calls[1][1].body).not.toHaveProperty("request_key");
+  });
+  it("reads exact receipt under all nine dimensions without a write or automatic retry", async () => {
+    const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(name => [name, [`${name}-a`, `${name}-b`]]));
+    const signal = new AbortController().signal;
+    await copilotApi.requestReceipt("key/path", scope, signal);
+    const [path, options] = mock.request.mock.calls[0];
+    expect(path).toBe("/copilot/requests/key%2Fpath");
+    expect(options.signal).toBe(signal);
+    expect(options.method).toBeUndefined();
+    expect(options.body).toBeUndefined();
+    for (const name of SCOPE_DIMENSIONS) expect(options.query.getAll(name)).toEqual(scope[name]);
+    expect(mock.request).toHaveBeenCalledTimes(1);
+  });
   it("discovers a read-only authorized page with scope and cancellation", async () => {
     const controller = new AbortController();
     await copilotApi.retainedThreads({ owner: ["a", "b"] }, 2, controller.signal);

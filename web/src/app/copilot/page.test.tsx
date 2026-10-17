@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScopeSelection } from "@/lib/scope";
 
 const mocks = vi.hoisted(() => ({
-  ask: vi.fn(), scope: {} as ScopeSelection, history: vi.fn(), query: "",
+  ask: vi.fn(), scope: {} as ScopeSelection, history: vi.fn(), receipt: vi.fn(), query: "",
   continuity: null as null | { thread: { threadId: string; threadRevision: number } | null; generation: number; acceptServerState: ReturnType<typeof vi.fn> },
 }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(mocks.query) }));
@@ -14,17 +14,57 @@ vi.mock("@/lib/services", () => ({
   toCanonicalInvestigationView: (value: unknown) => value,
   ROOT_COPILOT_SESSION: "root",
   SUPPORTED_SEARCH_PHRASES: ["Review current evidence"],
-  copilotApi: { retainedHistory: mocks.history },
+  copilotApi: { retainedHistory: mocks.history, requestReceipt: mocks.receipt },
 }));
 import CopilotPage from "./page";
 
 describe("Copilot scope continuity", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState(null, "", "/copilot");
     mocks.scope = {};
     mocks.query = "";
     mocks.continuity = null;
     mocks.history.mockResolvedValue({ data: { thread_id: `thr-${"a".repeat(32)}`, thread_revision: 1, durability: "durable", observation_status: "historical", turns: [] } });
+  });
+
+  it("retries only the captured original question and exact key, never an edited draft or new admission", async () => {
+    mocks.ask.mockRejectedValueOnce(new Error("Response lost")).mockRejectedValueOnce(new Error("Already accepted"));
+    render(<CopilotPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Review current evidence/ }));
+    expect(await screen.findByText("Request outcome unconfirmed")).toBeVisible();
+    const requestKey = mocks.ask.mock.calls[0][2].requestKey;
+    expect(requestKey).toMatch(/^req-[0-9]{13}-[a-f0-9]{32}$/);
+    expect(new URL(window.location.href).searchParams.get("request_key")).toBe(requestKey);
+    fireEvent.change(screen.getByRole("textbox", { name: "Copilot question" }), { target: { value: "Edited draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Retry original question with same request key" }));
+    expect(await screen.findByText("Already accepted")).toBeVisible();
+    expect(mocks.ask.mock.calls[1][0]).toBe("Review current evidence");
+    expect(mocks.ask.mock.calls[1][2].requestKey).toBe(requestKey);
+    expect(mocks.receipt).not.toHaveBeenCalled();
+  });
+
+  it("reloads an exact request bookmark without polling, submission or restoring a question", async () => {
+    const key = `req-1800000000000-${"a".repeat(32)}`;
+    mocks.query = `?request_key=${key}&subscription=sub-a`;
+    mocks.receipt.mockResolvedValue({ data: { request_key: key, durability: "durable", status: "completed", thread_id: `thr-${"b".repeat(32)}`, thread_revision: 3 } });
+    render(<CopilotPage />);
+    expect(screen.getByText("Request outcome unconfirmed")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Copilot question" })).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Ask Copilot" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Retry original question with same request key" })).not.toBeInTheDocument();
+    expect(mocks.ask).not.toHaveBeenCalled();
+    expect(mocks.receipt).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Check accepted request" }));
+    expect(await screen.findByRole("link", { name: "Review completed request history" })).toHaveAttribute("href", `/copilot?subscription=sub-a&thread_id=thr-${"b".repeat(32)}&thread_revision=3`);
+  });
+
+  it("clears the recovery bookmark only after a confirmed response or deliberate new question acknowledgment", async () => {
+    mocks.ask.mockImplementationOnce((_question, _scope, options) => Promise.resolve({ data: { request_key: options.requestKey, threadId: `thr-${"a".repeat(32)}`, threadRevision: 1, narration: { text: "Confirmed answer" } } }));
+    render(<CopilotPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Review current evidence/ }));
+    expect(await screen.findByText("Confirmed answer")).toBeVisible();
+    expect(new URL(window.location.href).searchParams.has("request_key")).toBe(false);
   });
 
   it("does not publish a late response into a newly selected scope", async () => {
@@ -96,7 +136,7 @@ describe("Copilot scope continuity", () => {
         expect(mocks.continuity.acceptServerState).not.toHaveBeenCalled();
       });
 
-      it.each(["?thread_id=bad", `?thread_id=thr-${"a".repeat(32)}&thread_id=thr-${"b".repeat(32)}`, "?thread_id=&subscription=sub-a", "?thread_revision=1", `?thread_id=thr-${"a".repeat(32)}&thread_revision=0`, `?thread_id=thr-${"a".repeat(32)}&thread_revision=1&thread_revision=2`])("rejects malformed or duplicate bookmark before any request: %s", query => {
+      it.each(["?request_key=bad", "?request_key=", `?request_key=req-1800000000000-${"a".repeat(32)}&request_key=req-1800000000000-${"b".repeat(32)}`, "?thread_id=bad", `?thread_id=thr-${"a".repeat(32)}&thread_id=thr-${"b".repeat(32)}`, "?thread_id=&subscription=sub-a", "?thread_revision=1", `?thread_id=thr-${"a".repeat(32)}&thread_revision=0`, `?thread_id=thr-${"a".repeat(32)}&thread_revision=1&thread_revision=2`])("rejects malformed or duplicate bookmark before any request: %s", query => {
         mocks.query = query;
         render(<CopilotPage />);
         expect(screen.getByText("Copilot bookmark unavailable")).toBeVisible();
@@ -139,10 +179,18 @@ describe("Copilot scope continuity", () => {
         const accept = vi.fn().mockReturnValue(true);
         const threadId = `thr-${"a".repeat(32)}`;
         mocks.continuity = { thread: null, generation: 3, acceptServerState: accept };
-        mocks.ask.mockResolvedValueOnce({ data: { threadId, threadRevision: 1, narration: { text: "Confirmed answer" } } });
+        mocks.ask.mockImplementationOnce((_question, _scope, options) => Promise.resolve({ data: { request_key: options.requestKey, threadId, threadRevision: 1, narration: { text: "Confirmed answer" } } }));
         render(<CopilotPage />);
         fireEvent.click(screen.getByRole("button", { name: /Review current evidence/ }));
         expect(await screen.findByText("Confirmed answer")).toBeVisible();
         expect(accept).toHaveBeenCalledWith({ threadId, threadRevision: 1 }, 3);
+      });
+      it("keeps recovery pinned when a response does not confirm the exact admitted key", async () => {
+        mocks.ask.mockResolvedValueOnce({ data: { request_key: "different", threadId: `thr-${"a".repeat(32)}`, threadRevision: 1, narration: { text: "Unconfirmed response" } } });
+        render(<CopilotPage />);
+        fireEvent.click(screen.getByRole("button", { name: /Review current evidence/ }));
+        expect(await screen.findByText("Request outcome unconfirmed")).toBeVisible();
+        expect(screen.queryByText("Unconfirmed response")).not.toBeInTheDocument();
+        expect(new URL(window.location.href).searchParams.get("request_key")).toMatch(/^req-/);
       });
 });

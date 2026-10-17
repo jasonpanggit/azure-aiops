@@ -103,6 +103,10 @@ class ThreadDocumentStore(Protocol):
 
     def read(self, name: str) -> dict[str, Any]: ...
 
+    def read_or_raise(self, name: str) -> dict[str, Any]: ...
+
+    def create_only(self, name: str, payload: dict[str, Any]) -> object: ...
+
     def write(
         self,
         name: str,

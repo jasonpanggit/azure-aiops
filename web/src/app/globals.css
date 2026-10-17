@@ -9869,6 +9869,8 @@ body.topology-fullscreen-open {
 .copilot-history .button, .copilot-composer .button { min-height: 44px; }
 .copilot-history-list { padding-inline-start: 20px; }
 .copilot-history-list > li { padding-block: 16px; border-block-end: 1px solid var(--color-border); }
+.copilot-request-recovery .card-body { display: grid; gap: 16px; }
+.copilot-request-recovery .card-body > .button { justify-self: start; max-width: 100%; white-space: normal; }
 .copilot-thinking { flex-wrap: wrap; }
 .copilot-findings { margin-block: 20px; min-width: 0; overflow-wrap: anywhere; }
 .copilot-findings-list { padding-inline-start: 20px; }

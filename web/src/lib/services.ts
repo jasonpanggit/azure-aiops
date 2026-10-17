@@ -677,6 +677,7 @@ export interface CopilotToolCall {
 
 /** The outcome of a `/copilot/investigate` turn: every tool call plus the narration. */
 export interface CopilotInvestigation extends CanonicalInvestigationSemantics {
+  request_key?: string;
   question: string;
   tool_calls: CopilotToolCall[];
   answer: CopilotAnswer | null;
@@ -769,6 +770,9 @@ export const copilotApi = {
     query.set("page", String(page));
     return apiRequest<import("./types").RetainedCopilotThreads>("/copilot/threads", { query, signal });
   },
+  /** Inspect one exact admitted request without polling or redispatching work. */
+  requestReceipt: (requestKey: string, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").CopilotRequestReceipt>(`/copilot/requests/${encodeURIComponent(requestKey)}`, { query: scopeToSearchParams(scope), signal }),
   /** Read exact authorized historical turns without renewing or executing a thread. */
   retainedHistory: (threadId: string, scope: ScopeSelection, options: { signal?: AbortSignal; expectedRevision?: number } = {}) => {
     const query = scopeToSearchParams(scope);
@@ -847,7 +851,7 @@ export const ROOT_COPILOT_SESSION = "aiops-root-copilot";
 export function askCanonicalInvestigation(
   question: string,
   scope: ScopeSelection = {},
-  options: { sessionId?: string; tool?: string; toolArguments?: Record<string, unknown>; signal?: AbortSignal } = {},
+  options: { sessionId?: string; tool?: string; toolArguments?: Record<string, unknown>; signal?: AbortSignal; requestKey?: string } = {},
 ): Promise<Envelope<CopilotInvestigation>> {
   return apiRequest<CopilotInvestigation>("/copilot/investigate", {
     method: "POST",
@@ -858,6 +862,7 @@ export function askCanonicalInvestigation(
       session_id: options.sessionId ?? ROOT_COPILOT_SESSION,
       tool: options.tool ?? "",
       tool_arguments: options.toolArguments ?? {},
+      ...(options.requestKey ? { request_key: options.requestKey } : {}),
     },
   });
 }

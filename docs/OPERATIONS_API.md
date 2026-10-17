@@ -95,6 +95,54 @@ The scan limit is explicit, with exact-thread links still available beyond it.
 The on-demand conversation catalog reopens an exact revision for historical
 review only; it does not attach that thread to new requests or retry execution.
 
+### Durable request admission and interrupted response recovery
+
+Standalone Copilot opts into `POST /copilot/investigate` with `request_key`
+`req-<13-digit Unix milliseconds>-<32 lowercase random hex>`. The server
+requires configured durable storage and canonical orchestration, and creates
+one caller-keyed admission document **before** dispatching any work. Without
+those prerequisites it returns 503 without dispatch. Existing keyless callers
+keep their previous contract; their requests do not gain this protection.
+
+Admission uses create-only storage, including cross-process/replica contention.
+An existing key returns 409 and never redispatches, including with a changed
+question or scope, after partial execution, or after losing a write response.
+A first admission requires a key at most 15 minutes old and no more than 60
+seconds in the future; an old key cannot become a new admission if a marker is
+later removed. Markers are not automatically deleted by this API. Receipt
+visibility expires 24 hours after admission without renewal. Durable store
+integrity remains a prerequisite, not a transactional guarantee across providers.
+
+The marker retains only principal/scope, payload hash, admission metadata and
+an optional completed thread/revision, not question text or provider answers.
+Completion is committed only after orchestration returns exact continuity.
+Failure/crash between admission, provider execution, thread persistence and
+completion leaves the outcome unconfirmed; the same key cannot resume or run
+again. A completion-write failure returns 503 rather than claiming success.
+Successful POST responses echo their admitted `request_key`; the standalone
+browser verifies it and the exact retained thread/revision before accepting
+the response.
+
+`GET /copilot/requests/{request_key}` requires current read authorization,
+the same principal and **exact** effective nine-dimensional scope. It returns
+only `accepted_outcome_unconfirmed` or `completed` with exact historical
+thread/revision metadata. Missing/foreign/expired/differently scoped receipts
+return generic 404; storage failures return 503. Neither proves no work ran.
+Accepted does not mean running, successful, cancelled or safely restartable.
+Completed historical references are independently reauthorized and may expire
+or conflict if the retained thread has advanced. No answer is replayed as
+current evidence, and no provider, tool, cancellation or expiry renewal runs.
+
+The browser keeps only the request identity and scoped bookmark in its URL
+while waiting. Reload does not restore or submit the question or poll; it
+offers explicit receipt inspection. Interrupted local drafts may explicitly
+retry the **captured original question/key**, never an edited draft or a new
+key automatically. Duplicate retries receive 409 without dispatch. Choosing
+a deliberate new question clears the old recovery bookmark; it is a new
+admission and is not deduplicated against differently keyed questions. Browser
+Stop waiting still does not cancel provider execution; no server cancellation
+capability is advertised.
+
 ## Agents retained investigation links
 
 `/agents?ledger_id=<exact-id>` reads the existing principal-owned retained ledger

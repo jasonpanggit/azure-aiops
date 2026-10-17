@@ -28,6 +28,14 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from operations.autonomous_investigation import ledger_store, run_context_investigation
+from operations.copilot_request_store import (
+    REQUEST_KEY_PATTERN,
+    CopilotRequestStore,
+    RequestAlreadyAccepted,
+    RequestKeyExpired,
+    RequestReceiptNotFound,
+    RequestReceiptUnavailable,
+)
 from operations.cve_response import canonical_cve_id, deterministic_cve_narrative
 from operations.foundry_agent import (
     FoundryAgentError,
@@ -171,6 +179,7 @@ class InvestigationRequest(BaseModel):
         description="Optional tool name a UI starter question already knows to call, bypassing the planner.",
     )
     tool_arguments: dict[str, Any] = Field(default_factory=dict)
+    request_key: str | None = Field(default=None, pattern=f"^{REQUEST_KEY_PATTERN}$")
 
 
 class ContextInvestigationRequest(BaseModel):
@@ -1427,16 +1436,41 @@ def investigate(
         )
 
     if canonical_enabled:
-        return _investigate_via_canonical(
-            question,
-            started=started,
-            context=context,
-            scope=scope,
-            principal=principal,
-            session_id=payload.session_id,
-            hint_tool=payload.tool,
-            hint_arguments=validated_arguments,
-            rollout_decision=rollout,
+        receipt_store = CopilotRequestStore(investigation_thread_store().documents)
+        try:
+            if payload.request_key:
+                receipt_store.accept(
+                    principal.subject, payload.request_key, scope,
+                    payload.model_dump(exclude={"request_key"}),
+                )
+            result = _investigate_via_canonical(
+                question,
+                started=started,
+                context=context,
+                scope=scope,
+                principal=principal,
+                session_id=payload.session_id,
+                hint_tool=payload.tool,
+                hint_arguments=validated_arguments,
+                rollout_decision=rollout,
+            )
+            if payload.request_key:
+                receipt_store.complete(
+                    principal.subject, payload.request_key, scope,
+                    thread_id=result["data"].get("thread_id", ""),
+                    thread_revision=result["data"].get("thread_revision", 0),
+                )
+                result["data"]["request_key"] = payload.request_key
+            return result
+        except (RequestAlreadyAccepted, RequestKeyExpired) as exc:
+            raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+        except RequestReceiptUnavailable as exc:
+            raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, str(exc)) from exc
+
+    if payload.request_key:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Durable request recovery requires canonical orchestration; no provider work was dispatched",
         )
 
     if payload.tool and payload.tool not in known_tools:
@@ -2474,6 +2508,24 @@ def investigate_canonical(
         scope=scope.to_dict(),
         warnings=list(result.uncertainty),
     )
+
+
+@router.get("/copilot/requests/{request_key}", summary="Inspect exact accepted request outcome")
+def request_receipt(
+    request_key: str, context: Context, scope: ReadScope, principal: CurrentPrincipal,
+) -> dict[str, Any]:
+    """Recover only exact caller/scope receipt metadata, never rerun a question."""
+    try:
+        data = CopilotRequestStore(investigation_thread_store().documents).read(
+            principal.subject, request_key, scope,
+        )
+    except RequestReceiptNotFound as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Request receipt not found") from exc
+    except RequestReceiptUnavailable as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, str(exc)) from exc
+    return envelope(data, scope=scope.to_dict(), warnings=[
+        "Admission is not proof of active work or cancellation. Only completed receipts point to exact historical review; reads do not renew retention.",
+    ])
 
 
 @router.get("/copilot/threads", summary="Discover authorized retained investigation threads")

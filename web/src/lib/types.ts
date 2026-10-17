@@ -3778,7 +3778,16 @@ export interface CanonicalCopilotToolResult {
   evidence: unknown[];
   warning: string;
 }
-/** Exact owned history remains historical even if it was the latest retained turn. */
+/** Exact durable admission metadata; accepted is not a work-liveness claim. */
+export interface CopilotRequestReceipt {
+  request_key: string;
+  status: "accepted_outcome_unconfirmed" | "completed";
+  durability: "durable";
+  thread_id: string;
+  thread_revision: number;
+}
+
+/** Bounded authorized discovery; storage order is neither chronology nor a snapshot. */
 export interface RetainedCopilotThreads {
   threads: Array<{ thread_id: string; thread_revision: number; durability: "durable" | "memory_only"; question: string; title_status: "visible" | "withheld_or_empty" }>;
   page: number;
