@@ -43,6 +43,8 @@ interface ChatTurn {
   threadRevision?: number;
 }
 
+interface SelectedThread { threadId: string; threadRevision: number }
+
 const TOOL_STATUS_TONE: Record<string, "success" | "warning" | "critical" | "info"> = {
   ok: "success",
   empty: "info",
@@ -91,10 +93,12 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
   const [recovery, setRecovery] = useState(bookmarkedRequestKey ? "This bookmark retains an interrupted request identity, not its question or outcome. Check the authorized receipt before starting another question. No request is automatically submitted." : "");
   const [acceptedRequestKey, setAcceptedRequestKey] = useState(bookmarkedRequestKey);
   const [lastThreadId, setLastThreadId] = useState("");
+  const [selectedThread, setSelectedThread] = useState<SelectedThread | null>(null);
+  const reviewing = Boolean(pinnedThreadId) && !selectedThread;
   const requestId = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
   const submittedQuestion = useRef("");
-  const retryRequest = useRef<{ question: string; key: string } | null>(null);
+  const retryRequest = useRef<{ question: string; key: string; continuation: SelectedThread | null } | null>(null);
 
   useEffect(() => () => {
     requestId.current += 1;
@@ -111,17 +115,21 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
 
   function bookmarkRequest(key: string) {
     const query = scopeToSearchParams(scope);
+    if (pinnedThreadId) query.set("thread_id", pinnedThreadId);
+    if (pinnedRevision !== undefined) query.set("thread_revision", String(pinnedRevision));
     if (key) query.set("request_key", key);
     window.history.replaceState(window.history.state, "", `/copilot${query.size ? `?${query}` : ""}`);
   }
 
   async function ask(value = question, retryKey?: string) {
     const nextQuestion = value.trim();
-    if (!nextQuestion || loading || pinnedThreadId || (recovery && !retryKey)) return;
-    if (retryKey && (retryRequest.current?.key !== retryKey || retryRequest.current.question !== nextQuestion)) return;
+    if (!nextQuestion || loading || reviewing || (recovery && !retryKey)) return;
+    const retry = retryRequest.current;
+    if (retryKey && (!retry || retry.key !== retryKey || retry.question !== nextQuestion)) return;
     const id = ++requestId.current;
     const key = retryKey ?? `req-${Date.now()}-${crypto.randomUUID().replaceAll("-", "")}`;
-    retryRequest.current = { question: nextQuestion, key };
+    const continuation = retryKey ? retry?.continuation ?? null : selectedThread;
+    retryRequest.current = { question: nextQuestion, key, continuation };
     setAcceptedRequestKey(key);
     bookmarkRequest(key);
     setRecovery("");
@@ -131,18 +139,19 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
     setQuestion("");
     setLoading(true);
     try {
-      // Standalone requests may omit page context; the shared canonical helper
-      // submits through the root thread so this surface shares one authorized,
-      // principal-scoped thread with the workspace and drawer.
       const envelope = await askCanonicalInvestigation(nextQuestion, scope, {
         sessionId: ROOT_COPILOT_SESSION,
         signal: controller.signal,
         requestKey: key,
+        ...(continuation ? { continuation } : {}),
       });
       if (id !== requestId.current) return;
       const view = toCanonicalInvestigationView(envelope.data);
       if (envelope.data.request_key !== key || !view.threadId || !/^thr-[a-f0-9]{32}$/.test(view.threadId) || !Number.isSafeInteger(view.threadRevision) || !view.threadRevision || view.threadRevision < 1) {
         throw new Error("The response did not confirm this exact admitted request and retained thread revision. Check its receipt; no result was substituted.");
+      }
+      if (continuation && (view.threadId !== continuation.threadId || view.threadRevision !== continuation.threadRevision + 1)) {
+        throw new Error("The response did not append the exact selected thread and revision. Check its receipt; no replacement conversation was accepted.");
       }
       if (view.threadId && view.threadRevision) {
         if (threadContinuity && !threadContinuity.acceptServerState(
@@ -150,6 +159,7 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
         )) return;
       }
       if (view.threadId) setLastThreadId(view.threadId);
+      if (continuation) setSelectedThread({ threadId: view.threadId, threadRevision: view.threadRevision });
       setAcceptedRequestKey("");
       retryRequest.current = null;
       bookmarkRequest("");
@@ -211,9 +221,9 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
         }
       />
 
-      <CopilotHistory threadId={pinnedThreadId || lastThreadId || threadContinuity?.thread?.threadId || ""} scope={scope} pinned={Boolean(pinnedThreadId)} expectedRevision={pinnedRevision} />
+      <CopilotHistory threadId={selectedThread?.threadId || pinnedThreadId || lastThreadId || threadContinuity?.thread?.threadId || ""} scope={scope} pinned={Boolean(pinnedThreadId)} expectedRevision={selectedThread?.threadRevision ?? pinnedRevision} onContinue={reviewing && !loading && !recovery ? selection => { setSelectedThread(selection); setQuestion(""); } : undefined} />
       <CopilotThreadCatalog scope={scope} />
-      {pinnedThreadId ? <StatePanel title="Historical review only" message="New questions are disabled while an exact historical thread is selected. Leave historical review to use the current active conversation; this read does not attach or resume the selected thread." /> : null}
+      {reviewing ? <StatePanel title="Historical review only" message="Reading does not attach or resume this thread. After an authorized durable history read, explicitly choose Continue from reviewed revision to compose a new scoped turn. No question runs until Ask Copilot; leaving historical review returns to the current active conversation." /> : selectedThread ? <StatePanel title="Selected conversation ready for a new turn" message={`New questions target ${selectedThread.threadId} at reviewed revision ${selectedThread.threadRevision}. Historical observations remain historical. Submission reauthorizes scope and revision; concurrent changes cause conflict, never a replacement thread.`} /> : null}
       {recovery ? <>
         <StatePanel title="Request outcome unconfirmed" message={recovery} tone="partial" action={<button className="button" onClick={() => { setRecovery(""); setAcceptedRequestKey(""); retryRequest.current = null; bookmarkRequest(""); }}>I reviewed the outcome; enable a deliberate new question</button>} />
         {acceptedRequestKey ? <CopilotRequestRecovery key={acceptedRequestKey} requestKey={acceptedRequestKey} scope={scope} /> : null}
@@ -229,7 +239,7 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
               <p>Copilot uses the same governed knowledge and operating scope as the rest of the workbench.</p>
               <div className="copilot-prompts">
                 {starterPrompts.map((prompt) => (
-                  <button type="button" key={prompt} disabled={loading || Boolean(pinnedThreadId) || Boolean(recovery)} onClick={() => ask(prompt)}>
+                  <button type="button" key={prompt} disabled={loading || reviewing || Boolean(recovery)} onClick={() => selectedThread ? setQuestion(prompt) : ask(prompt)}>
                     {prompt}
                     <span>→</span>
                   </button>
@@ -323,7 +333,7 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
       <div className="copilot-composer">
         <textarea
           aria-label="Copilot question"
-          disabled={Boolean(pinnedThreadId)}
+          disabled={reviewing}
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
           onKeyDown={(event) => {
@@ -335,7 +345,7 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
           placeholder="Ask about applications, ownership, failed patches, critical infrastructure, or business service context"
           rows={2}
         />
-        {loading ? <button type="button" className="button" aria-label="Stop waiting for this response" onClick={stopWaiting}>Stop waiting</button> : <button type="button" className="button button-primary" onClick={() => ask()} disabled={Boolean(pinnedThreadId) || Boolean(recovery) || !question.trim()}>
+        {loading ? <button type="button" className="button" aria-label="Stop waiting for this response" onClick={stopWaiting}>Stop waiting</button> : <button type="button" className="button button-primary" onClick={() => ask()} disabled={reviewing || Boolean(recovery) || !question.trim()}>
           Ask Copilot
         </button>}
       </div>

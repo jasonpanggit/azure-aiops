@@ -25,7 +25,7 @@ describe("Copilot scope continuity", () => {
     mocks.scope = {};
     mocks.query = "";
     mocks.continuity = null;
-    mocks.history.mockResolvedValue({ data: { thread_id: `thr-${"a".repeat(32)}`, thread_revision: 1, durability: "durable", observation_status: "historical", turns: [] } });
+    mocks.history.mockResolvedValue({ data: { thread_id: `thr-${"a".repeat(32)}`, thread_revision: 1, durability: "durable", observation_status: "historical", continuation_scope_match: true, turns: [] } });
   });
 
   it("retries only the captured original question and exact key, never an edited draft or new admission", async () => {
@@ -42,6 +42,39 @@ describe("Copilot scope continuity", () => {
     expect(mocks.ask.mock.calls[1][0]).toBe("Review current evidence");
     expect(mocks.ask.mock.calls[1][2].requestKey).toBe(requestKey);
     expect(mocks.receipt).not.toHaveBeenCalled();
+  });
+  it("selects authorized history without submitting, then explicitly appends and preserves the pinned bookmark", async () => {
+    const threadId = `thr-${"a".repeat(32)}`;
+    mocks.query = `?thread_id=${threadId}&thread_revision=1`;
+    render(<CopilotPage />);
+    const select = await screen.findByRole("button", { name: "Continue from reviewed revision 1" });
+    expect(mocks.ask).not.toHaveBeenCalled();
+    fireEvent.click(select);
+    expect(screen.getByRole("textbox", { name: "Copilot question" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /Review current evidence/ }));
+    expect(mocks.ask).not.toHaveBeenCalled();
+    mocks.history.mockResolvedValue({ data: { thread_id: threadId, thread_revision: 2, durability: "durable", observation_status: "historical", turns: [] } });
+    mocks.ask.mockImplementationOnce((_question, _scope, options) => Promise.resolve({ data: { request_key: options.requestKey, threadId, threadRevision: 2, narration: { text: "Selected thread result" } } }));
+    fireEvent.click(screen.getByRole("button", { name: "Ask Copilot" }));
+    expect(await screen.findByText("Selected thread result")).toBeVisible();
+    expect(mocks.ask.mock.calls[0][2].continuation).toEqual({ threadId, threadRevision: 1 });
+    expect(new URL(window.location.href).searchParams.get("thread_id")).toBe(threadId);
+    expect(new URL(window.location.href).searchParams.get("thread_revision")).toBe("1");
+    expect(new URL(window.location.href).searchParams.has("request_key")).toBe(false);
+  });
+  it("preserves the selected target when explicitly retrying an interrupted continuation", async () => {
+    const threadId = `thr-${"a".repeat(32)}`;
+    mocks.query = `?thread_id=${threadId}&thread_revision=1`;
+    mocks.ask.mockRejectedValue(new Error("Lost response"));
+    render(<CopilotPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue from reviewed revision 1" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Copilot question" }), { target: { value: "New scoped turn" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ask Copilot" }));
+    expect(await screen.findByText("Request outcome unconfirmed")).toBeVisible();
+    const options = mocks.ask.mock.calls[0][2];
+    fireEvent.click(screen.getByRole("button", { name: "Retry original question with same request key" }));
+    await act(async () => {});
+    expect(mocks.ask.mock.calls[1][2]).toMatchObject({ requestKey: options.requestKey, continuation: { threadId, threadRevision: 1 } });
   });
 
   it("reloads an exact request bookmark without polling, submission or restoring a question", async () => {

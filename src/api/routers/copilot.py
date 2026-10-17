@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from operations.autonomous_investigation import ledger_store, run_context_investigation
 from operations.copilot_request_store import (
@@ -180,6 +180,17 @@ class InvestigationRequest(BaseModel):
     )
     tool_arguments: dict[str, Any] = Field(default_factory=dict)
     request_key: str | None = Field(default=None, pattern=f"^{REQUEST_KEY_PATTERN}$")
+    thread_id: str | None = Field(default=None, pattern=r"^thr-[a-f0-9]{32}$")
+    expected_thread_revision: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_exact_continuation(self) -> InvestigationRequest:
+        """Explicit continuation requires an exact reviewed revision and admission."""
+        if (self.thread_id is None) != (self.expected_thread_revision is None):
+            raise ValueError("Exact continuation requires paired thread ID and expected revision")
+        if self.thread_id is not None and self.request_key is None:
+            raise ValueError("Exact continuation requires a durable request key")
+        return self
 
 
 class ContextInvestigationRequest(BaseModel):
@@ -1296,6 +1307,8 @@ def _investigate_via_canonical(
     hint_tool: str,
     hint_arguments: Mapping[str, Any],
     rollout_decision: CopilotRolloutDecision,
+    thread_id: str | None = None,
+    expected_thread_revision: int | None = None,
 ) -> dict[str, Any]:
     """Route ``/copilot/investigate`` through the canonical OrchestrationService.
 
@@ -1316,6 +1329,7 @@ def _investigate_via_canonical(
             session_id=session_id,
             hint_tool=hint_tool,
             hint_arguments=hint_arguments,
+            **({"thread_id": thread_id, "expected_thread_revision": expected_thread_revision} if thread_id is not None else {}),
         )
     except ThreadStoreUnavailable as exc:
         raise ApiError(
@@ -1327,6 +1341,8 @@ def _investigate_via_canonical(
             ErrorCode.CONFLICT,
             "Investigation thread changed; retry the request",
         ) from exc
+    except ThreadNotFound as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Investigation thread not found") from exc
     duration_ms = (time.monotonic() - started) * 1000.0
     if duration_ms > INVESTIGATION_TIMEOUT_SECONDS * 1000.0:
         logger.warning(
@@ -1453,6 +1469,7 @@ def investigate(
                 hint_tool=payload.tool,
                 hint_arguments=validated_arguments,
                 rollout_decision=rollout,
+                **({"thread_id": payload.thread_id, "expected_thread_revision": payload.expected_thread_revision} if payload.thread_id is not None else {}),
             )
             if payload.request_key:
                 receipt_store.complete(

@@ -7,6 +7,10 @@ vi.mock("./api-client", () => ({ apiRequest: mock.request, resolveApiBaseUrl: ()
 
 describe("Copilot history and interrupt transport contracts", () => {
   beforeEach(() => { mock.request.mockReset(); mock.request.mockResolvedValue({ data: {} }); });
+  it("serializes exact selected continuity with its reviewed revision and admission key", async () => {
+    await askCanonicalInvestigation("New turn", {}, { requestKey: "key", continuation: { threadId: "exact", threadRevision: 7 } });
+    expect(mock.request.mock.calls[0][1].body).toMatchObject({ question: "New turn", request_key: "key", thread_id: "exact", expected_thread_revision: 7 });
+  });
   it("transmits explicit same-key admission while preserving keyless existing callers", async () => {
     await askCanonicalInvestigation("Review evidence", {}, { requestKey: "exact-key" });
     expect(mock.request.mock.calls[0][1].body.request_key).toBe("exact-key");

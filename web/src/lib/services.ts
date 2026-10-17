@@ -851,7 +851,7 @@ export const ROOT_COPILOT_SESSION = "aiops-root-copilot";
 export function askCanonicalInvestigation(
   question: string,
   scope: ScopeSelection = {},
-  options: { sessionId?: string; tool?: string; toolArguments?: Record<string, unknown>; signal?: AbortSignal; requestKey?: string } = {},
+  options: { sessionId?: string; tool?: string; toolArguments?: Record<string, unknown>; signal?: AbortSignal; requestKey?: string; continuation?: { threadId: string; threadRevision: number } } = {},
 ): Promise<Envelope<CopilotInvestigation>> {
   return apiRequest<CopilotInvestigation>("/copilot/investigate", {
     method: "POST",
@@ -863,6 +863,7 @@ export function askCanonicalInvestigation(
       tool: options.tool ?? "",
       tool_arguments: options.toolArguments ?? {},
       ...(options.requestKey ? { request_key: options.requestKey } : {}),
+      ...(options.continuation ? { thread_id: options.continuation.threadId, expected_thread_revision: options.continuation.threadRevision } : {}),
     },
   });
 }

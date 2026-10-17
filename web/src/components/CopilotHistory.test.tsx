@@ -9,6 +9,7 @@ vi.mock("@/lib/services", () => ({ copilotApi: { retainedHistory: mocks.read } }
 const id = `thr-${"a".repeat(32)}`;
 const snapshot: RetainedCopilotHistory = {
   thread_id: id, thread_revision: 2, durability: "memory_only", observation_status: "historical",
+  continuation_scope_match: true,
   turns: [{ question: "Retained question", status: "ok", observation_status: "historical", retained_at: "2020-01-01T00:00:00+00:00" }],
 };
 const envelope = (data = snapshot) => ({ data, scope: {}, warnings: [], evidence: [] });
@@ -21,6 +22,31 @@ function open() {
 describe("Copilot exact historical reads", () => {
   beforeEach(() => { vi.clearAllMocks(); mocks.read.mockResolvedValue(envelope()); });
 
+  it("offers exact revision selection only after an authorized durable read and explicit click", async () => {
+    const select = vi.fn();
+    mocks.read.mockResolvedValue(envelope({ ...snapshot, durability: "durable" }));
+    render(<CopilotHistory threadId={id} scope={{}} pinned expectedRevision={2} onContinue={select} />);
+    const button = await screen.findByRole("button", { name: "Continue from reviewed revision 2" });
+    expect(select).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    expect(select).toHaveBeenCalledWith({ threadId: id, threadRevision: 2 });
+    expect(mocks.read).toHaveBeenCalledTimes(1);
+  });
+  it("withholds continuation for memory-only or failed exact historical reads", async () => {
+    const view = render(<CopilotHistory threadId={id} scope={{}} pinned expectedRevision={2} onContinue={vi.fn()} />);
+    expect(await screen.findByRole("heading", { name: "Retained question" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Continue from reviewed/ })).not.toBeInTheDocument();
+    mocks.read.mockRejectedValueOnce(new Error("Revision changed"));
+    view.rerender(<CopilotHistory threadId={id} scope={{}} pinned expectedRevision={3} onContinue={vi.fn()} />);
+    expect(await screen.findByText("Revision changed")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Continue from reviewed/ })).not.toBeInTheDocument();
+  });
+  it("withholds continuation when historical review narrowed the original scope", async () => {
+    mocks.read.mockResolvedValue(envelope({ ...snapshot, durability: "durable", continuation_scope_match: false }));
+    render(<CopilotHistory threadId={id} scope={{}} pinned onContinue={vi.fn()} />);
+    expect(await screen.findByText(/No conversation is restored into a different scope/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Continue from reviewed/ })).not.toBeInTheDocument();
+  });
   it("rejects a newer response instead of replacing the reviewed evidence", async () => {
     render(<CopilotHistory threadId={id} scope={{}} pinned expectedRevision={1} />);
     expect(await screen.findByText(/did not match the exact retained historical thread/)).toBeVisible();

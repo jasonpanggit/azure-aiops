@@ -8,24 +8,27 @@ import { copilotApi } from "@/lib/services";
 import { StatePanel } from "./ui/StatePanel";
 import { StructuredData } from "./ui/StructuredData";
 
-/** Explicit owned historical reads never attach a thread or execute its turns. */
-export function CopilotHistory({ threadId, scope, pinned = false, expectedRevision }: {
+interface ThreadSelection { threadId: string; threadRevision: number }
+
+/** Historical reads never execute; optional continuation requires an explicit selection. */
+export function CopilotHistory({ threadId, scope, pinned = false, expectedRevision, onContinue }: {
   threadId: string;
   scope: ScopeSelection;
   pinned?: boolean;
   expectedRevision?: number;
+  onContinue?: (selection: ThreadSelection) => void;
 }) {
   const [open, setOpen] = useState(pinned);
   return <details className="card copilot-history" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Retained Copilot history</summary>
     {open ? threadId
-      ? <HistoryRead key={`${threadId}:${expectedRevision}:${JSON.stringify(scope)}`} threadId={threadId} scope={scope} pinned={pinned} expectedRevision={expectedRevision} />
+      ? <HistoryRead key={`${threadId}:${expectedRevision}:${JSON.stringify(scope)}`} threadId={threadId} scope={scope} pinned={pinned} expectedRevision={expectedRevision} onContinue={onContinue} />
       : <div className="card-body"><StatePanel title="No retained thread selected" message="A completed server response supplies a thread handle. No history is inferred or acquired from another session." /></div>
       : null}
   </details>;
 }
 
-function HistoryRead({ threadId, scope, pinned, expectedRevision }: { threadId: string; scope: ScopeSelection; pinned: boolean; expectedRevision?: number }) {
+function HistoryRead({ threadId, scope, pinned, expectedRevision, onContinue }: { threadId: string; scope: ScopeSelection; pinned: boolean; expectedRevision?: number; onContinue?: (selection: ThreadSelection) => void }) {
   const report = useApi(async signal => {
     const result = await copilotApi.retainedHistory(threadId, scope, { signal, ...(expectedRevision !== undefined ? { expectedRevision } : {}) });
     if (result.data.thread_id !== threadId || result.data.observation_status !== "historical" || (expectedRevision !== undefined && result.data.thread_revision !== expectedRevision)) {
@@ -33,6 +36,7 @@ function HistoryRead({ threadId, scope, pinned, expectedRevision }: { threadId: 
     }
     return result;
   }, [threadId, expectedRevision, JSON.stringify(scope)]);
+  const snapshot = report.data?.data;
   const query = scopeToSearchParams(scope);
   const newHref = `/copilot${query.size ? `?${query}` : ""}`;
   query.set("thread_id", threadId);
@@ -46,6 +50,11 @@ function HistoryRead({ threadId, scope, pinned, expectedRevision }: { threadId: 
     </div>
     {report.loading ? <StatePanel title="Reading retained history" message="Reauthorizing the exact thread under current scope; no tools are restarted." tone="loading" /> : report.error ? <StatePanel title="Retained history unavailable" message={report.error.message} tone="error" /> : report.data ? <>
       <p>Retained revision {report.data.data.thread_revision}. Storage: {report.data.data.durability === "durable" ? "Durable" : "Memory only; not guaranteed after a restart"}. Existing retention: latest 12 turns, at most 1 hour idle or 24 hours total; this read does not extend either limit.</p>
+      {onContinue && pinned && snapshot?.continuation_scope_match === true && snapshot.durability === "durable" && Number.isSafeInteger(snapshot.thread_revision) && snapshot.thread_revision > 0 ? <div className="button-row">
+        <button className="button" type="button" onClick={() => onContinue({ threadId, threadRevision: snapshot.thread_revision })}>Continue from reviewed revision {snapshot.thread_revision}</button>
+        <p>Selecting only enables a draft for this thread. Ask Copilot submits a new scoped turn and independently rechecks the exact revision; no old turn is replayed.</p>
+      </div> : null}
+      {onContinue && snapshot?.continuation_scope_match === false ? <p>Historical review is permitted under this narrowed scope, but continuation requires the exact original thread scope. No conversation is restored into a different scope.</p> : null}
       {report.data.data.turns.length ? <ol className="copilot-history-list">
         {report.data.data.turns.map((turn, index) => <li key={index}>
           <h3>{turn.status === "historical_scope_restricted" ? "Historical turn withheld" : turn.question || "Retained investigation turn"}</h3>

@@ -778,6 +778,7 @@ class InvestigationThreadStore:
                 "thread_revision": record.revision,
                 "durability": record.durability,
                 "observation_status": OBSERVATION_HISTORICAL,
+                "continuation_scope_match": record.scope.to_dict() == current_scope.to_dict(),
                 "turns": turns,
             }
 

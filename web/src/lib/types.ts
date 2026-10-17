@@ -3803,6 +3803,7 @@ export interface RetainedCopilotHistory {
   thread_revision: number;
   durability: "durable" | "memory_only";
   observation_status: "historical";
+  continuation_scope_match?: boolean;
   turns: Array<Record<string, unknown> & {
     question?: string;
     status?: string;

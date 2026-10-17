@@ -53,8 +53,8 @@ it is not evidence of current source state, resumed work or execution authority.
 
 The Copilot page exposes on-demand history for its latest server handle or
 `/copilot?thread_id=<exact-id>` with all nine scoped bookmark dimensions.
-Pinned history is review-only: it cannot attach itself to active continuity or
-submit new questions. Reload only rereads the exact history. Malformed/wider
+Pinned history initially remains review-only: reading cannot attach itself to
+active continuity or submit new questions. Reload only rereads exact history. Malformed/wider
 bookmarks fail before acquisition; mismatched response identities fail visibly.
 Leaving historical review preserves scope. A `q` bookmark now prefills a draft
 instead of automatically submitting it, including after reload/scope changes.
@@ -92,8 +92,37 @@ Durable discovery survives replicas/restarts; memory-only discovery explicitly
 does not. Pages are not chronological, complete-history totals or snapshots;
 concurrent changes can shift page membership. An authorized page can be empty.
 The scan limit is explicit, with exact-thread links still available beyond it.
-The on-demand conversation catalog reopens an exact revision for historical
-review only; it does not attach that thread to new requests or retry execution.
+The on-demand conversation catalog initially reopens an exact revision for
+historical review; discovering/opening does not attach it or retry execution.
+
+After a successful durable history read with an exact original-scope match,
+**Continue from reviewed revision**
+explicitly selects that exact thread/revision for drafting on this surface.
+Selection is browser state only: it does not renew retention, rebind a legacy
+session, replay a question, or run a provider. Narrowed history review remains
+allowed with broader turns withheld, but its continuation action is withheld:
+a conversation cannot be restored into a different scope. Starter prompts prefill rather
+than submit while a selected historical conversation is active. A new question
+still requires Ask Copilot. Scope, continuity-generation and navigation changes
+discard selection; reload returns to historical review, not active execution.
+
+Explicit continuation submits paired `thread_id`/`expected_thread_revision`
+plus a durable `request_key` to `/copilot/investigate`. Missing pair/key or
+malformed values are rejected. The canonical adapter reauthorizes ownership,
+expiry and exact original scope, then checks the logical revision before planning
+or tools. Missing/foreign/expired/out-of-scope targets are generic 404 and
+stale revisions are 409; an explicit identity never takes the legacy
+session-reset path or silently creates a replacement thread. It does not
+rebind the root legacy session. A successful response must identify the
+selected thread and exactly one higher logical revision; otherwise the browser
+keeps receipt recovery and withholds the response.
+
+Revision guards are optimistic concurrency, not exclusive thread leases:
+different admitted keys may both read a revision before either completes, but
+only a matching CAS append succeeds. Conflicts are not replayed/reconciled
+against newer evidence for explicit continuations. Interrupted retries preserve
+the exact originally captured target/question/key. Historical observations stay
+historical and no provider cancellation capability is inferred.
 
 ### Durable request admission and interrupted response recovery
 

@@ -5114,6 +5114,8 @@ def execute_from_question(
     principal_subject: str,
     rollout_decision: CopilotRolloutDecision,
     session_id: str = "",
+    thread_id: str | None = None,
+    expected_thread_revision: int | None = None,
     hint_tool: str = "",
     hint_arguments: Mapping[str, Any] | None = None,
     max_wall_seconds: float | None = None,
@@ -5123,6 +5125,8 @@ def execute_from_question(
     Intent and optional hints select a real manifest page identity before
     deterministic policy validates the candidate. Legacy session IDs map to
     opaque, principal-scoped canonical threads and never become authority.
+    Explicit thread/revision selection bypasses legacy resolution and reset;
+    authorization/conflicts propagate without creating substitute continuity.
     """
 
     def _safe_executor(
@@ -5140,6 +5144,14 @@ def execute_from_question(
                 warning="Tool unavailable in canonical question mode",
             )
 
+    if thread_id is not None:
+        selected = investigation_thread_store().read_snapshot(
+            thread_id, principal_subject, scope,
+            expected_revision=expected_thread_revision,
+        )
+        if not selected["continuation_scope_match"]:
+            raise ThreadNotFound()
+
     page_kind, hinted_specialist = _question_route(
         question,
         hint_tool=hint_tool,
@@ -5147,11 +5159,12 @@ def execute_from_question(
     request = InvestigationRequest(
         question=question,
         requested_scope=scope.to_dict(),
-        thread_id=_legacy_session_thread_for_execution(
+        thread_id=thread_id or _legacy_session_thread_for_execution(
             session_id,
             principal_subject,
             scope,
         ),
+        expected_thread_revision=expected_thread_revision,
         snapshot=EvidenceSnapshotV2(
             page_kind=page_kind,
             page_id="copilot",
@@ -5252,6 +5265,8 @@ def execute_from_question(
     except ThreadStoreUnavailable:
         raise
     except ThreadNotFound:
+        if thread_id is not None:
+            raise
         _forget_legacy_session_thread(session_id, principal_subject)
         result = _execute(
             request.model_copy(
@@ -5272,11 +5287,12 @@ def execute_from_question(
                 ]
             }
         )
-    _remember_legacy_session_thread(
-        session_id,
-        principal_subject,
-        result.thread_id,
-    )
+    if thread_id is None:
+        _remember_legacy_session_thread(
+            session_id,
+            principal_subject,
+            result.thread_id,
+        )
     return result
 
 
