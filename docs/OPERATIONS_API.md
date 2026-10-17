@@ -89,13 +89,27 @@ Change recency establishes neither sign-in/use nor an access review. Owner
 records expose `age_state`; missing state is unknown, not current. Definitions or
 managed identities alone cannot establish role-assignment collection coverage.
 
-The Identity page waits for all six reads and reports/retries failed sources
-rather than displaying a failed secondary source as an empty finding set.
-Warnings and freshness include every source; HTTP success is not freshness.
+The Identity page waits for all six core reads and reports/retries failed
+sources rather than displaying a failed secondary source as an empty finding
+set. The least-privilege advisory read fails and retries independently.
+Warnings and freshness include every available source; HTTP success is not freshness.
 An exact scope change remounts source/filter/drawer state and fences late replies.
 Copilot receives the heuristic/effective-access boundary and unknown coverage,
 not invented negative permissions. No acquisition, grant change or execution
 is added by this evidence clarification.
+
+`GET /api/v1/governance/identity/least-privilege` returns a bounded page of
+observed assignment review candidates (`offset` >= 0, `limit` 1..100) with the
+exact scoped assignment, resolved role-definition permission patterns
+(`actions`, `notActions`, `dataActions`, `notDataActions`), wildcard counts,
+condition-field presence, change-age state, and explicit review signals. The
+response includes total assignment/candidate counts and coverage gaps so a
+truncated page cannot read as a complete review. It is an advisory queue, not
+an effective-access result or a suggested role replacement. Group membership,
+deny assignments, PIM eligibility, and condition semantics are not collected
+or evaluated. Narrow or revoke a grant only after the workload owner verifies
+required operations; this endpoint has no mutation path. Failure is shown and
+retried independently from the existing identity reads.
 
 Frozen access campaigns accept the optional strictly validated classification
 projection without reserializing or altering their retained source bytes. Older

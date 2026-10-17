@@ -1973,6 +1973,73 @@ textarea:focus-visible {
   min-width: 140px;
 }
 
+.identity-review-table .operations-table {
+  min-width: 1180px;
+}
+
+.identity-review-details summary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  color: var(--color-brand);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.identity-review-details summary:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.identity-review-details dl {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.identity-review-details dl > div {
+  display: grid;
+  gap: 4px;
+}
+
+.identity-review-details dt {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.identity-review-details dd {
+  margin: 0;
+}
+
+.identity-review-details ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.identity-review-details code {
+  overflow-wrap: anywhere;
+  color: var(--color-text);
+}
+
+.identity-review-details > p {
+  max-width: 65ch;
+}
+
+.identity-review-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.identity-review-boundary {
+  max-width: 75ch;
+  margin: 0 0 12px;
+  color: var(--color-text-secondary);
+}
+
 .identity-workspace .state-action .button {
   min-height: 44px;
 }

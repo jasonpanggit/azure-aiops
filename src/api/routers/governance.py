@@ -245,6 +245,24 @@ def identity_principals(
     )
 
 
+@router.get("/identity/least-privilege", summary="Least-privilege review candidates")
+def identity_least_privilege(
+    context: Context,
+    scope: ReadScope,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> dict[str, Any]:
+    """Return scoped, advisory assignment candidates without evaluating effective access."""
+    snapshot = _snapshot(context, scope)
+    review = _identity(snapshot).least_privilege_review(offset=offset, limit=limit)
+    return envelope(
+        review,
+        evidence=_evidence(snapshot, IDENTITY_ENGINE),
+        scope=scope.to_dict(),
+        warnings=_identity_warnings(snapshot),
+    )
+
+
 @router.get("/identity/subscription-owners", summary="Subscription owners")
 def identity_subscription_owners(context: Context, scope: ReadScope) -> dict[str, Any]:
     snapshot = _snapshot(context, scope)

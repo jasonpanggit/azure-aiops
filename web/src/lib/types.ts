@@ -3219,6 +3219,54 @@ export interface PrincipalRisk {
   };
 }
 
+export interface IdentityPermissionPatternGroup {
+  count: number;
+  patterns: string[];
+  truncated: boolean;
+}
+
+export interface LeastPrivilegeCandidate {
+  assignment_id: string;
+  principal_id: string;
+  principal_type: string;
+  role_definition_id: string;
+  role: string;
+  scope: string;
+  scope_breadth: string;
+  age_state: "stale" | "within_review_window" | "unknown";
+  last_changed: string;
+  condition_state: "present" | "not_present" | "not_collected";
+  permission_profile: {
+    actions: IdentityPermissionPatternGroup;
+    not_actions: IdentityPermissionPatternGroup;
+    data_actions: IdentityPermissionPatternGroup;
+    not_data_actions: IdentityPermissionPatternGroup;
+    wildcard_pattern_count: number;
+  };
+  review_reasons: string[];
+  recommendation: string;
+}
+
+export interface IdentityLeastPrivilegeReview {
+  effective_access: "not_evaluated";
+  assignment_count: number;
+  candidate_count: number;
+  offset: number;
+  limit: number;
+  candidates: LeastPrivilegeCandidate[];
+  coverage: {
+    role_definitions_resolved: number;
+    assignment_age_unknown: number;
+    assignment_scope_unknown: number;
+    conditional_assignments_observed: number;
+    group_membership: "not_collected";
+    deny_assignments: "not_collected";
+    pim_eligibility: "not_collected";
+    role_conditions: "presence_only_not_evaluated";
+    effective_access: "not_evaluated";
+  };
+}
+
 export interface SubscriptionOwnerRecord {
   principal_id: string;
   principal_type: string;

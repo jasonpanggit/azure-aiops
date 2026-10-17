@@ -505,6 +505,126 @@ def test_identity_known_role_has_no_classified_signal_not_effective_access_assur
     assert evidence["effective_access"] == "not_evaluated"
 
 
+def test_least_privilege_review_explains_broad_and_elevated_grants():
+    engine = _identity_engine(
+        role_assignments=[
+            _assignment(
+                "owner-grant",
+                principal="p-owner",
+                role="/roles/owner",
+                scope="/subscriptions/sub-a",
+            ),
+            _assignment(
+                "reader-grant",
+                principal="p-reader",
+                scope="/subscriptions/sub-a/resourceGroups/rg1",
+            ),
+        ]
+    )
+
+    review = engine.least_privilege_review()
+
+    assert review["effective_access"] == "not_evaluated"
+    assert review["assignment_count"] == 2
+    assert review["candidate_count"] == 2
+    owner = review["candidates"][0]
+    assert owner["assignment_id"] == "owner-grant"
+    assert owner["scope_breadth"] == "subscription"
+    assert "broad_subscription_scope" in owner["review_reasons"]
+    assert "elevated_role_or_action_heuristic" in owner["review_reasons"]
+    assert "Do not change access from this advisory alone." in owner["recommendation"]
+    assert review["coverage"]["group_membership"] == "not_collected"
+    assert review["coverage"]["deny_assignments"] == "not_collected"
+    assert review["coverage"]["role_conditions"] == "presence_only_not_evaluated"
+
+
+def test_least_privilege_review_includes_all_permission_blocks_and_condition_state():
+    assignment = {
+        **_assignment("conditional", principal="p1", scope="/subscriptions/sub-a/resourceGroups/rg1"),
+        "properties": {"condition": "@Resource[name] StringEquals 'prod'"},
+    }
+    definition = {
+        "id": "/roles/custom",
+        "roleName": "Custom Data Operator",
+        "properties": {
+            "permissions": [
+                {"actions": ["Microsoft.Storage/storageAccounts/read"], "notActions": ["Microsoft.Storage/*/delete"]},
+                {"dataActions": ["Microsoft.Storage/storageAccounts/blobServices/containers/blobs/*"]},
+            ]
+        },
+    }
+    review = _identity_engine(
+        role_assignments=[{**assignment, "roleDefinitionId": "/roles/custom"}],
+        role_definitions=[definition],
+    ).least_privilege_review()
+
+    candidate = review["candidates"][0]
+    profile = candidate["permission_profile"]
+    assert profile["actions"]["patterns"] == ["Microsoft.Storage/storageAccounts/read"]
+    assert profile["not_actions"]["patterns"] == ["Microsoft.Storage/*/delete"]
+    assert profile["data_actions"]["patterns"] == [
+        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/*"
+    ]
+    assert profile["wildcard_pattern_count"] == 2
+    assert candidate["condition_state"] == "present"
+    assert review["coverage"]["conditional_assignments_observed"] == 1
+    assert review["coverage"]["effective_access"] == "not_evaluated"
+
+
+def test_least_privilege_review_marks_unresolved_role_and_unknown_age():
+    assignment = {
+        **_assignment(
+            "missing",
+            principal="p1",
+            role="/roles/missing",
+            scope="/subscriptions/sub-a",
+        ),
+        "updatedOn": "",
+    }
+    review = _identity_engine(role_assignments=[assignment]).least_privilege_review()
+
+    assert review["candidate_count"] == 1
+    assert review["coverage"]["role_definitions_resolved"] == 0
+    assert review["coverage"]["assignment_age_unknown"] == 1
+    assert set(review["candidates"][0]["review_reasons"]) == {
+        "broad_subscription_scope",
+        "assignment_change_age_unknown",
+        "role_definition_or_permissions_unresolved",
+    }
+
+
+def test_least_privilege_review_marks_missing_scope_without_inventing_breadth():
+    assignment = {
+        **_assignment("scope-missing", principal="p1", scope=""),
+        "updatedOn": NOW.isoformat(),
+    }
+    review = _identity_engine(role_assignments=[assignment]).least_privilege_review()
+
+    assert review["candidate_count"] == 1
+    assert review["candidates"][0]["scope_breadth"] == "unknown"
+    assert set(review["candidates"][0]["review_reasons"]) == {
+        "assignment_scope_unknown",
+        "wildcard_permission_patterns",
+    }
+    assert review["coverage"]["assignment_scope_unknown"] == 1
+
+
+def test_least_privilege_review_paginates_candidates_without_dropping_total():
+    engine = _identity_engine(
+        role_assignments=[
+            _assignment(f"a{index}", principal=f"p{index}", scope="/subscriptions/sub-a")
+            for index in range(3)
+        ]
+    )
+
+    review = engine.least_privilege_review(offset=1, limit=1)
+
+    assert review["candidate_count"] == 3
+    assert review["offset"] == 1
+    assert review["limit"] == 1
+    assert len(review["candidates"]) == 1
+
+
 def test_subscription_owners_exclude_resource_group_owners():
     engine = _identity_engine(
         role_assignments=[
@@ -1141,6 +1261,7 @@ def test_raw_connection_generation_serves_every_governance_section_without_ontol
         "/api/v1/governance/finops/attribution": ("count", 1),
         "/api/v1/governance/identity/summary": ("assignment_count", 1),
         "/api/v1/governance/identity/principals": ("count", 1),
+        "/api/v1/governance/identity/least-privilege": ("candidate_count", 1),
         "/api/v1/governance/identity/non-human": ("count", 2),
         "/api/v1/governance/identity/stale-access": ("count", 1),
         "/api/v1/governance/identity/subscription-owners": ("count", 1),
@@ -1967,6 +2088,34 @@ def test_identity_summary_returns_evidence_and_scope(tmp_path):
     assert body["evidence"][0]["source_engine"].endswith("IdentityRiskEngine")
     assert body["evidence"][0]["source_table"] == "connection_generation_entities"
     assert "scope" in body
+
+
+def test_identity_least_privilege_is_scoped_paginated_and_qualified(tmp_path):
+    client = _client(tmp_path, snapshot=_snapshot())
+
+    response = client.get(
+        "/api/v1/governance/identity/least-privilege?subscription=sub-a&offset=0&limit=1",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["candidate_count"] == 1
+    assert body["data"]["limit"] == 1
+    assert body["data"]["effective_access"] == "not_evaluated"
+    assert body["data"]["candidates"][0]["principal_id"] == "p-a"
+    assert body["scope"]["subscription"] == ["sub-a"]
+    assert body["evidence"][0]["source_engine"].endswith("IdentityRiskEngine")
+
+
+@pytest.mark.parametrize("query", ["offset=-1", "limit=0", "limit=101"])
+def test_identity_least_privilege_rejects_invalid_pagination(tmp_path, query):
+    response = _client(tmp_path, snapshot=_snapshot()).get(
+        f"/api/v1/governance/identity/least-privilege?{query}",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 400
 
 
 def test_empty_identity_data_is_warned_about_not_silently_empty(tmp_path):

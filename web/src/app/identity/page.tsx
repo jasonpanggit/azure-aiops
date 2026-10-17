@@ -22,6 +22,17 @@ import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
+const LEAST_PRIVILEGE_REASON_LABELS: Record<string, string> = {
+  broad_management_group_scope: "Management-group scope",
+  broad_subscription_scope: "Subscription-wide scope",
+  elevated_role_or_action_heuristic: "Elevated role/action signal",
+  wildcard_permission_patterns: "Wildcard permission pattern",
+  assignment_unchanged_past_review_window: "Change age exceeds review window",
+  assignment_change_age_unknown: "Change age unknown",
+  assignment_scope_unknown: "Assignment scope unknown",
+  role_definition_or_permissions_unresolved: "Role definition incomplete",
+};
+
 function rotationTone(status: string): "critical" | "warning" | "success" | "neutral" {
   if (status === "expired") return "critical";
   if (status === "expiring_soon") return "warning";
@@ -36,6 +47,10 @@ function blastRadius(radius: Record<string, number>): string {
   return entries.map(([key, value]) => `${value} ${titleize(key).toLowerCase()}`).join(", ");
 }
 
+function permissionGroupLabel(label: string, count: number): string {
+  return `${label} (${count})`;
+}
+
 export default function IdentityPage() {
   const { scope } = useScope();
   return <IdentityWorkspace key={scopeToSearchParams(scope).toString()} scope={scope} />;
@@ -43,6 +58,8 @@ export default function IdentityPage() {
 
 function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [leastPrivilegePage, setLeastPrivilegePage] = useState(0);
+  const [leastPrivilegePageSize, setLeastPrivilegePageSize] = useState(20);
 
   const summary = useApi(() => governanceApi.identitySummary(scope), [scope]);
   const principals = useApi(() => governanceApi.identityPrincipals(scope), [scope]);
@@ -50,6 +67,14 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
   const stale = useApi(() => governanceApi.staleAccess(scope), [scope]);
   const nonHuman = useApi(() => governanceApi.nonHumanIdentities(scope), [scope]);
   const spn = useApi(() => governanceApi.spnCredentials(scope), [scope]);
+  const leastPrivilege = useApi(
+    () => governanceApi.identityLeastPrivilege(
+      scope,
+      leastPrivilegePage * leastPrivilegePageSize,
+      leastPrivilegePageSize,
+    ),
+    [scope, leastPrivilegePage, leastPrivilegePageSize],
+  );
 
   const principalRows = useMemo(() => principals.data?.data.principals ?? [], [principals.data]);
   const ownerRows = useMemo(() => owners.data?.data.owners ?? [], [owners.data]);
@@ -93,13 +118,23 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
 
   // The API warns when identity data has never synced. Surfacing that is
   // essential: an empty table must never read as "no privileged access".
-  const warnings = Array.from(new Set(sources.flatMap(source => source.data?.warnings ?? [])));
-  const identityEvidence = sources.flatMap(source => source.data?.evidence ?? []);
+  const warnings = Array.from(new Set([
+    ...sources.flatMap(source => source.data?.warnings ?? []),
+    ...(leastPrivilege.data?.warnings ?? []),
+    ...(leastPrivilege.error
+      ? [`Least-privilege review is unavailable: ${leastPrivilege.error.message ?? "No response was returned."}`]
+      : []),
+  ]));
+  const identityEvidence = [
+    ...sources.flatMap(source => source.data?.evidence ?? []),
+    ...(leastPrivilege.data?.evidence ?? []),
+  ];
 
   // Read-only contextual Copilot over already-loaded, server-authorized
   // identity evidence. Principals stay scope-safe domain identities; no
   // mutation path is exposed (D-03, D-05, D-06, D-08, D-09).
   const identityAvailable = !error && sources.every(source => Boolean(source.data));
+  const completeEvidenceAvailable = identityAvailable && Boolean(leastPrivilege.data);
   const identityCopilot = buildIdentityCopilotContext({
     scope,
     summary: totals
@@ -148,9 +183,9 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
       issues_count: credential.issues?.length ?? 0,
     })),
     spnTotalCount: spn.data?.data.count ?? spnRows.length,
-    available: identityAvailable,
+    available: completeEvidenceAvailable,
     freshness: !identityAvailable ? "unavailable" : identityEvidence.some(item => item.freshness === "stale") ? "stale"
-      : warnings.length === 0 && sources.every(source => Boolean(source.data?.evidence.length) && source.data?.evidence.every(item => item.freshness === "fresh")) ? "fresh" : "partial",
+      : warnings.length === 0 && completeEvidenceAvailable && [...sources, leastPrivilege].every(source => Boolean(source.data?.evidence.length) && source.data?.evidence.every(item => item.freshness === "fresh")) ? "fresh" : "partial",
     evidence: identityEvidence,
   });
 
@@ -176,7 +211,7 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
 
       <CopilotInsights
         snapshot={identityCopilot.snapshot}
-        ready={!loading}
+        ready={!loading && !leastPrivilege.loading}
         requestedScope={identityCopilot.requestedScope}
         contextLabel="Access governance"
         onOpenCopilot={() => setCopilotOpen(true)}
@@ -330,6 +365,164 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                 onPageSizeChange={principalsPaging.setPageSize}
                 label="principals"
               />
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <div>
+                <h2>Least-privilege review candidates</h2>
+                <p>
+                  Advisory queue based on observed role definitions, scope breadth,
+                  and assignment change age. It does not calculate effective access
+                  or recommend an automatic role replacement.
+                </p>
+              </div>
+            </div>
+            <div className="card-body">
+              {leastPrivilege.error ? (
+                <StatePanel
+                  title="Least-privilege review is unavailable"
+                  message={leastPrivilege.error.message ?? "No response was returned."}
+                  tone="error"
+                  action={<button type="button" className="button" onClick={leastPrivilege.refetch}>Retry review candidates</button>}
+                />
+              ) : leastPrivilege.loading ? (
+                <StatePanel
+                  title="Preparing review candidates"
+                  message="Comparing observed role-definition patterns and grant scopes."
+                  tone="loading"
+                />
+              ) : leastPrivilege.data?.data.candidate_count === 0 ? (
+                <StatePanel
+                  title="No observed review candidates"
+                  message="No assignments matched these advisory signals. This is not a finding that effective access is narrow or fully known."
+                />
+              ) : leastPrivilege.data ? (
+                <>
+                  <p className="identity-review-boundary">
+                    Effective access remains not evaluated. Group membership, deny
+                    assignments, PIM eligibility, and role-condition evaluation were
+                    not collected; condition text is shown only as present or absent.
+                  </p>
+                  <p className="identity-table-hint" id="identity-review-table-hint">
+                    Scroll horizontally to inspect each grant and its permission patterns.
+                  </p>
+                  <div
+                    className="table-scroll identity-review-table"
+                    role="region"
+                    aria-label="Least-privilege review candidates"
+                    aria-describedby="identity-review-table-hint"
+                    tabIndex={0}
+                  >
+                    <table className="operations-table">
+                      <thead>
+                        <tr>
+                          <th>Principal</th>
+                          <th>Observed role</th>
+                          <th>Observed scope</th>
+                          <th>Permission patterns</th>
+                          <th>Review signals</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {leastPrivilege.data.data.candidates.map((candidate) => (
+                          <tr key={`${candidate.assignment_id}:${candidate.principal_id}`}>
+                            <td>
+                              <Link
+                                className="table-primary-link"
+                                href={`/search?q=${encodeURIComponent(candidate.principal_id)}`}
+                              >
+                                <span className="table-wrap resource-id-cell">{candidate.principal_id}</span>
+                              </Link>
+                              <div className="table-secondary">{titleize(candidate.principal_type)}</div>
+                            </td>
+                            <td>
+                              <strong>{candidate.role}</strong>
+                              <div className="table-secondary resource-id-cell">{candidate.role_definition_id}</div>
+                              <div className="table-secondary">
+                                Condition {candidate.condition_state === "present"
+                                  ? "observed"
+                                  : candidate.condition_state === "not_present"
+                                    ? "not present"
+                                    : "not collected"}
+                              </div>
+                            </td>
+                            <td>
+                              {titleize(candidate.scope_breadth)}
+                              <div className="table-secondary resource-id-cell">{candidate.scope}</div>
+                            </td>
+                            <td>
+                              <details className="identity-review-details">
+                                <summary>
+                                  Inspect {candidate.permission_profile.actions.count
+                                    + candidate.permission_profile.data_actions.count} allow patterns
+                                </summary>
+                                <dl>
+                                  {([
+                                    ["Actions", candidate.permission_profile.actions],
+                                    ["NotActions / exclusions", candidate.permission_profile.not_actions],
+                                    ["DataActions", candidate.permission_profile.data_actions],
+                                    ["NotDataActions / exclusions", candidate.permission_profile.not_data_actions],
+                                  ] as const).map(([label, group]) => (
+                                    <div key={label}>
+                                      <dt>{permissionGroupLabel(label, group.count)}</dt>
+                                      <dd>
+                                        {group.count === 0 ? "No patterns recorded" : (
+                                          <ul>
+                                            {group.patterns.map((pattern) => <li key={pattern}><code>{pattern}</code></li>)}
+                                            {group.truncated && <li>Additional patterns not shown</li>}
+                                          </ul>
+                                        )}
+                                      </dd>
+                                    </div>
+                                  ))}
+                                </dl>
+                                <p>{candidate.recommendation}</p>
+                              </details>
+                              <div className="table-secondary">
+                                {candidate.permission_profile.wildcard_pattern_count} wildcard patterns
+                              </div>
+                            </td>
+                            <td>
+                              <div className="identity-review-reasons">
+                                {candidate.review_reasons.map((reason) => (
+                                  <StatusBadge
+                                    key={reason}
+                                    label={LEAST_PRIVILEGE_REASON_LABELS[reason] ?? titleize(reason)}
+                                    tone={reason.includes("elevated")
+                                      ? "critical"
+                                      : reason.includes("unknown") || reason.includes("unresolved")
+                                        ? "warning"
+                                        : "neutral"}
+                                    compact
+                                  />
+                                ))}
+                              </div>
+                              <div className="table-secondary">
+                                Change age: {titleize(candidate.age_state)}
+                                {candidate.last_changed && ` · ${formatDateTime(candidate.last_changed)}`}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <TablePagination
+                    total={leastPrivilege.data.data.candidate_count}
+                    pageRows={leastPrivilege.data.data.candidates.length}
+                    page={leastPrivilegePage}
+                    onPageChange={setLeastPrivilegePage}
+                    pageSize={leastPrivilegePageSize}
+                    onPageSizeChange={(size) => {
+                      setLeastPrivilegePageSize(size);
+                      setLeastPrivilegePage(0);
+                    }}
+                    label="review candidates"
+                  />
+                </>
+              ) : null}
             </div>
           </section>
 

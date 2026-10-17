@@ -97,6 +97,7 @@ import type {
   WasteItem,
   FinOpsAttributionGroup,
   IdentitySummary,
+  IdentityLeastPrivilegeReview,
   PrincipalRisk,
   SubscriptionOwnerRecord,
   StaleAccessRecord,
@@ -2232,6 +2233,17 @@ export const governanceApi = {
       "/governance/identity/principals",
       { query: scopeToSearchParams(scope) },
     ),
+
+  /** Read a bounded, scoped advisory queue; it never evaluates or changes access. */
+  identityLeastPrivilege: (scope: ScopeSelection = {}, offset = 0, limit = 50) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<IdentityLeastPrivilegeReview>(
+      "/governance/identity/least-privilege",
+      { query },
+    );
+  },
 
   subscriptionOwners: (scope: ScopeSelection = {}) =>
     apiRequest<{ owners: SubscriptionOwnerRecord[]; count: number }>(
