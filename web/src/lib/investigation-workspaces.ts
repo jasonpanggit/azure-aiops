@@ -1,5 +1,6 @@
 import { apiRequest } from "./api-client";
 import { scopeToSearchParams, type ScopeSelection } from "./scope";
+import type { EvidenceItem } from "./types";
 
 /** Team navigation state only; no provider result or execution authority. */
 export interface InvestigationWorkspaceView {
@@ -43,11 +44,68 @@ export interface InvestigationWorkspaceRevision {
   revision: number;
   actor: string;
   recorded_at: string;
-  change: "created" | "view_updated" | "access_updated" | "hypothesis_updated";
+  change: "created" | "view_updated" | "access_updated" | "hypothesis_updated" | "evidence_captured";
   view: InvestigationWorkspaceView;
   readers: string[];
   editors: string[];
   hypotheses: InvestigationHypothesis[];
+  capture_id: string | null;
+}
+
+/** Immutable receipt linked to one successful workspace CAS revision. */
+export interface InvestigationCaptureReference {
+  capture_id: string;
+  digest: string;
+  workspace_revision: number;
+  actor: string;
+  recorded_at: string;
+}
+
+/** A bounded governed-tool result with frozen source provenance, not a complete estate snapshot. */
+export interface InvestigationCapturedSource {
+  tool: string;
+  status: "ok" | "empty" | "unavailable" | "denied";
+  started_at: string;
+  finished_at: string;
+  data: unknown;
+  evidence: EvidenceItem[];
+  warning: string;
+  coverage: "bounded-governed-read-subset";
+  knowledge_version: string;
+}
+
+/** Server-acquired immutable evidence version, separate from navigation and operator annotations. */
+export interface InvestigationEvidenceCapture {
+  schema_version: 1;
+  contract: "investigation-tools-v1";
+  workspace_id: string;
+  capture_id: string;
+  scope: ScopeSelection;
+  actor: string;
+  recorded_at: string;
+  workspace_revision: number;
+  view: InvestigationWorkspaceView;
+  sources: InvestigationCapturedSource[];
+}
+
+/** Explicit ephemeral acquisition paired with a retained view, never an automatic refresh or stored revision. */
+export interface InvestigationEvidenceComparison {
+  workspace_id: string;
+  capture_id: string;
+  reviewed_revision: number;
+  expected_revision: number;
+  finished_at: string;
+  retained: InvestigationEvidenceCapture;
+  current: { started_at: string; finished_at: string; view: InvestigationWorkspaceView; sources: InvestigationCapturedSource[] };
+  differences: Array<{
+    tool: string;
+    retained_status: InvestigationCapturedSource["status"];
+    current_status: InvestigationCapturedSource["status"];
+    data_changed: boolean | null;
+    provenance_changed: boolean;
+    retained_knowledge_version: string;
+    current_knowledge_version: string;
+  }>;
 }
 
 /** Current authorization governs access to the selected historical revision. */
@@ -60,6 +118,7 @@ export interface InvestigationTeamWorkspace {
   current_access: { readers: string[]; editors: string[] };
   can_edit: boolean;
   can_share: boolean;
+  captures: InvestigationCaptureReference[];
   history: Array<Pick<InvestigationWorkspaceRevision, "revision" | "actor" | "recorded_at" | "change">>;
 }
 
@@ -92,6 +151,24 @@ export const investigationWorkspacesApi = {
   hypothesis: (workspaceId: string, hypothesisId: string, expectedRevision: number, hypothesis: InvestigationHypothesisDraft, scope: ScopeSelection, signal?: AbortSignal) =>
     apiRequest<InvestigationTeamWorkspace>(`${base}/${encodeURIComponent(workspaceId)}/hypotheses/${encodeURIComponent(hypothesisId)}`, {
       method: "PUT", body: { expected_revision: expectedRevision, hypothesis }, query: scopeToSearchParams(scope), signal,
+    }),
+  /** Acquire only the server's allowlisted read projections against reviewed saved navigation. */
+  retain: (workspaceId: string, captureId: string, expectedRevision: number, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<InvestigationTeamWorkspace>(`${base}/${encodeURIComponent(workspaceId)}/evidence`, {
+      method: "POST", body: { expected_revision: expectedRevision, capture_id: captureId },
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Reopen a CAS-linked immutable receipt without provider acquisition or freshness mutation. */
+  evidence: (workspaceId: string, captureId: string, revision: number, scope: ScopeSelection, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("revision", String(revision));
+    return apiRequest<InvestigationEvidenceCapture>(`${base}/${encodeURIComponent(workspaceId)}/evidence/${encodeURIComponent(captureId)}`, { query, signal });
+  },
+  /** Explicitly acquire current projections for the retained view; no workspace history is written. */
+  compare: (workspaceId: string, captureId: string, reviewedRevision: number, expectedRevision: number, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<InvestigationEvidenceComparison>(`${base}/${encodeURIComponent(workspaceId)}/evidence/${encodeURIComponent(captureId)}/compare`, {
+      method: "POST", body: { reviewed_revision: reviewedRevision, expected_revision: expectedRevision },
+      query: scopeToSearchParams(scope), signal,
     }),
 };
 

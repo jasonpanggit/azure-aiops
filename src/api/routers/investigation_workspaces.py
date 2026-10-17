@@ -1,13 +1,23 @@
-"""Access-controlled navigation and operator annotations; no provider reads."""
+"""Team workspaces with explicit governed source retention and historical reads."""
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Path, Query
 
+from operations.investigation_evidence import (
+    CAPTURE_ID,
+    COVERAGE,
+    CapturedSource,
+    collect_investigation_sources,
+    compare_investigation_sources,
+)
 from operations.investigation_workspaces import (
     HYPOTHESIS_ID,
     MAX_REVISIONS,
     WORKSPACE_ID,
+    EvidenceCaptureRequest,
+    EvidenceCompareRequest,
     HypothesisUpdate,
     InvestigationWorkspaceStore,
     WorkspaceAccess,
@@ -24,6 +34,7 @@ from ..evidence import Evidence, envelope
 
 router = APIRouter(prefix="/api/v1/investigation-workspaces", tags=["investigation-workspaces"])
 WorkspaceId = Annotated[str, Path(pattern=WORKSPACE_ID)]
+CaptureId = Annotated[str, Path(pattern=CAPTURE_ID)]
 
 
 def _store(context: Context) -> InvestigationWorkspaceStore:
@@ -42,8 +53,8 @@ def _response(data: dict, scope: ReadScope) -> dict:
         ),
         warnings=[
             (
-                "Workspace navigation, membership and operator annotations only, not retained provider evidence, "
-                "platform access grants, approvals or execution authority. Restoring reacquires current authorized evidence. "
+                "Workspace navigation, membership and operator annotations are not retained provider evidence, "
+                "platform access grants, approvals or execution authority. Source receipts are separate, explicit acquisitions. Restoring navigation reacquires current authorized evidence. "
                 "All history is governed by current membership and exact effective scope."
             )
         ],
@@ -132,3 +143,90 @@ def share_workspace(
     except _ERRORS as exc:
         raise _failure(exc) from exc
     return _response(data, scope)
+
+
+@router.post("/{workspace_id}/evidence", status_code=201)
+def retain_evidence(
+    workspace_id: WorkspaceId, payload: EvidenceCaptureRequest,
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict:
+    """Explicitly acquire governed read projections and CAS-link one immutable receipt."""
+    try:
+        store = _store(context)
+        view = store.prepare_capture(workspace_id, principal.subject, scope.to_dict(), payload)
+        sources = collect_investigation_sources(
+            context, scope, principal, entry_type=view.entry_type, subject=view.subject,
+        )
+        data = store.retain_capture(workspace_id, principal.subject, scope.to_dict(), payload, sources)
+    except _ERRORS as exc:
+        raise _failure(exc) from exc
+    response = _response(data, scope)
+    response["warnings"].append(COVERAGE)
+    return response
+
+
+def _retained_response(data: dict, scope: ReadScope) -> dict:
+    return envelope(
+        data, scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="operations.investigation_evidence",
+            source_table="state/investigation-evidence",
+            # Receipt/acquisition clocks are not a source observation or evidence of freshness.
+            timestamp="", confidence="unknown",
+        ),
+        warnings=[
+            COVERAGE,
+            "Stored source freshness is as recorded, not reclassified now. Missing source timestamps/versions remain unknown.",
+            "Environment, connection, network-gap and remediation-plan entries retain scope-level projections, not exact entry detail.",
+        ],
+    )
+
+
+@router.get("/{workspace_id}/evidence/{capture_id}")
+def read_retained_evidence(
+    workspace_id: WorkspaceId, capture_id: CaptureId,
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+    revision: Annotated[int, Query(ge=1, le=MAX_REVISIONS)],
+) -> dict:
+    """Reopen a linked retained version without acquiring providers or mutating timestamps."""
+    try:
+        data = _store(context).read_capture(workspace_id, capture_id, principal.subject, scope.to_dict(), revision)
+    except _ERRORS as exc:
+        raise _failure(exc) from exc
+    return _retained_response(data, scope)
+
+
+@router.post("/{workspace_id}/evidence/{capture_id}/compare")
+def compare_retained_evidence(
+    workspace_id: WorkspaceId, capture_id: CaptureId, payload: EvidenceCompareRequest,
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict:
+    """Explicitly reacquire the retained view, then reauthorize before returning an unwritten comparison."""
+    try:
+        store = _store(context)
+        workspace = store.read(workspace_id, principal.subject, scope.to_dict(), payload.reviewed_revision)
+        if workspace["latest_revision"] != payload.expected_revision:
+            raise DocumentConflictError("Workspace changed; reopen before comparing")
+        retained = store.read_capture(workspace_id, capture_id, principal.subject, scope.to_dict(), payload.reviewed_revision)
+        started = datetime.now(UTC).isoformat()
+        current = collect_investigation_sources(
+            context, scope, principal, entry_type=retained["view"]["entry_type"], subject=retained["view"]["subject"],
+        )
+        checked = store.read(workspace_id, principal.subject, scope.to_dict(), payload.reviewed_revision)
+        if checked["latest_revision"] != payload.expected_revision:
+            raise DocumentConflictError("Workspace changed during comparison; reopen before comparing")
+        data = {
+            "workspace_id": workspace_id, "capture_id": capture_id,
+            "reviewed_revision": payload.reviewed_revision, "expected_revision": payload.expected_revision,
+            "retained": retained, "current": {
+                "started_at": started, "finished_at": datetime.now(UTC).isoformat(),
+                "view": retained["view"], "sources": [row.model_dump() for row in current],
+            },
+            "differences": compare_investigation_sources(
+                [CapturedSource.model_validate(row) for row in retained["sources"]], current,
+            ),
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+    except _ERRORS as exc:
+        raise _failure(exc) from exc
+    return _retained_response(data, scope)

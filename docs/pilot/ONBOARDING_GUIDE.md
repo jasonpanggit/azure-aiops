@@ -107,6 +107,13 @@ A 20–30 minute walkthrough proving the end-to-end value chain:
    saved subject stays fixed, and dismissal retains history. Current membership
    and scope protect historical boards. References are not fetched or validated;
    keep secrets out, and copy unsaved drafts before reopening or leaving.
+   Retained source evidence is separate: an owner/editor explicitly acquires
+   bounded server-governed projections for the saved subject, then links an
+   immutable source receipt into workspace history. Reopening a receipt makes
+   no provider calls or freshness changes. An explicit current comparison
+   reacquires that retained subject and leaves historical sources untouched.
+   Tool coverage may be partial and lists bounded; unavailable sources stay
+   unknown, and an unchanged projection is not an unchanged-estate claim.
    Current-signal counts describe the loaded subset, not a historical trend;
    unavailable incident or exposure sources do not imply quiet conditions.
 2. **Drill into a real finding** — pick a live vulnerability or network gap

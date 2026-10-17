@@ -12,6 +12,7 @@ import type { ScopeSelection } from "@/lib/scope";
 import type { Envelope } from "@/lib/types";
 import { StatePanel } from "./ui/StatePanel";
 import { InvestigationHypothesisBoard } from "./InvestigationHypothesisBoard";
+import { InvestigationRetainedEvidence } from "./InvestigationRetainedEvidence";
 
 interface Props {
   scope: ScopeSelection;
@@ -23,7 +24,7 @@ interface Props {
 
 const validId = (value: string) => /^wrk-[0-9a-f]{32}$/.test(value);
 const members = (value: string) => value.split("\n").map(line => line.trim()).filter(Boolean);
-const changeLabels = { created: "Created", view_updated: "Navigation saved", access_updated: "Membership changed", hypothesis_updated: "Operator explanation saved" };
+const changeLabels = { created: "Created", view_updated: "Navigation saved", access_updated: "Membership changed", hypothesis_updated: "Operator explanation saved", evidence_captured: "Source projections retained" };
 const recordedTime = (value: string) => `${new Date(value).toLocaleString(undefined, { timeZone: "UTC", dateStyle: "medium", timeStyle: "medium" })} UTC`;
 
 /** Explicit exact-scope team navigation, current ACLs and reviewed revision history. */
@@ -100,7 +101,7 @@ export function InvestigationTeamWorkspacePanel({ scope, view, initialId = "", i
     <details className="card investigation-team-workspace" aria-label="Team investigation workspace" open={initialId ? true : undefined}>
       <summary>Team workspace: open or save server-backed navigation</summary>
       <div className="card-body">
-        <p>Save navigation and operator explanations for explicit collaborators. This retains no provider evidence or Copilot answer. Membership does not grant platform access.</p>
+        <p>Save navigation and operator explanations for explicit collaborators. These are not provider evidence or Copilot answers. Explicit source retention below is separate. Membership does not grant platform access.</p>
         <div className="investigation-team-controls">
           <label>Workspace identity<input value={workspaceId} maxLength={36} placeholder="wrk- followed by 32 lowercase hex characters" disabled={busy} onChange={event => {
             setWorkspaceId(event.target.value.trim());
@@ -154,6 +155,12 @@ export function InvestigationTeamWorkspacePanel({ scope, view, initialId = "", i
             {Array.isArray(workspace.revision.hypotheses) ? <InvestigationHypothesisBoard workspace={workspace} busy={busy} onSave={(id, expectedRevision, hypothesis) =>
               run(workspaceId, signal => investigationWorkspacesApi.hypothesis(workspaceId, id, expectedRevision, hypothesis, scope, signal), expectedRevision + 1)
             } /> : <StatePanel title="Hypothesis board unavailable" message="The workspace service did not return an annotation board. Navigation remains available; reopen after the service is updated. No empty board is inferred." tone="error" />}
+            {Array.isArray(workspace.captures) ? <InvestigationRetainedEvidence
+              key={`${workspace.workspace_id}:${workspace.revision.revision}:${workspace.latest_revision}:${JSON.stringify(scope)}`}
+              workspace={workspace} busy={busy} onRetain={id =>
+                run(workspaceId, signal => investigationWorkspacesApi.retain(workspaceId, id, workspace.revision.revision, scope, signal), workspace.revision.revision + 1)
+              }
+            /> : <StatePanel title="Source retention unavailable" message="The workspace service did not return retention metadata. Reopen after the service is updated; no empty history is inferred." tone="error" />}
           </>
         )}
       </div>

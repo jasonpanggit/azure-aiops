@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -567,3 +568,250 @@ def test_hypothesis_and_navigation_compete_for_the_same_cas_revision(tmp_path, m
     result = stores[0].read(ID, "owner", {})
     assert result["latest_revision"] == 2
     assert len(result["revision"]["hypotheses"]) == (1 if result["revision"]["change"] == "hypothesis_updated" else 0)
+
+
+CAP = "cap-" + "d" * 32
+
+
+def capture(client, *, identity=CAP, revision=1, actor="owner", params=None, extra=None):
+    return client.post(f"{BASE}/{ID}/evidence", headers=auth(actor), params=params, json={
+        "capture_id": identity, "expected_revision": revision, **(extra or {}),
+    })
+
+
+def receipt(client, *, identity=CAP, revision=2, actor="owner", params=None):
+    return client.get(f"{BASE}/{ID}/evidence/{identity}", headers=auth(actor), params={**(params or {}), "revision": revision})
+
+
+def compare_capture(client, *, identity=CAP, reviewed=2, revision=2, actor="owner", params=None):
+    return client.post(f"{BASE}/{ID}/evidence/{identity}/compare", headers=auth(actor), params=params, json={
+        "expected_revision": revision, "reviewed_revision": reviewed,
+    })
+
+
+def capture_fixture(tmp_path):
+    client, context, store, _ = client_fixture(tmp_path)
+    observed = {"value": "before", "version": "source-v1", "calls": 0}
+
+    def load(name, **_):
+        observed["calls"] += 1
+        return {
+            "subject": {"name": name, "business_service": name, "subscription_id": "sub-a"},
+            "sections": {"resources": [
+                {"name": observed["value"], "subscription_id": "sub-a"},
+                {"name": "out-of-scope-secret", "subscription_id": "sub-b"},
+            ]},
+            "freshness": "2020-01-01T00:00:00Z", "knowledge_version": observed["version"],
+        }
+
+    semantic = SimpleNamespace(get_service_context=load, get_risk_context=load, get_impact_context=load)
+    context.semantic_provider = lambda: semantic
+    context.incident_provider = context.network_provider = context.vulnerability_provider = context.remediation_provider = None
+    return client, context, store, observed
+
+
+def test_retained_source_receipt_is_server_acquired_scoped_immutable_and_reopened_without_reads(tmp_path):
+    client, _, store, observed = capture_fixture(tmp_path)
+    params = {"subscription": "sub-a"}
+    create(client, params=params)
+    response = capture(client, params=params)
+    assert response.status_code == 201, response.text
+    data = response.json()["data"]
+    assert data["revision"]["capture_id"] == CAP and data["latest_revision"] == 2
+    assert len(data["captures"]) == 1
+    retained = receipt(client, params=params)
+    assert retained.status_code == 200, retained.text
+    payload = retained.json()["data"]
+    assert retained.json()["evidence"][0]["timestamp"] == ""
+    assert retained.json()["evidence"][0]["freshness"] == "unknown"
+    assert len(payload["sources"]) == 8
+    assert payload["view"] == VIEW and payload["actor"] == "owner"
+    assert "out-of-scope-secret" not in retained.text
+    assert payload["sources"][0]["data"]["sections"]["resources"] == [{"name": "before", "subscription_id": "sub-a"}]
+    assert payload["sources"][0]["knowledge_version"] == "source-v1"
+    assert payload["sources"][0]["evidence"][0]["timestamp"] == "2020-01-01T00:00:00Z"
+    assert payload["sources"][0]["evidence"][0]["freshness"] == "stale"
+    assert payload["sources"][3]["status"] == "unavailable"
+    assert observed["calls"] == 3
+    snapshot = store.documents.read_snapshot(store._capture_name(ID, CAP))
+    observed["value"] = "after"
+    assert receipt(client, params=params).json() == retained.json()
+    assert observed["calls"] == 3
+    assert store.documents.read_snapshot(store._capture_name(ID, CAP)) == snapshot
+    assert receipt(client, revision=1, params=params).status_code == 404
+    assert capture(client, revision=2, params=params).status_code == 409
+    assert observed["calls"] == 3
+
+
+def test_explicit_comparison_uses_retained_subject_not_current_navigation_and_writes_nothing(tmp_path):
+    client, _, store, observed = capture_fixture(tmp_path)
+    create(client)
+    assert capture(client).status_code == 201
+    assert update(client, revision=2).status_code == 200
+    latest = store.documents.read_snapshot(store._name(ID))
+    retained = store.documents.read_snapshot(store._capture_name(ID, CAP))
+    observed["value"], observed["version"] = "after", "source-v2"
+    result = compare_capture(client, revision=3, reviewed=2)
+    assert result.status_code == 200, result.text
+    data = result.json()["data"]
+    assert data["retained"]["sources"][0]["data"]["sections"]["resources"][0]["name"] == "before"
+    assert data["current"]["sources"][0]["data"]["sections"]["resources"][0]["name"] == "after"
+    assert data["current"]["view"] == VIEW
+    assert data["differences"][0]["data_changed"] is True
+    assert data["differences"][0]["retained_knowledge_version"] == "source-v1"
+    assert data["differences"][0]["current_knowledge_version"] == "source-v2"
+    assert data["differences"][3]["data_changed"] is None
+    assert observed["calls"] == 6
+    assert store.documents.read_snapshot(store._name(ID)) == latest
+    assert store.documents.read_snapshot(store._capture_name(ID, CAP)) == retained
+    assert compare_capture(client, revision=2).status_code == 409
+    assert observed["calls"] == 6
+
+
+@pytest.mark.parametrize("dimension", SCOPE_DIMENSIONS)
+def test_current_acl_and_all_scope_dimensions_protect_capture_and_compare(tmp_path, dimension):
+    client, _, _, observed = capture_fixture(tmp_path)
+    params = {dimension: "value"}
+    create(client, params=params)
+    share(client, readers=["reader"], editors=["editor"], params=params)
+    assert capture(client, revision=2, actor="reader", params=params).status_code == 403
+    assert capture(client, revision=2, actor="editor").status_code == 404
+    assert capture(client, revision=2, actor="editor", params=params).status_code == 201
+    assert receipt(client, revision=3, actor="reader", params=params).status_code == 200
+    assert receipt(client, revision=3, actor="reader").status_code == 404
+    assert compare_capture(client, reviewed=3, revision=3, actor="reader").status_code == 404
+    assert compare_capture(client, reviewed=3, revision=3, actor="reader", params=params).status_code == 200
+    assert share(client, revision=3, params=params).status_code == 200
+    before = observed["calls"]
+    assert receipt(client, revision=3, actor="reader", params=params).status_code == 404
+    assert compare_capture(client, reviewed=3, revision=4, actor="reader", params=params).status_code == 404
+    assert observed["calls"] == before
+
+
+@pytest.mark.parametrize("field,value", [
+    ("sources", []), ("view", VIEW), ("scope", {}), ("actor", "foreign"),
+    ("tool", "execute"), ("data", {}), ("model_reasoning", "hidden"),
+])
+def test_capture_accepts_only_reviewed_revision_and_browser_known_identity(tmp_path, field, value):
+    client, _, _, observed = capture_fixture(tmp_path)
+    create(client)
+    assert capture(client, extra={field: value}).status_code == 400
+    assert observed["calls"] == 0
+
+
+@pytest.mark.parametrize("corruption", ["data", "scope", "actor", "view", "time", "missing"])
+def test_receipt_missing_or_corrupt_payload_fails_closed_without_acquiring_sources(tmp_path, corruption):
+    client, _, store, observed = capture_fixture(tmp_path)
+    create(client)
+    assert capture(client).status_code == 201
+    name = store._capture_name(ID, CAP)
+    snapshot = store.documents.read_snapshot(name)
+    payload = snapshot.payload
+    if corruption == "data":
+        payload["sources"][0]["data"] = {"injected": True}
+    elif corruption == "scope":
+        payload["scope"] = {"subscription": ["foreign"]}
+    elif corruption == "actor":
+        payload["actor"] = "foreign"
+    elif corruption == "view":
+        payload["view"]["subject"] = "Other"
+    elif corruption == "time":
+        payload["sources"][0]["finished_at"] = "2999-01-01T00:00:00Z"
+    else:
+        payload = {}
+    store.documents.replace_if_match(name, payload, expected_etag=snapshot.etag)
+    before = observed["calls"]
+    assert receipt(client).status_code == 503
+    assert compare_capture(client).status_code == 503
+    assert observed["calls"] == before
+
+
+def test_compare_reauthorizes_after_acquisition_and_suppresses_results_after_revocation(tmp_path, monkeypatch):
+    from api.routers import investigation_workspaces as router
+
+    client, _, _, _ = capture_fixture(tmp_path)
+    create(client)
+    capture(client)
+    share(client, revision=2, readers=["reader"])
+    original = router.collect_investigation_sources
+
+    def revoked(*args, **kwargs):
+        current = original(*args, **kwargs)
+        assert share(client, revision=3).status_code == 200
+        return current
+
+    monkeypatch.setattr(router, "collect_investigation_sources", revoked)
+    response = compare_capture(client, reviewed=2, revision=3, actor="reader")
+    assert response.status_code == 404
+    assert "before" not in response.text
+
+
+def test_retention_revocation_during_acquisition_never_creates_a_receipt(tmp_path, monkeypatch):
+    from api.routers import investigation_workspaces as router
+
+    client, _, store, _ = capture_fixture(tmp_path)
+    create(client)
+    share(client, editors=["editor"])
+    original = router.collect_investigation_sources
+
+    def revoked(*args, **kwargs):
+        current = original(*args, **kwargs)
+        assert share(client, revision=2).status_code == 200
+        return current
+
+    monkeypatch.setattr(router, "collect_investigation_sources", revoked)
+    assert capture(client, revision=2, actor="editor").status_code == 404
+    assert not store.documents.read_snapshot(store._capture_name(ID, CAP)).exists
+
+
+def test_lost_capture_link_reply_and_unlinked_race_receipts_have_explicit_recovery(tmp_path, monkeypatch):
+    client, _, store, observed = capture_fixture(tmp_path)
+    create(client)
+    original = store.documents.replace_if_match
+
+    def lost_reply(*args, **kwargs):
+        original(*args, **kwargs)
+        raise OSError("fixture link reply lost after commit")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store.documents, "replace_if_match", lost_reply)
+        assert capture(client).status_code == 503
+    assert store.read(ID, "owner", {})["revision"]["capture_id"] == CAP
+    assert receipt(client).status_code == 200
+    assert capture(client, revision=2).status_code == 409
+    assert observed["calls"] == 3
+
+    orphan = "cap-" + "e" * 32
+    with monkeypatch.context() as patch:
+        patch.setattr(store.documents, "replace_if_match", Mock(side_effect=DocumentConflictError("fixture race")))
+        assert capture(client, revision=2, identity=orphan).status_code == 409
+    assert store.documents.read_snapshot(store._capture_name(ID, orphan)).exists
+    assert receipt(client, identity=orphan).status_code == 404
+    assert capture(client, identity=orphan, revision=2).status_code == 409
+    assert store.read(ID, "owner", {})["latest_revision"] == 2
+
+
+def test_five_receipt_limit_does_not_acquire_or_prune_existing_captures(tmp_path):
+    client, _, store, observed = capture_fixture(tmp_path)
+    create(client)
+    for index in range(5):
+        assert capture(client, identity=f"cap-{index:032x}", revision=index + 1).status_code == 201
+    before = observed["calls"]
+    assert capture(client, revision=6).status_code == 400
+    assert observed["calls"] == before
+    assert len(store.read(ID, "owner", {})["captures"]) == 5
+    assert receipt(client, identity="cap-" + "0" * 32, revision=2).status_code == 200
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("post", f"{BASE}/{ID}/evidence", {"capture_id": CAP, "expected_revision": 1}),
+    ("get", f"{BASE}/{ID}/evidence/{CAP}?revision=2", None),
+    ("post", f"{BASE}/{ID}/evidence/{CAP}/compare", {"reviewed_revision": 2, "expected_revision": 2}),
+])
+def test_retention_inspection_and_comparison_require_authentication_and_platform_read_role(tmp_path, method, path, body):
+    client, _, _, observed = capture_fixture(tmp_path)
+    create(client)
+    kwargs = {"json": body} if body else {}
+    assert client.request(method, path, **kwargs).status_code == 401
+    assert client.request(method, path, headers=auth("nonreader"), **kwargs).status_code == 403
+    assert observed["calls"] == 0

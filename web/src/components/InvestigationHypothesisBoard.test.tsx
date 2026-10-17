@@ -16,10 +16,10 @@ const workspace = (hypotheses: InvestigationHypothesis[] = [], overrides: Partia
   revision: {
     revision: 3, actor: "editor", recorded_at: HYPOTHESIS.recorded_at, change: "hypothesis_updated",
     view: { title: "Review", entry_type: "BusinessService", subject: "Different current subject", mode: "engineer" },
-    readers: [], editors: ["editor"], hypotheses,
+    readers: [], editors: ["editor"], hypotheses, capture_id: null,
   },
   current_access: { readers: [], editors: ["editor"] }, can_edit: true, can_share: false,
-  history: [], ...overrides,
+  captures: [], history: [], ...overrides,
 });
 
 describe("operator hypothesis board", () => {

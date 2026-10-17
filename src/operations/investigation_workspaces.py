@@ -1,7 +1,8 @@
-"""Revisioned team navigation and operator annotations, never provider evidence."""
+"""Revisioned team navigation, operator annotations and immutable source-receipt links."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
@@ -9,6 +10,12 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from operations.investigation_evidence import (
+    CAPTURE_ID,
+    MAX_CAPTURE_BYTES,
+    CapturedSource,
+    evidence_tools,
+)
 from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
 MAX_REVISIONS = 40
@@ -113,18 +120,74 @@ class WorkspaceHypothesis(HypothesisDraft):
     recorded_at: str
 
 
+class EvidenceCaptureRequest(BaseModel):
+    """A browser-known receipt identity and reviewed latest workspace revision only."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_revision: int = Field(ge=1, le=MAX_REVISIONS)
+    capture_id: str = Field(pattern=CAPTURE_ID)
+
+
+class EvidenceCompareRequest(BaseModel):
+    """Explicit read-only current acquisition against a reviewed retained workspace version."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_revision: int = Field(ge=1, le=MAX_REVISIONS)
+    reviewed_revision: int = Field(ge=1, le=MAX_REVISIONS)
+
+
+class InvestigationCapture(BaseModel):
+    """Immutable, server-acquired source projections, bound to one workspace/view/scope."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    schema_version: Literal[1] = 1
+    contract: Literal["investigation-tools-v1"] = "investigation-tools-v1"
+    workspace_id: str = Field(pattern=WORKSPACE_ID)
+    capture_id: str = Field(pattern=CAPTURE_ID)
+    scope: dict[str, list[str]]
+    actor: Subject
+    recorded_at: str
+    workspace_revision: int = Field(ge=2, le=MAX_REVISIONS)
+    view: WorkspaceView
+    sources: list[CapturedSource] = Field(min_length=5, max_length=8)
+
+    @model_validator(mode="after")
+    def valid_sources(self):
+        """Pin the capture contract and retain source clocks without recomputing freshness."""
+        recorded = datetime.fromisoformat(self.recorded_at)
+        if recorded.tzinfo is None:
+            raise ValueError("Capture time must be timezone-aware")
+        if [row.tool for row in self.sources] != [name for name, _ in evidence_tools(self.view.entry_type, self.view.subject)]:
+            raise ValueError("Capture sources differ from the saved-view projection contract")
+        if any(datetime.fromisoformat(row.finished_at) > recorded for row in self.sources):
+            raise ValueError("Capture cannot predate source collection")
+        return self
+
+
+class EvidenceCaptureReference(BaseModel):
+    """CAS-linked immutable receipt digest; an unlinked receipt is never readable."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    capture_id: str = Field(pattern=CAPTURE_ID)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_revision: int = Field(ge=2, le=MAX_REVISIONS)
+    actor: Subject
+    recorded_at: str
+
+
 class WorkspaceRevision(BaseModel):
-    """Immutable server-attributed navigation and membership revision."""
+    """Immutable server-attributed navigation, annotation, membership and receipt-link revision."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     revision: int = Field(ge=1, le=MAX_REVISIONS)
     actor: Subject
     recorded_at: str
-    change: Literal["created", "view_updated", "access_updated", "hypothesis_updated"]
+    change: Literal["created", "view_updated", "access_updated", "hypothesis_updated", "evidence_captured"]
     view: WorkspaceView
     readers: list[Subject] = Field(max_length=20)
     editors: list[Subject] = Field(max_length=20)
     hypotheses: list[WorkspaceHypothesis] = Field(default_factory=list, max_length=20)
+    capture_id: str | None = Field(default=None, pattern=CAPTURE_ID)
 
     @model_validator(mode="after")
     def valid_metadata(self):
@@ -146,23 +209,30 @@ class WorkspaceState(BaseModel):
     owner: Subject
     scope: dict[str, list[str]]
     revisions: list[WorkspaceRevision] = Field(min_length=1, max_length=MAX_REVISIONS)
+    captures: list[EvidenceCaptureReference] = Field(default_factory=list, max_length=5)
 
     @model_validator(mode="after")
     def coherent_history(self):
         """Fail closed on corrupt revision, ownership, change or timestamp history."""
         previous: WorkspaceRevision | None = None
+        captures = {row.capture_id: row for row in self.captures}
+        linked: list[str] = []
+        if len(captures) != len(self.captures):
+            raise ValueError("Workspace capture identities must be unique")
         for index, revision in enumerate(self.revisions, 1):
             if revision.revision != index or self.owner in revision.readers + revision.editors:
                 raise ValueError("Workspace revision sequence or ownership is invalid")
             if previous is None:
                 if (
                     revision.actor != self.owner or revision.change != "created"
-                    or revision.readers or revision.editors or revision.hypotheses
+                    or revision.readers or revision.editors or revision.hypotheses or revision.capture_id
                 ):
                     raise ValueError("Workspace creation attribution is invalid")
             else:
                 if datetime.fromisoformat(revision.recorded_at) < datetime.fromisoformat(previous.recorded_at):
                     raise ValueError("Workspace revision times are out of order")
+                if revision.change != "evidence_captured" and revision.capture_id != previous.capture_id:
+                    raise ValueError("Only an evidence capture can change the retained receipt")
                 if revision.change == "access_updated":
                     if (
                         revision.actor != self.owner or revision.view != previous.view
@@ -200,9 +270,22 @@ class WorkspaceState(BaseModel):
                         or row.recorded_at != revision.recorded_at
                     ):
                         raise ValueError("Workspace hypothesis attribution or original subject is invalid")
+                elif revision.change == "evidence_captured":
+                    ref = captures.get(revision.capture_id)
+                    if (
+                        not ref or ref.capture_id in linked or ref.workspace_revision != index
+                        or ref.actor != revision.actor or ref.recorded_at != revision.recorded_at
+                        or revision.actor not in [self.owner, *previous.editors]
+                        or revision.view != previous.view or revision.hypotheses != previous.hypotheses
+                        or revision.readers != previous.readers or revision.editors != previous.editors
+                    ):
+                        raise ValueError("Workspace evidence capture attribution is invalid")
+                    linked.append(ref.capture_id)
                 else:
                     raise ValueError("Only the first workspace revision can be creation")
             previous = revision
+        if linked != [row.capture_id for row in self.captures]:
+            raise ValueError("Workspace contains unlinked or reordered capture references")
         return self
 
 
@@ -215,7 +298,7 @@ class WorkspacePermissionError(PermissionError):
 
 
 class InvestigationWorkspaceStore:
-    """Persist exact-scope team navigation revisions with local/OneLake CAS parity."""
+    """Persist exact-scope team revisions and immutable evidence with local/OneLake CAS parity."""
 
     def __init__(self, documents: OneLakeDocumentStore):
         self.documents = documents
@@ -259,6 +342,7 @@ class InvestigationWorkspaceStore:
             "revision": state.revisions[selected - 1].model_dump(),
             "current_access": {"readers": latest.readers, "editors": latest.editors},
             "can_edit": actor in [state.owner, *latest.editors], "can_share": actor == state.owner,
+            "captures": [row.model_dump() for row in state.captures if row.workspace_revision <= selected],
             "history": [
                 row.model_dump(include={"revision", "actor", "recorded_at", "change"})
                 for row in state.revisions
@@ -285,7 +369,7 @@ class InvestigationWorkspaceStore:
 
     def _append(
         self, snapshot, state: WorkspaceState, actor: str, expected_revision: int,
-        changes: dict, *, recorded_at: str | None = None,
+        changes: dict, *, recorded_at: str | None = None, capture: EvidenceCaptureReference | None = None,
     ) -> dict:
         latest = state.revisions[-1]
         if latest.revision != expected_revision:
@@ -298,6 +382,7 @@ class InvestigationWorkspaceStore:
         })
         updated = WorkspaceState.model_validate({
             **state.model_dump(), "revisions": [*state.revisions, row],
+            "captures": [*state.captures, capture] if capture else state.captures,
         })
         payload = updated.model_dump()
         self._bounded(payload)
@@ -356,3 +441,92 @@ class InvestigationWorkspaceStore:
         return self._append(snapshot, state, actor, change.expected_revision, {
             "change": "hypothesis_updated", "hypotheses": hypotheses,
         }, recorded_at=recorded_at)
+
+    @staticmethod
+    def _capture_name(workspace_id: str, capture_id: str) -> str:
+        if not re.fullmatch(WORKSPACE_ID, workspace_id) or not re.fullmatch(CAPTURE_ID, capture_id):
+            raise ValueError("Workspace or capture identity is invalid")
+        return f"state/investigation-evidence/{workspace_id}/{capture_id}.json"
+
+    @staticmethod
+    def _capture_digest(payload: dict) -> str:
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+    def retain_capture(
+        self, workspace_id: str, actor: str, scope: dict[str, list[str]],
+        request: EvidenceCaptureRequest, sources: list[CapturedSource],
+    ) -> dict:
+        """Create one receipt, then CAS-link it; a racing unlinked document grants no access."""
+        snapshot, state = self._read(workspace_id, actor, scope)
+        latest = state.revisions[-1]
+        if actor not in [state.owner, *latest.editors]:
+            raise WorkspacePermissionError("Retaining evidence requires the workspace owner or an explicit editor")
+        if latest.revision != request.expected_revision:
+            raise DocumentConflictError("Workspace changed during evidence acquisition; no capture was linked")
+        if len(state.captures) >= 5 or latest.revision >= MAX_REVISIONS:
+            raise ValueError("Workspace capture/revision capacity reached; administrative archival is required")
+        recorded_at = datetime.now(UTC).isoformat()
+        try:
+            receipt = InvestigationCapture(
+                workspace_id=workspace_id, capture_id=request.capture_id, scope=scope,
+                actor=actor, recorded_at=recorded_at, workspace_revision=latest.revision + 1,
+                view=latest.view, sources=sources,
+            )
+        except ValueError as exc:
+            raise RuntimeError("Server evidence acquisition does not satisfy the retained projection contract") from exc
+        payload = receipt.model_dump()
+        if len((json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()) > MAX_CAPTURE_BYTES:
+            raise ValueError("Retained projection exceeds its 160 KiB receipt limit")
+        reference = EvidenceCaptureReference(
+            capture_id=request.capture_id, digest=self._capture_digest(payload),
+            workspace_revision=receipt.workspace_revision, actor=actor, recorded_at=recorded_at,
+        )
+        self.documents.create_only(self._capture_name(workspace_id, request.capture_id), payload)
+        return self._append(snapshot, state, actor, request.expected_revision, {
+            "change": "evidence_captured", "capture_id": request.capture_id,
+        }, recorded_at=recorded_at, capture=reference)
+
+    def prepare_capture(
+        self, workspace_id: str, actor: str, scope: dict[str, list[str]], request: EvidenceCaptureRequest,
+    ) -> WorkspaceView:
+        """Authorize identity, latest revision and capacity before any source acquisition."""
+        _, state = self._read(workspace_id, actor, scope)
+        if actor not in [state.owner, *state.revisions[-1].editors]:
+            raise WorkspacePermissionError("Retaining evidence requires the workspace owner or an explicit editor")
+        if state.revisions[-1].revision != request.expected_revision:
+            raise DocumentConflictError("Workspace changed; open the latest revision before retaining evidence")
+        if len(state.captures) >= 5 or request.expected_revision >= MAX_REVISIONS:
+            raise ValueError("Workspace capture/revision capacity reached; administrative archival is required")
+        if self.documents.read_snapshot(self._capture_name(workspace_id, request.capture_id)).exists:
+            raise DocumentConflictError("Capture identity already exists; inspect the latest workspace before retrying")
+        return state.revisions[-1].view
+
+    def read_capture(
+        self, workspace_id: str, capture_id: str, actor: str, scope: dict[str, list[str]], revision: int,
+    ) -> dict:
+        """Read only a linked receipt under current membership/scope without source acquisition."""
+        _, state = self._read(workspace_id, actor, scope)
+        if not 1 <= revision <= state.revisions[-1].revision:
+            raise WorkspaceNotFoundError("Retained evidence unavailable")
+        reference = next((row for row in state.captures if row.capture_id == capture_id and row.workspace_revision <= revision), None)
+        if reference is None:
+            raise WorkspaceNotFoundError("Retained evidence unavailable")
+        snapshot = self.documents.read_snapshot(self._capture_name(workspace_id, capture_id))
+        if not snapshot.exists:
+            raise RuntimeError("Linked investigation evidence is missing")
+        payload = snapshot.payload
+        try:
+            if len((json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()) > MAX_CAPTURE_BYTES:
+                raise ValueError("Capture exceeds retention bound")
+            receipt = InvestigationCapture.model_validate(payload)
+            if (
+                self._capture_digest(payload) != reference.digest or receipt.workspace_id != workspace_id
+                or receipt.scope != scope or receipt.capture_id != capture_id
+                or receipt.actor != reference.actor or receipt.recorded_at != reference.recorded_at
+                or receipt.workspace_revision != reference.workspace_revision
+                or receipt.view != state.revisions[reference.workspace_revision - 1].view
+            ):
+                raise ValueError("Capture identity, digest or saved view is invalid")
+        except ValueError as exc:
+            raise RuntimeError("Stored investigation evidence is invalid") from exc
+        return receipt.model_dump()

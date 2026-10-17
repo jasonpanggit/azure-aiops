@@ -52,10 +52,10 @@ describe("team Investigation client contracts", () => {
   });
 
   it("links the selected navigation revision and stored effective scope, not the latest revision or client authority", () => {
-    const revision = { revision: 2, actor: "owner", recorded_at: "2026-10-16T12:00:00Z", change: "view_updated" as const, view, readers: [], editors: [], hypotheses: [] };
+    const revision = { revision: 2, actor: "owner", recorded_at: "2026-10-16T12:00:00Z", change: "view_updated" as const, view, readers: [], editors: [], hypotheses: [], capture_id: null };
     const workspace: InvestigationTeamWorkspace = {
       workspace_id: id, owner: "owner", scope, latest_revision: 4, revision,
-      current_access: { readers: ["reviewer"], editors: [] }, can_edit: false, can_share: false, history: [revision],
+      current_access: { readers: ["reviewer"], editors: [] }, can_edit: false, can_share: false, captures: [], history: [revision],
     };
     const url = new URL(investigationWorkspaceHref(workspace), "http://localhost");
     expect(url.searchParams.get("workspace_revision")).toBe("2");
@@ -81,5 +81,24 @@ describe("team Investigation client contracts", () => {
       method: "PUT", body: { expected_revision: 3, hypothesis }, signal,
     });
     for (const dimension of SCOPE_DIMENSIONS) expect(queryAt(0).getAll(dimension)).toEqual(scope[dimension]);
+  });
+
+  it("separates retention, immutable inspection and ephemeral comparison with complete scope", async () => {
+    const captureId = `cap-${"d".repeat(32)}`;
+    const signal = new AbortController().signal;
+    await investigationWorkspacesApi.retain(id, captureId, 3, scope, signal);
+    await investigationWorkspacesApi.evidence(id, captureId, 2, scope, signal);
+    await investigationWorkspacesApi.compare(id, captureId, 2, 4, scope, signal);
+    expect(request.mock.calls[0][1]?.body).toEqual({ capture_id: captureId, expected_revision: 3 });
+    expect(request.mock.calls[1][0]).toBe(`/investigation-workspaces/${id}/evidence/${captureId}`);
+    expect(request.mock.calls[1][1]).not.toHaveProperty("method");
+    expect(request.mock.calls[1][1]).not.toHaveProperty("body");
+    expect(queryAt(1).get("revision")).toBe("2");
+    expect(request.mock.calls[2][1]?.body).toEqual({ reviewed_revision: 2, expected_revision: 4 });
+    expect(request.mock.calls[2][0]).toBe(`/investigation-workspaces/${id}/evidence/${captureId}/compare`);
+    request.mock.calls.forEach(([, options], index) => {
+      expect(options?.signal).toBe(signal);
+      for (const dimension of SCOPE_DIMENSIONS) expect(queryAt(index).getAll(dimension)).toEqual(scope[dimension]);
+    });
   });
 });

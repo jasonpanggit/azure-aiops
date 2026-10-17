@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InvestigationTeamWorkspacePanel } from "./InvestigationTeamWorkspace";
 import type { InvestigationTeamWorkspace, InvestigationWorkspaceView } from "@/lib/investigation-workspaces";
 
-const api = vi.hoisted(() => ({ create: vi.fn(), read: vi.fn(), replace: vi.fn(), share: vi.fn(), hypothesis: vi.fn() }));
+const api = vi.hoisted(() => ({ create: vi.fn(), read: vi.fn(), replace: vi.fn(), share: vi.fn(), hypothesis: vi.fn(), retain: vi.fn(), evidence: vi.fn(), compare: vi.fn() }));
 vi.mock("@/lib/investigation-workspaces", async importOriginal => ({
   ...await importOriginal<typeof import("@/lib/investigation-workspaces")>(),
   investigationWorkspacesApi: api,
@@ -14,12 +14,12 @@ const SCOPE = { subscription: ["sub-a"], support_team: ["sre"], criticality: ["h
 const VIEW: InvestigationWorkspaceView = { title: "Payments review", entry_type: "BusinessService", subject: "Payments", mode: "executive" };
 const row = {
   revision: 1, actor: "owner", recorded_at: "2026-10-16T12:00:00+00:00", change: "created" as const,
-  view: VIEW, readers: [], editors: [], hypotheses: [],
+  view: VIEW, readers: [], editors: [], hypotheses: [], capture_id: null,
 };
 const record = (overrides: Partial<InvestigationTeamWorkspace> = {}): InvestigationTeamWorkspace => ({
   workspace_id: ID, owner: "owner", scope: SCOPE, latest_revision: 1, revision: row,
   current_access: { readers: [], editors: [] }, can_edit: true, can_share: true,
-  history: [row], ...overrides,
+  captures: [], history: [row], ...overrides,
 });
 const envelope = (data: InvestigationTeamWorkspace) => ({ data, evidence: [], scope: data.scope, warnings: [] });
 const openDetails = () => fireEvent.click(screen.getByText("Team workspace: open or save server-backed navigation"));
@@ -41,6 +41,11 @@ describe("team Investigation navigation", () => {
         ...hypothesis, hypothesis_id: id, entry_type: VIEW.entry_type, subject: VIEW.subject,
         created_revision: revision + 1, updated_revision: revision + 1, actor: "owner", recorded_at: row.recorded_at,
       }] },
+    }))));
+    api.retain.mockImplementation((_id, id, revision) => Promise.resolve(envelope(record({
+      latest_revision: revision + 1,
+      revision: { ...row, revision: revision + 1, change: "evidence_captured", capture_id: id },
+      captures: [{ capture_id: id, digest: "f".repeat(64), workspace_revision: revision + 1, actor: "owner", recorded_at: row.recorded_at }],
     }))));
   });
 
@@ -234,5 +239,17 @@ describe("team Investigation navigation", () => {
     await screen.findByText("Hypothesis board unavailable");
     expect(screen.queryByRole("button", { name: "Propose explanation" })).not.toBeInTheDocument();
     expect(screen.getByText("Saved subject")).toBeInTheDocument();
+  });
+
+  it("retains current server projections through reviewed navigation without sending browser evidence", async () => {
+    render(<InvestigationTeamWorkspacePanel scope={SCOPE} view={VIEW} initialId={ID} onRestore={vi.fn()} />);
+    await screen.findByText("Saved subject");
+    fireEvent.click(screen.getByRole("button", { name: "Retain current source projections" }));
+    await screen.findByText("2 of 2");
+    expect(api.retain).toHaveBeenCalledWith(ID, expect.stringMatching(/^cap-[0-9a-f]{32}$/), 1, SCOPE, expect.any(AbortSignal));
+    expect(api.evidence).not.toHaveBeenCalled();
+    expect(api.compare).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Reopen retained source version" })).toBeEnabled();
+    expect(screen.queryByText("Retained projection: revision 2")).not.toBeInTheDocument();
   });
 });

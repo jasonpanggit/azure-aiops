@@ -81,9 +81,70 @@ unavailable, not inferred empty. The editor keeps a failed-write draft and its
 known identity, never retries or silently rebases it; copy unsaved text before
 reopening the workspace, changing scope or leaving the page.
 
-These revisions retain **navigation, membership and operator annotations**, not
-historical provider results, exact past estate state or retained evidence replay.
-Local saves/export remain separate browser fallbacks, not team authorization.
+These revisions retain **navigation, membership, operator annotations and links
+to separately retained source projections**. Local saves/export remain separate
+browser fallbacks, not team authorization.
+
+### Retained investigation source projections
+
+`POST /investigation-workspaces/{id}/evidence` accepts only `expected_revision`
+and a browser-known `capture_id` (`cap-<32 lowercase hex>`). The owner or an explicit
+editor must have reviewed the latest saved navigation. Before calling providers,
+the server checks current ACL/scope, revision, identity and capacity. It acquires a
+fixed **read-only** governed-tool subset using the current principal and effective
+scope, never browser evidence, caller-selected tools, models or execution tools.
+It reauthorizes before retaining. The receipt is created once, then its SHA-256
+digest is linked by workspace CAS as an `evidence_captured` revision. A failed link
+can leave an immutable **unlinked receipt**; it remains inaccessible through the
+API and requires administrative orphan cleanup. An existing identity is never
+overwritten. After an unconfirmed write, inspect the known identity in the latest
+workspace before retrying. Aborting a wait does not prove a write failed.
+
+Receipts are limited to 160 KiB, each source payload/provenance to 16 KiB, and each
+workspace to five linked receipts. There is no automatic pruning or replacement.
+The workspace's independent 40-revision/256-KiB manifest/history limit still applies.
+Navigation, membership and hypothesis changes retain the active receipt reference
+without copying source payloads into every history row. Existing schema-v1
+documents read with no capture references, without writeback.
+
+`GET /investigation-workspaces/{id}/evidence/{capture_id}?revision=N` opens only
+a receipt linked by that reviewed revision. Current workspace membership, exact
+scope, receipt identity, digest and saved-view attribution are checked on every
+read. Missing/unlinked/inaccessible receipts return 404; corrupt/missing linked
+storage returns 503. Historical GET performs no provider reads, TTL changes,
+timestamp rewriting or freshness reclassification. The receipt records source
+collection intervals, original evidence/provenance, source outcome, warnings and
+reported knowledge versions; unreported source times/versions stay unknown.
+The envelope's storage metadata has unknown freshness: receipt/acquisition
+clocks are not substituted for source observation timestamps.
+
+`POST /investigation-workspaces/{id}/evidence/{capture_id}/compare` takes
+`reviewed_revision` and the reviewed latest `expected_revision`. Any current
+authorized workspace reader may explicitly acquire current projections for the
+**retained saved view**, not current unsaved navigation. The server reauthorizes
+and checks the revision again after acquisition. It returns `retained`, `current`
+and per-source `differences`, without writing history or refreshing the receipt.
+`data_changed` is null if either source is denied/unavailable; otherwise it
+compares only the paired bounded JSON payloads. Provenance/version differences
+remain separate. Unchanged projections are not proof of unchanged estate state.
+
+The contract (`investigation-tools-v1`) acquires network topology, firewall/NSG
+gaps, CVE exposure, incidents and remediation plans. Nonempty BusinessService
+and Application entries also acquire context/risk/impact; CVE entries add
+detail/attack path; Incident entries request exact incident detail. Other entry
+types have **scope-level projections only**, not exact subject context. These
+are not complete page or estate snapshots, atomic cross-source observations,
+backfilled history or packet probes. Governed tools may already bound nested
+lists to 25 rows; full coverage is unknown. Source failures are retained explicitly.
+Oversized/non-JSON source payloads are labelled unavailable, not silently truncated
+into successful evidence. No annotations or hidden model reasoning are captured.
+
+The portal separates retain, reopen and compare. Opening workspace metadata,
+changing a retained-version selection or viewing a historical navigation revision
+does not acquire providers. A receipt is opened explicitly before comparison.
+Current results are labelled not retained, shown separately from historical
+sources, and fenced on workspace/scope/revision changes. Older service responses
+without retention metadata are unavailable, never inferred empty.
 
 ## Remediation decision context
 
