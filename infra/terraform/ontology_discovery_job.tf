@@ -20,6 +20,7 @@ variable "ontology_discovery_schedule" {
 locals {
   ontology_discovery_image = var.ontology_discovery_image_digest != "" ? "${local.registry_server}/${var.api_image_repository}@${var.ontology_discovery_image_digest}" : (var.api_image_digest != "" ? local.api_image : (var.ontology_discovery_image_tag != "" ? "${local.registry_server}/${var.api_image_repository}:${var.ontology_discovery_image_tag}" : local.api_image))
 
+  ontology_publisher_image       = var.ontology_publisher_image_digest != "" ? "${local.registry_server}/${var.api_image_repository}@${var.ontology_publisher_image_digest}" : local.ontology_discovery_image
   ontology_publisher_environment = coalesce(var.ontology_publisher_environment, var.ontology_discovery_environment)
   ontology_publisher_scheduled   = local.ontology_publisher_environment != "validation" && var.ontology_publisher_schedule_enabled
 
@@ -287,7 +288,7 @@ resource "azurerm_container_app_job" "ontology_publisher" {
   template {
     container {
       name    = "ontology-publisher"
-      image   = var.deploy_images ? local.ontology_discovery_image : local.placeholder_image
+      image   = var.deploy_images ? local.ontology_publisher_image : local.placeholder_image
       cpu     = var.ontology_discovery_job_cpu
       memory  = var.ontology_discovery_job_memory
       command = ["python", "-m", "ontology_discovery.publisher_cli"]

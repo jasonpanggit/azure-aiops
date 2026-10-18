@@ -245,6 +245,17 @@ def test_native_publisher_gate_does_not_enable_api_native_publication() -> None:
     assert "var.enable_fabric_ontology_item || var.enable_fabric_publisher_ontology_item" in publisher
 
 
+def test_native_publisher_image_pin_does_not_roll_other_jobs() -> None:
+    terraform = JOB_TF.read_text()
+    publisher = _resource(terraform, "azurerm_container_app_job", "ontology_publisher")
+    coordinator = _resource(terraform, "azurerm_container_app_job", "ontology_discovery")
+    assert "local.ontology_publisher_image" in publisher
+    assert "local.ontology_publisher_image" not in coordinator
+    assert "local.ontology_discovery_image" in coordinator
+    assert 'var.ontology_publisher_image_digest != ""' in terraform
+    assert 'variable "ontology_publisher_image_digest"' in VARIABLES_TF.read_text()
+
+
 def test_validator_script_is_packaged_in_the_api_image() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 

@@ -259,6 +259,17 @@ variable "ontology_discovery_environment" {
   }
 }
 
+variable "ontology_publisher_image_digest" {
+  description = "Optional immutable digest for only the dedicated ontology publisher; empty inherits the other Phase 13 Jobs' image."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.ontology_publisher_image_digest == "" || can(regex("^sha256:[0-9a-f]{64}$", var.ontology_publisher_image_digest))
+    error_message = "ontology_publisher_image_digest must be empty or an immutable sha256 digest."
+  }
+}
+
 variable "ontology_publisher_environment" {
   description = "Optional publisher runtime classification, independent of coordinator/fixture classification. Does not change source eligibility."
   type        = string

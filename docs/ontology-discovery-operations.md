@@ -51,6 +51,9 @@ before starting anything. No `STATE_HOME` or validation drill is permitted.
 In this held native-only configuration the Job defaults to `native-preview`,
 not full `run-once`; execution must explicitly supply the source-generation
 argument or fail without processing intake.
+Pin only `ontology_publisher_image_digest` for the repair; leave the shared
+`ontology_discovery_image_digest` unchanged so coordinator/validation images
+are not rolled as collateral.
 
 Under that dedicated publisher identity, preview an explicit **ingestion run
 ID**, not an expired command or inventory source-run ID:
