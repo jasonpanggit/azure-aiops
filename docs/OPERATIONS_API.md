@@ -117,6 +117,51 @@ campaign sources without it remain readable and remain unreported, not backfille
 from current data. Invalid counts, contradictory classifications, unknown fields
 or a claimed effective-access verdict are rejected.
 
+### Explicit identity source diagnostic
+
+An operator with access to an active registered connection can explicitly read
+source prerequisites using that connection's credential and subscription:
+
+```sh
+aiops-inventory subscriptions identity-evidence CONNECTION_ID \
+  --principal-id PRINCIPAL_OBJECT_ID --principal-type service_principal \
+  --config config.yaml
+```
+
+`--principal-type` also accepts `user` and `group`. The ID is a directory object
+ID, not an application/client ID. The command performs only GETs: exact-principal
+Graph transitive membership and subscription ARM deny assignments, PIM
+eligibility instances and role-assignment schedule instances. It does not
+construct the sync service, reconcile runs, write the registry/generations,
+add consent, or grant permissions. This is a separate operator diagnostic,
+not automatic portal acquisition or a production effective-access pipeline.
+Treat the returned principal and authorization source rows as private evidence.
+
+Every source reports `complete`, `reason`, `http_status`, `pages_read`, and
+`rows`. Denied, failed, malformed and bounded reads remain incomplete, including
+when earlier pages succeeded. No response body or token is printed on errors.
+The command exits 1 if any source is incomplete (or setup fails); exit 0 means
+only that all four requested collections exhausted continuation. It always
+returns `effective_access: not_evaluated`, even for empty successful reads.
+Pagination is limited to 10 pages, 5,000 rows and 1 MiB per response per source,
+with a 30-second request timeout. Redirects and continuation URLs outside the
+exact HTTPS source host/path are rejected.
+
+Graph advanced membership queries use an eventually consistent index. Hidden
+membership coverage, management-group inheritance, role definitions/assignments,
+condition evaluation and service/data-plane policies remain separate
+prerequisites; deny or eligibility rows do not establish active access.
+No additional permission is requested automatically. For a denied source,
+review the exact operation and least-privileged supported permission rather
+than inferring that broad directory access is needed. For service principals,
+Microsoft documents `Application.Read.All` for the transitive membership read;
+user/group reads have different permission requirements. ARM reads also require
+the corresponding read actions at the authorized scope.
+
+References: [service-principal transitive membership](https://learn.microsoft.com/graph/api/serviceprincipal-list-transitivememberof?view=graph-rest-1.0),
+[deny assignments](https://learn.microsoft.com/rest/api/authorization/deny-assignments/list?view=rest-authorization-2022-04-01),
+[PIM assignment instances](https://learn.microsoft.com/rest/api/authorization/role-assignment-schedule-instances/list-for-scope?view=rest-authorization-2020-10-01).
+
 ## FinOps currency-normalized evidence
 
 FinOps amounts remain in the currency reported by Azure; the API performs no

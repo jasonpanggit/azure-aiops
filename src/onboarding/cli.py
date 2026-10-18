@@ -164,6 +164,13 @@ def register_subscription_cli(parser: argparse.ArgumentParser) -> None:
     detail = with_config(commands.add_parser("detail", help="Show one connection in full"))
     detail.add_argument("connection_id")
 
+    identity = with_config(commands.add_parser(
+        "identity-evidence", help="Read bounded identity sources without evaluating access or changing permissions"
+    ))
+    identity.add_argument("connection_id")
+    identity.add_argument("--principal-id", required=True, help="Principal object ID, not application client ID")
+    identity.add_argument("--principal-type", required=True, choices=("user", "group", "service_principal"))
+
     update = with_config(commands.add_parser("update", help="Update connection name or credential"))
     update.add_argument("connection_id")
     update.add_argument("--name", default="")
@@ -398,9 +405,31 @@ def subscriptions_command(args: argparse.Namespace) -> int:
     if not command:
         print(
             "Usage: aiops-inventory subscriptions "
-            "{add|list|detail|update|validate|sync|health|map|disable|enable}"
+            "{add|list|detail|identity-evidence|update|validate|sync|health|map|disable|enable}"
         )
         return 2
+
+    if command == "identity-evidence":
+        from azure.core.exceptions import AzureError
+
+        from .credentials import SecretNotFoundError
+        from .identity_evidence import collect_connection_identity_evidence
+
+        try:
+            result = collect_connection_identity_evidence(
+                ConnectorConfig.load(args.config),
+                args.connection_id,
+                args.principal_id,
+                args.principal_type,
+            )
+        except (AzureError, SecretNotFoundError):
+            print(json.dumps({"status": "error", "message": "Connection credential unavailable"}))
+            return 1
+        except (ConnectionNotFoundError, ValueError) as exc:
+            print(json.dumps({"status": "error", "message": str(exc)}))
+            return 1
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["source_reads_complete"] else 1
 
     service = build_onboarding_service(ConnectorConfig.load(args.config))
     try:
