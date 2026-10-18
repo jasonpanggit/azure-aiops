@@ -299,14 +299,44 @@ def _part(path: str, payload: dict[str, Any]) -> dict[str, str]:
 
 
 def _definitions_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    def parts(value: dict[str, Any]) -> list[tuple[str, str, str]]:
-        return sorted(
-            (
-                str(part.get("path") or ""),
-                str(part.get("payloadType") or ""),
-                str(part.get("payload") or ""),
-            )
-            for part in value.get("parts") or []
-        )
+    return definition_parts(left) == definition_parts(right)
 
-    return parts(left) == parts(right)
+
+def definition_parts(definition: dict[str, Any]) -> dict[str, Any]:
+    """Decode parts, preserving semantics while removing known Fabric export defaults."""
+    result: dict[str, Any] = {}
+    schema_root = "https://developer.microsoft.com/json-schemas/fabric/item/ontology"
+    for part in definition.get("parts") or []:
+        path = part["path"]
+        if path in result or part.get("payloadType") != "InlineBase64":
+            raise ValueError("Native definition has duplicate or unsupported parts")
+        payload = json.loads(base64.b64decode(part["payload"], validate=True))
+        if not isinstance(payload, dict):
+            raise TypeError("Native definition part must be a JSON object")
+        segments = path.split("/")
+        kind = ""
+        if len(segments) == 3 and segments[-1] == "definition.json":
+            kind = {"EntityTypes": "entityType", "RelationshipTypes": "relationshipType"}.get(
+                segments[0], ""
+            )
+        elif len(segments) == 4 and segments[-1].endswith(".json"):
+            kind = {
+                ("EntityTypes", "DataBindings"): "dataBinding",
+                ("RelationshipTypes", "Contextualizations"): "contextualization",
+            }.get((segments[0], segments[2]), "")
+        if kind and payload.get("$schema") == f"{schema_root}/{kind}/1.0.0/schema.json":
+            payload.pop("$schema")
+        if kind == "entityType" and payload.get("untypedProperties") == []:
+            payload.pop("untypedProperties")
+        source = None
+        if kind == "dataBinding":
+            source = (payload.get("dataBindingConfiguration") or {}).get("sourceTableProperties")
+        elif kind == "contextualization":
+            source = payload.get("dataBindingTable")
+        if isinstance(source, dict) and source.get("sourceSchema") is None:
+            source.pop("sourceSchema", None)
+        if path == ".platform":
+            metadata = payload.get("metadata") or {}
+            payload = {"metadata": {key: metadata.get(key) for key in ("type", "displayName")}}
+        result[path] = payload
+    return result

@@ -12,7 +12,11 @@ from test_ontology_publisher_runtime import _candidate
 
 from fabric.dataset_mapper import ontology_entity_table, ontology_relationship_table
 from ontology.native_publication import NativeOntologyPublication
-from ontology.ontology_publisher import OntologyPublisher
+from ontology.ontology_publisher import (
+    OntologyPublisher,
+    _definitions_equal,
+    definition_parts,
+)
 from ontology_discovery import publisher_cli
 from storage.delta_writer import DeltaWriter
 from storage.onelake_writer import OneLakeWriter
@@ -118,6 +122,133 @@ def test_existing_matching_native_item_is_read_only(native):
     )
     assert result["action"] == "unchanged"
     assert native.manager.writes == []
+
+
+def _fabric_export(definition):
+    exported = deepcopy(definition)
+    kinds = {
+        "EntityTypes": "entityType",
+        "RelationshipTypes": "relationshipType",
+        "DataBindings": "dataBinding",
+        "Contextualizations": "contextualization",
+    }
+    for part in exported["parts"]:
+        payload = json.loads(base64.b64decode(part["payload"]))
+        path = part["path"].split("/")
+        if path[0] in {"EntityTypes", "RelationshipTypes"}:
+            kind = kinds[path[0] if len(path) == 3 else path[2]]
+            payload["$schema"] = (
+                "https://developer.microsoft.com/json-schemas/fabric/item/ontology/"
+                f"{kind}/1.0.0/schema.json"
+            )
+            if kind == "entityType":
+                payload["untypedProperties"] = []
+            elif kind == "dataBinding":
+                payload["dataBindingConfiguration"]["sourceTableProperties"]["sourceSchema"] = None
+            elif kind == "contextualization":
+                payload["dataBindingTable"]["sourceSchema"] = None
+        elif part["path"] == ".platform":
+            payload["config"] = {"version": "2.0", "logicalId": "service-generated"}
+            payload["metadata"]["description"] = "Service-added description"
+        part["payload"] = base64.b64encode(
+            json.dumps(payload, sort_keys=True, indent=2).encode()
+        ).decode()
+    exported["parts"].reverse()
+    return exported
+
+
+def test_native_creation_accepts_only_known_fabric_export_defaults(native, monkeypatch):
+    preview = native.publication.preview(source_generation="run-17")
+    create = native.manager.create
+
+    def exporting_create(name, definition):
+        result = create(name, definition)
+        native.manager.definition = _fabric_export(definition)
+        return result
+
+    monkeypatch.setattr(native.manager, "create", exporting_create)
+    result = native.publication.publish(
+        source_generation="run-17", expected_preview_hash=preview["preview_hash"]
+    )
+    assert result["definition_verified"] is True
+    assert native.manager.writes == ["create"]
+    assert _definitions_equal(native.manager.definition, preview["definition"])
+
+
+def test_existing_fabric_export_does_not_trigger_update(native):
+    preview = native.publication.preview(source_generation="run-17")
+    native.manager.item = {"id": "existing"}
+    native.manager.definition = _fabric_export(preview["definition"])
+    before = deepcopy(native.manager.definition)
+    preview = native.publication.preview(source_generation="run-17")
+    result = native.publication.publish(
+        source_generation="run-17", expected_preview_hash=preview["preview_hash"]
+    )
+    assert result["action"] == "unchanged"
+    assert native.manager.writes == []
+    assert native.manager.definition == before
+    result = native.publication.publisher.publish(
+        ontology_id="existing", ontology_name=native.publication.ontology_name,
+        entity_types=preview["entity_bindings"],
+        relationships={(s, p, t): table for s, p, t, table in preview["relationship_bindings"]},
+    )
+    assert result["action"] == "unchanged"
+    assert native.manager.writes == []
+
+
+@pytest.mark.parametrize(
+    "change", ["schema", "properties", "table", "source_schema", "key", "endpoint", "extra_part"]
+)
+def test_export_normalization_preserves_semantic_changes(native, change):
+    definition = native.publication.preview(source_generation="run-17")["definition"]
+    observed = _fabric_export(definition)
+    if change == "extra_part":
+        observed["parts"].append({
+            "path": "unexpected.json", "payloadType": "InlineBase64", "payload": "e30=",
+        })
+    else:
+        path_fragment = {
+            "schema": "EntityTypes/", "properties": "EntityTypes/",
+            "table": "/DataBindings/", "source_schema": "/DataBindings/",
+            "key": "/Contextualizations/", "endpoint": "RelationshipTypes/",
+        }[change]
+        part = next(
+            part for part in observed["parts"]
+            if path_fragment in part["path"]
+            and (change not in {"schema", "properties", "endpoint"}
+                 or part["path"].endswith("/definition.json"))
+        )
+        payload = json.loads(base64.b64decode(part["payload"]))
+        if change == "schema":
+            payload["$schema"] = "https://unexpected.example/schema.json"
+        elif change == "properties":
+            payload["untypedProperties"] = [{"name": "unexpected"}]
+        elif change in {"table", "source_schema"}:
+            source = payload["dataBindingConfiguration"]["sourceTableProperties"]
+            source["sourceTableName" if change == "table" else "sourceSchema"] = "changed"
+        elif change == "key":
+            payload["sourceKeyRefBindings"][0]["targetPropertyId"] = "changed"
+        else:
+            payload["source"]["entityTypeId"] = "changed"
+        part["payload"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    assert definition_parts(observed) != definition_parts(definition)
+    assert not _definitions_equal(observed, definition)
+
+
+@pytest.mark.parametrize("problem", ["duplicate", "payload_type", "non_object"])
+def test_export_normalization_rejects_invalid_parts(native, problem):
+    definition = native.publication.preview(source_generation="run-17")["definition"]
+    if problem == "duplicate":
+        definition["parts"].append(deepcopy(definition["parts"][0]))
+    elif problem == "payload_type":
+        definition["parts"][0]["payloadType"] = "External"
+    else:
+        definition["parts"][0]["payload"] = "W10="
+    with pytest.raises(
+        TypeError if problem == "non_object" else ValueError,
+        match="duplicate|unsupported|JSON object",
+    ):
+        definition_parts(definition)
 
 
 @pytest.mark.parametrize("generation", ["", "source-17", "earlier-run"])
