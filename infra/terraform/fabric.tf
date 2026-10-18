@@ -12,9 +12,9 @@
 locals {
   fabric_workspace_name = coalesce(var.fabric_workspace_name, "${local.base}-ops")
 
-  # Users require UPNs; service principals require object IDs. Explicit admins
-  # also support CLI user deployment, whose object ID is not a valid user UPN.
-  fabric_admins = length(var.fabric_capacity_admins) > 0 ? distinct(var.fabric_capacity_admins) : [local.deployer_object_id]
+  # Preserve explicitly configured user UPNs and always include the deploying
+  # principal so Terraform can manage the Fabric workspace resources.
+  fabric_admins = distinct(concat(var.fabric_capacity_admins, [local.deployer_object_id]))
 }
 
 resource "azurerm_fabric_capacity" "main" {
@@ -110,6 +110,20 @@ resource "fabric_workspace_role_assignment" "apps" {
 
   principal = {
     id   = azurerm_user_assigned_identity.apps.principal_id
+    type = "ServicePrincipal"
+  }
+}
+
+# Capacity administration does not grant workspace access. Keep the Terraform
+# deployer an Admin so it can manage workspace items and their role assignments.
+resource "fabric_workspace_role_assignment" "terraform_deployer" {
+  count = var.enable_fabric ? 1 : 0
+
+  workspace_id = fabric_workspace.ops[0].id
+  role         = "Admin"
+
+  principal = {
+    id   = local.deployer_object_id
     type = "ServicePrincipal"
   }
 }

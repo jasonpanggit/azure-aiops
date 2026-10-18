@@ -6,6 +6,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1] / "infra" / "terraform"
 
 
+def test_deployer_is_always_in_fabric_capacity_administrators() -> None:
+    fabric = (ROOT / "fabric.tf").read_text(encoding="utf-8")
+    admins = fabric.split("fabric_admins =", 1)[1].split("\n}", 1)[0]
+    assert "distinct(concat(" in admins
+    assert "var.fabric_capacity_admins" in admins
+    assert "local.deployer_object_id" in admins
+
+
+def test_deployer_has_workspace_admin_separate_from_runtime_identity() -> None:
+    fabric = (ROOT / "fabric.tf").read_text(encoding="utf-8")
+    role = fabric.split(
+        'resource "fabric_workspace_role_assignment" "terraform_deployer" {', 1
+    )[1].split("\n}", 1)[0]
+    assert "workspace_id = fabric_workspace.ops[0].id" in role
+    assert 'role         = "Admin"' in role
+    assert "id   = local.deployer_object_id" in role
+    assert 'type = "ServicePrincipal"' in role
+
+
 def test_capacity_reader_can_be_enabled_without_global_role_management() -> None:
     fabric = (ROOT / "fabric.tf").read_text(encoding="utf-8")
     role = fabric.split(
