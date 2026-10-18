@@ -104,7 +104,9 @@ export function TopologyInsights({
   const claims = (Array.isArray(executive?.claims) ? executive.claims : [])
     .filter((claim) => typeof claim.summary === "string" && claim.summary.trim());
   const hasContent = claims.length > 0 || Boolean(narration || fallback);
-  const grounded = result?.synthesis_mode === "foundry"
+  const grounded = (result?.synthesis?.mode === "foundry" || result?.synthesis_mode === "foundry")
+    && result?.synthesis?.mode !== "deterministic"
+    && result?.synthesis_mode !== "deterministic"
     && (!executive?.mode || executive.mode === "foundry")
     && (claims.length > 0 || narration.length > 0);
   const warning = executive?.warning || result?.synthesis?.warning || result?.warnings?.[0];

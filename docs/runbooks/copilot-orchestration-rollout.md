@@ -63,6 +63,30 @@ the API image; default traffic promotion is now a normal unified deployment
 traffic change after the unified session has completed its source review,
 validation, and canary evidence review.
 
+## Page Insights provenance during compatibility rollout
+
+The canonical endpoint can return a successful Foundry answer while retaining
+`policy_status: fallback` and `fallback_reason: compatibility_rollout`. This is
+a rollout-path label, not proof that model narration failed. Page Insights reads
+`synthesis.compatibility_answer` when `synthesis.status` is `compatibility`.
+It labels the narration as LLM only when the server reports nonempty text,
+agent name, pinned agent version, a non-deterministic model, and `grounded: true`;
+the panel also displays that provenance. Canonical synthesized narration requires
+`synthesis.mode: foundry`.
+
+Empty or unavailable governed tools can instead produce a deterministic
+status-only answer (`model: deterministic`). Such answers remain visibly
+deterministic, not LLM successes. Repairing the display does not restore missing
+provider data, qualify Exposure traversal, or authorize a rollout-mode change.
+
+Network uses the contextual endpoint and reports `synthesis.mode` in current
+responses; older responses can report `synthesis_mode` at the top level.
+Topology Insights accepts either Foundry marker, but any explicit deterministic
+mode, including a rejected executive synthesis, prevents an LLM label.
+For a live audit, inspect the actual authenticated browser response and rendered
+panel together. HTTP 200 alone, a specialist name, or replayed test fixtures
+does not establish a successful live LLM answer.
+
 ## Source the non-secret provider environment
 
 Terraform output `copilot_provider_environment` is the authority for the
