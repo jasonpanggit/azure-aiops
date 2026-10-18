@@ -590,6 +590,81 @@ describe("CopilotDrawer", () => {
     expect(screen.queryByText("7,121")).not.toBeInTheDocument();
   });
 
+  it.each([
+    { model: "gpt-5.4-mini", agent: "aiops-network-agent", version: "1", foundry: true },
+    { model: "deterministic", agent: "operations-copilot", version: "", foundry: false },
+  ])("renders the same retained compatibility answer in the Insights follow-up: $model", async ({
+    model, agent, version, foundry,
+  }) => {
+    const result = canonicalResult("thr-12121212121212121212121212121212", "tool:network:one");
+    investigateCanonical.mockResolvedValue({
+      ...result,
+      data: {
+        ...result.data,
+        policy_status: "fallback",
+        fallback_reason: "compatibility_rollout",
+        uncertainty: ["Incidents evidence is unavailable."],
+        synthesis: {
+          status: "compatibility", reason: "retained_compatibility",
+          domain_count: 0, claims: [], warning: "",
+          compatibility_answer: {
+            text: "Only the current topology evidence can be evaluated.",
+            agent_name: agent, agent_version: version, model, grounded: true,
+          },
+        },
+      },
+    });
+    render(
+      <TestProviders>
+        <CopilotDrawer open onClose={vi.fn()} snapshot={snapshot}
+          starterQuestions={[{ label: "Summarize this view" }]} />
+      </TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Summarize this view/ }));
+
+    expect(await screen.findByText("Only the current topology evidence can be evaluated.")).toBeInTheDocument();
+    expect(screen.getByText(model)).toBeInTheDocument();
+    expect(screen.getByText("Incidents evidence is unavailable.")).toBeInTheDocument();
+    if (foundry) {
+      expect(screen.getByText(`Narrated by ${agent}.`)).toBeInTheDocument();
+      expect(screen.queryByText("Deterministic evidence is shown. Optional narration is unavailable.")).not.toBeInTheDocument();
+    } else {
+      expect(screen.queryByText(`Narrated by ${agent}.`)).not.toBeInTheDocument();
+      expect(screen.getByText("Deterministic evidence is shown. Optional narration is unavailable.")).toBeInTheDocument();
+    }
+  });
+
+  it("recognizes provider provenance on the deployed legacy follow-up response", async () => {
+    investigateCanonical.mockResolvedValue({
+      data: {
+        question: "Summarize this view", fact_status: "ok",
+        policy_status: "fallback", fallback_reason: "compatibility_rollout",
+        tool_calls: [], warnings: [],
+        answer: {
+          text: "The provider confirms an isolated network.",
+          agent_name: "aiops-network-agent", agent_version: "1",
+          model: "gpt-5.4-mini", grounded: true,
+        },
+        synthesis: {
+          status: "compatibility", reason: "retained_compatibility",
+          domain_count: 0, claims: [], warning: "",
+        },
+      },
+      evidence: [], warnings: [],
+    });
+    render(
+      <TestProviders>
+        <CopilotDrawer open onClose={vi.fn()} snapshot={snapshot}
+          starterQuestions={[{ label: "Summarize this view" }]} />
+      </TestProviders>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Summarize this view/ }));
+
+    expect(await screen.findByText("The provider confirms an isolated network.")).toBeInTheDocument();
+    expect(screen.getByText("Narrated by aiops-network-agent.")).toBeInTheDocument();
+    expect(screen.queryByText("Deterministic evidence is shown. Optional narration is unavailable.")).not.toBeInTheDocument();
+  });
+
   it("renders canonical synthesis claims without duplicating their tool result cards", async () => {
     const result = canonicalResult(
       "thr-12121212121212121212121212121212",

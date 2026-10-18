@@ -8,7 +8,7 @@ import {
   type CopilotEvidenceSnapshotV2,
 } from "@/lib/copilot/page-adapters";
 import type { ScopeSelection } from "@/lib/scope";
-import { investigateCanonical } from "@/lib/services";
+import { investigateCanonical, retainedCopilotAnswer } from "@/lib/services";
 import type {
   CanonicalCopilotResult,
   CopilotPageSnapshot,
@@ -88,12 +88,11 @@ export function interpretInsightResult(result: CanonicalCopilotResult): InsightS
 
 function interpretInsightKind(result: CanonicalCopilotResult): InsightState {
   const synthesis = result.synthesis;
-  const answer = synthesis?.status === "compatibility" ? synthesis.compatibility_answer : null;
+  const answer = retainedCopilotAnswer(synthesis);
   const agent = answer?.agent_name?.trim() ?? "";
   const version = answer?.agent_version?.trim() ?? "";
   const model = answer?.model?.trim() ?? "";
-  const compatibilityNarration = answer?.grounded === true
-    && model && model.toLowerCase() !== "deterministic" && agent && version
+  const compatibilityNarration = answer && model.toLowerCase() !== "deterministic"
     ? answer.text?.trim() ?? "" : "";
   const narration = synthesis?.narration?.trim() ?? "";
   const claims = (synthesis?.claims ?? [])

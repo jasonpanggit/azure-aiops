@@ -308,18 +308,11 @@ export function CopilotDrawer({
           coverage: view.coverage,
           citations: view.citations,
           narration: view.narration,
-          synthesisMode:
-            view.synthesis?.status === "synthesized"
-              ? "foundry"
-              : "deterministic",
+          synthesisMode: view.narrationMode,
           snapshot: submittedSnapshot,
         },
       ]);
-      setStage(view.synthesis?.status === "degraded"
-        || (
-          view.policyStatus === "fallback"
-          && view.synthesis?.status !== "synthesized"
-        )
+      setStage(view.degraded && view.narrationMode !== "foundry"
         ? "fallback"
         : result.fact_status === "partial"
           ? "partial"

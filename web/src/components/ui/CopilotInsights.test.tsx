@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildCopilotSnapshot } from "@/lib/services";
+import { buildCopilotSnapshot, toCanonicalInvestigationView } from "@/lib/services";
 import type { CanonicalCopilotResult } from "@/lib/types";
 import { CopilotInsights, interpretInsightResult } from "./CopilotInsights";
 
@@ -136,7 +136,7 @@ describe("CopilotInsights", () => {
     { grounded: false }, { model: "" }, { agent_name: "" }, { agent_version: "" },
     { text: " " }, { model: " Deterministic " },
   ])("does not label incomplete or deterministic compatibility provenance as LLM: %j", (override) => {
-    const state = interpretInsightResult(result({
+    const reply = result({
       synthesis: {
         status: "compatibility", reason: "retained_compatibility",
         domain_count: 0, claims: [], warning: "",
@@ -145,9 +145,13 @@ describe("CopilotInsights", () => {
           agent_version: "1", model: "gpt-5.4-mini", grounded: true, ...override,
         },
       },
-    }));
+    });
+    const state = interpretInsightResult(reply);
     expect(state.kind).not.toBe("llm");
     expect(state.provider).toBeUndefined();
+    if (!("model" in override) || override.model?.trim().toLowerCase() !== "deterministic") {
+      expect(toCanonicalInvestigationView(reply).narration).toBeNull();
+    }
   });
 
   it("does not label canonical narration as LLM without the Foundry mode", () => {

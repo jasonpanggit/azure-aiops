@@ -73,6 +73,9 @@ It labels the narration as LLM only when the server reports nonempty text,
 agent name, pinned agent version, a non-deterministic model, and `grounded: true`;
 the panel also displays that provenance. Canonical synthesized narration requires
 `synthesis.mode: foundry`.
+The follow-up drawer and dedicated investigation surfaces use the same retained
+answer validation, so opening a follow-up does not discard a successful answer
+or claim its narrator is unavailable merely because rollout stays compatible.
 
 Empty or unavailable governed tools can instead produce a deterministic
 status-only answer (`model: deterministic`). Such answers remain visibly
