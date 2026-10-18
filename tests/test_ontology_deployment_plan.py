@@ -339,7 +339,10 @@ def test_terraform_declares_exact_roots_identities_and_fixed_templates() -> None
         assert f'resource "fabric_workspace" "{resource}"' in identities
         assert f'resource "fabric_lakehouse" "{resource}"' in identities
     assert 'resource "azurerm_container_app_job" "ontology_publisher"' in jobs
-    assert 'args    = ["run-once"]' in jobs
+    assert (
+        'args    = var.enable_fabric_publisher_ontology_item '
+        '&& !local.ontology_publisher_scheduled ? ["native-preview"] : ["run-once"]'
+    ) in jobs
     assert "ontology_publisher.client_id" in jobs
     assert "AIOPS_ONTOLOGY_PUBLICATION_HOME" in jobs
     assert "AIOPS_ONTOLOGY_DISPATCH_HOME" in jobs
