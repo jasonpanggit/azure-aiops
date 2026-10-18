@@ -662,6 +662,7 @@ export const contextApi = {
 export interface CopilotAnswer {
   text: string;
   agent_name: string;
+  agent_version?: string;
   model: string;
   grounded: boolean;
 }
@@ -881,6 +882,7 @@ export function askCanonicalInvestigation(
 export interface CanonicalInvestigationView {
   toolCalls: CopilotToolCall[];
   narration: CopilotAnswer | null;
+  narrationMode: "foundry" | "deterministic";
   policyStatus: "accepted" | "fallback";
   fallbackReason: string;
   degraded: boolean;
@@ -891,6 +893,17 @@ export interface CanonicalInvestigationView {
   synthesis: CanonicalInvestigationSynthesis | null;
   threadId?: string;
   threadRevision?: number;
+}
+
+/** Returns only grounded retained answers with explicit deterministic or complete provider provenance. */
+export function retainedCopilotAnswer(
+  synthesis: CanonicalInvestigationSynthesis | null | undefined,
+): CopilotAnswer | null {
+  const answer = synthesis?.status === "compatibility" ? synthesis.compatibility_answer : null;
+  if (answer?.grounded !== true || !answer.text.trim() || !answer.model.trim()) return null;
+  if (answer.model.trim().toLowerCase() !== "deterministic"
+    && (!answer.agent_name.trim() || !answer.agent_version?.trim())) return null;
+  return answer;
 }
 
 /**
@@ -913,7 +926,7 @@ export function toCanonicalInvestigationView(
   const narrationText = hasCitedClaims
     ? synthesis!.claims.map((claim) => claim.summary.trim()).filter(Boolean).join(" ")
     : "";
-  const compatibilityAnswer = canonical ? null : data.answer;
+  const compatibilityAnswer = canonical ? retainedCopilotAnswer(synthesis) : data.answer;
   const narration: CopilotAnswer | null = compatibilityAnswer
     ?? (narrationText
       ? {
@@ -931,9 +944,13 @@ export function toCanonicalInvestigationView(
       : null);
   const policyStatus = data.policy_status ?? "accepted";
   const fallbackReason = data.fallback_reason ?? "";
-  const degraded = policyStatus === "fallback" || synthesis?.status === "degraded";
+  const retainedFoundry = Boolean(compatibilityAnswer?.grounded === true
+    && compatibilityAnswer.model.trim()
+    && compatibilityAnswer.model.trim().toLowerCase() !== "deterministic"
+    && compatibilityAnswer.agent_name.trim() && compatibilityAnswer.agent_version?.trim());
+  const degraded = (policyStatus === "fallback" && !retainedFoundry) || synthesis?.status === "degraded";
   const degradationNote = synthesis?.warning?.trim()
-    || (policyStatus === "fallback"
+    || (policyStatus === "fallback" && !retainedFoundry
       ? "Deterministic specialist evidence is shown; Foundry narration was not produced."
       : "");
   return {
@@ -948,6 +965,7 @@ export function toCanonicalInvestigationView(
         }))
       : data.tool_calls ?? [],
     narration,
+    narrationMode: retainedFoundry || synthesis?.status === "synthesized" ? "foundry" : "deterministic",
     policyStatus,
     fallbackReason,
     degraded,

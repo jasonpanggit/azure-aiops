@@ -118,6 +118,31 @@ describe("TopologyInsights", () => {
     expect(screen.getByText("One unhealthy peering is present.")).toBeInTheDocument();
   });
 
+  it("recognizes the deployed nested Foundry mode without legacy top-level metadata", async () => {
+    const deployedResult = result();
+    delete deployedResult.synthesis_mode;
+    delete deployedResult.synthesis_agent;
+    mocks.investigateContext.mockResolvedValue(envelope(deployedResult));
+
+    render(<TopologyInsights snapshot={snapshot} onAskFollowUp={vi.fn()} />);
+
+    expect(await screen.findByText("Grounded LLM insight")).toBeInTheDocument();
+    expect(screen.getByText("Hub connectivity is grounded.")).toBeInTheDocument();
+    expect(screen.queryByText("Evidence-only fallback")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { synthesis_mode: "deterministic" as const, synthesis: { mode: "foundry" as const, narration: "Conflicting metadata." } },
+    { synthesis_mode: "foundry" as const, synthesis: { mode: "deterministic" as const, narration: "Conflicting metadata." } },
+  ])("does not label conflicting provider mode metadata as LLM", async (metadata) => {
+    mocks.investigateContext.mockResolvedValue(envelope(result(metadata)));
+
+    render(<TopologyInsights snapshot={snapshot} onAskFollowUp={vi.fn()} />);
+
+    expect(await screen.findByText("Evidence-only fallback")).toBeInTheDocument();
+    expect(screen.queryByText("Grounded LLM insight")).not.toBeInTheDocument();
+  });
+
   it("renders structured executive claims, read-only checks, uncertainty and citations", async () => {
     mocks.investigateContext.mockResolvedValue(envelope(result({
       synthesis: {

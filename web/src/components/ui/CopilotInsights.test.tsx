@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildCopilotSnapshot } from "@/lib/services";
+import { buildCopilotSnapshot, toCanonicalInvestigationView } from "@/lib/services";
 import type { CanonicalCopilotResult } from "@/lib/types";
 import { CopilotInsights, interpretInsightResult } from "./CopilotInsights";
 
@@ -63,6 +63,107 @@ describe("CopilotInsights", () => {
     expect(request.snapshot.page_kind).toBe("remediation");
   });
 
+  it("renders the live retained compatibility LLM answer with its agent and model provenance", async () => {
+    investigateCanonical.mockResolvedValue({
+      data: result({
+        policy_status: "fallback", fallback_reason: "compatibility_rollout",
+        synthesis: {
+          status: "compatibility", reason: "retained_compatibility",
+          domain_count: 0, claims: [], warning: "",
+          compatibility_answer: {
+            text: "The isolated VNet has unresolved DNS dependencies.",
+            agent_name: "aiops-network-agent", agent_version: "1",
+            model: "gpt-5.4-mini", grounded: true,
+          },
+        },
+      }),
+    });
+    render(<CopilotInsights snapshot={snapshot} />);
+    expect(await screen.findByText("The isolated VNet has unresolved DNS dependencies.")).toBeInTheDocument();
+    expect(screen.getByText("LLM insight · Foundry")).toBeInTheDocument();
+    expect(screen.getByText(/Foundry agent: aiops-network-agent:1 · Model: gpt-5.4-mini/)).toBeInTheDocument();
+    expect(screen.queryByText("Insight unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Operations Copilot fallback/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a retained deterministic status answer distinct from LLM narration", async () => {
+    investigateCanonical.mockResolvedValue({
+      data: result({
+        synthesis: {
+          status: "compatibility", reason: "retained_compatibility",
+          domain_count: 0, claims: [], warning: "",
+          compatibility_answer: {
+            text: "No provider-backed records were returned.",
+            agent_name: "operations-copilot", agent_version: "",
+            model: "deterministic", grounded: true,
+          },
+        },
+      }),
+    });
+    render(<CopilotInsights snapshot={snapshot} />);
+    expect(await screen.findByText("No provider-backed records were returned.")).toBeInTheDocument();
+    expect(screen.getByText("Grounded findings · deterministic")).toBeInTheDocument();
+    expect(screen.queryByText("LLM insight · Foundry")).not.toBeInTheDocument();
+  });
+
+  it("preserves missing-source and scope uncertainty beside a valid LLM answer", async () => {
+    investigateCanonical.mockResolvedValue({
+      data: result({
+        policy_status: "fallback", fallback_reason: "compatibility_rollout",
+        uncertainty: ["Semantic identity resolution is unavailable."],
+        tool_results: [{ tool: "incidents", status: "unavailable" } as never],
+        synthesis: {
+          status: "compatibility", reason: "retained_compatibility",
+          domain_count: 0, claims: [], warning: "",
+          compatibility_answer: {
+            text: "The observed topology has one isolated VNet.",
+            agent_name: "aiops-network-agent", agent_version: "1",
+            model: "gpt-5.4-mini", grounded: true,
+          },
+        },
+      }),
+    });
+    render(<CopilotInsights snapshot={snapshot} />);
+
+    expect(await screen.findByText("LLM insight · Foundry")).toBeInTheDocument();
+    expect(screen.getByText(/Semantic identity resolution is unavailable/)).toHaveTextContent(
+      "Unavailable evidence: incidents (unavailable).",
+    );
+    expect(screen.queryByText(/Operations Copilot fallback/)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { grounded: false }, { model: "" }, { agent_name: "" }, { agent_version: "" },
+    { text: " " }, { model: " Deterministic " },
+  ])("does not label incomplete or deterministic compatibility provenance as LLM: %j", (override) => {
+    const reply = result({
+      synthesis: {
+        status: "compatibility", reason: "retained_compatibility",
+        domain_count: 0, claims: [], warning: "",
+        compatibility_answer: {
+          text: "A retained answer.", agent_name: "aiops-network-agent",
+          agent_version: "1", model: "gpt-5.4-mini", grounded: true, ...override,
+        },
+      },
+    });
+    const state = interpretInsightResult(reply);
+    expect(state.kind).not.toBe("llm");
+    expect(state.provider).toBeUndefined();
+    if (!("model" in override) || override.model?.trim().toLowerCase() !== "deterministic") {
+      expect(toCanonicalInvestigationView(reply).narration).toBeNull();
+    }
+  });
+
+  it("does not label canonical narration as LLM without the Foundry mode", () => {
+    const state = interpretInsightResult(result({
+      synthesis: {
+        status: "synthesized", reason: "", domain_count: 0, claims: [], warning: "",
+        narration: "Unverified narration.",
+      },
+    }));
+    expect(state.kind).toBe("unavailable");
+  });
+
   it("explains skipped synthesis honestly with unavailable tools", async () => {
     investigateCanonical.mockResolvedValue({
       data: result({
@@ -114,7 +215,7 @@ describe("CopilotInsights", () => {
 
     it("waits for page readiness before requesting an insight", async () => {
       investigateCanonical.mockResolvedValue({
-        data: result({ synthesis: { status: "synthesized", reason: "", narration: "Ready insight.", domain_count: 1, claims: [], warning: "" } as never }),
+        data: result({ synthesis: { status: "synthesized", mode: "foundry", reason: "", narration: "Ready insight.", domain_count: 1, claims: [], warning: "" } }),
       });
       const { rerender } = render(<CopilotInsights snapshot={snapshot} ready={false} />);
       expect(screen.getByText(/Waiting for page evidence to load/)).toBeInTheDocument();
@@ -128,7 +229,7 @@ describe("CopilotInsights", () => {
     it("coalesces snapshot churn into one request and aborts superseded ones", async () => {
       vi.useFakeTimers();
       investigateCanonical.mockResolvedValue({
-        data: result({ synthesis: { status: "synthesized", reason: "", narration: "Final.", domain_count: 1, claims: [], warning: "" } as never }),
+        data: result({ synthesis: { status: "synthesized", mode: "foundry", reason: "", narration: "Final.", domain_count: 1, claims: [], warning: "" } }),
       });
       const next = (count: number) => buildCopilotSnapshot({
         pageKind: "remediation", pageId: "remediation", scope: {},

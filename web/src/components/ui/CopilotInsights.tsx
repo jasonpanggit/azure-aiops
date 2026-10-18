@@ -8,19 +8,13 @@ import {
   type CopilotEvidenceSnapshotV2,
 } from "@/lib/copilot/page-adapters";
 import type { ScopeSelection } from "@/lib/scope";
-import { investigateCanonical } from "@/lib/services";
+import { investigateCanonical, retainedCopilotAnswer } from "@/lib/services";
 import type {
   CanonicalCopilotResult,
-  CanonicalInvestigationSynthesis,
   CopilotPageSnapshot,
 } from "@/lib/types";
 
 export type CopilotInsightSnapshot = CopilotPageSnapshot | CopilotEvidenceSnapshotV2;
-
-type NarratedSynthesis = CanonicalInvestigationSynthesis & {
-  mode?: string;
-  narration?: string;
-};
 
 export interface InsightState {
   kind: "llm" | "deterministic" | "fallback" | "unavailable";
@@ -31,6 +25,8 @@ export interface InsightState {
   confidence?: string;
   /** Specialists the coordinator actually ran for this turn. */
   specialists?: string[];
+  /** Provider-reported provenance for a retained compatibility narration. */
+  provider?: { agent: string; version: string; model: string };
 }
 
 /** Debounce window that coalesces snapshot churn while page queries settle. */
@@ -80,7 +76,7 @@ function lowestConfidence(values: Array<string | undefined>): string | undefined
 /** Maps a canonical turn onto a display state, preferring Foundry narration. */
 export function interpretInsightResult(result: CanonicalCopilotResult): InsightState {
   const base = interpretInsightKind(result);
-  const synthesis = (result.synthesis ?? null) as NarratedSynthesis | null;
+  const synthesis = result.synthesis;
   const confidence = lowestConfidence((synthesis?.claims ?? []).map((claim) => claim.confidence));
   const specialists = (result.selected_specialists ?? []).filter(Boolean);
   return {
@@ -91,24 +87,43 @@ export function interpretInsightResult(result: CanonicalCopilotResult): InsightS
 }
 
 function interpretInsightKind(result: CanonicalCopilotResult): InsightState {
-  const synthesis = (result.synthesis ?? null) as NarratedSynthesis | null;
+  const synthesis = result.synthesis;
+  const answer = retainedCopilotAnswer(synthesis);
+  const agent = answer?.agent_name?.trim() ?? "";
+  const version = answer?.agent_version?.trim() ?? "";
+  const model = answer?.model?.trim() ?? "";
+  const compatibilityNarration = answer && model.toLowerCase() !== "deterministic"
+    ? answer.text?.trim() ?? "" : "";
   const narration = synthesis?.narration?.trim() ?? "";
   const claims = (synthesis?.claims ?? [])
     .map((claim) => claim.summary?.trim())
     .filter((summary): summary is string => Boolean(summary));
-  const warning = synthesis?.warning?.trim()
-    || (result.policy_status === "fallback" && !narration && result.fallback_reason
+  const unavailableTools = (result.tool_results ?? [])
+    .filter((toolResult) => toolResult.status !== "ok")
+    .map((toolResult) => `${toolResult.tool} (${toolResult.status})`);
+  const warning = Array.from(new Set([
+    synthesis?.warning?.trim() ?? "",
+    ...(result.uncertainty ?? []),
+    unavailableTools.length ? `Unavailable evidence: ${unavailableTools.join(", ")}.` : "",
+    result.policy_status === "fallback" && !narration && !compatibilityNarration && result.fallback_reason
       ? `Operations Copilot fallback: ${result.fallback_reason}.`
-      : "");
-  if (synthesis?.status === "synthesized" && narration) {
+      : "",
+  ].filter(Boolean))).join(" ");
+  if (compatibilityNarration && answer) {
+    return {
+      kind: "llm", narration: compatibilityNarration, findings: [], warning,
+      provider: { agent, version, model },
+    };
+  }
+  if (synthesis?.status === "synthesized" && synthesis.mode === "foundry" && narration) {
     return { kind: "llm", narration, findings: [], warning };
+  }
+  if (answer?.grounded === true && model.toLowerCase() === "deterministic" && answer.text?.trim()) {
+    return { kind: "deterministic", narration: "", findings: [answer.text.trim()], warning };
   }
   if (claims.length > 0) {
     return { kind: "deterministic", narration: "", findings: claims.slice(0, 3), warning };
   }
-  const unavailableTools = (result.tool_results ?? [])
-    .filter((toolResult) => toolResult.status !== "ok")
-    .map((toolResult) => `${toolResult.tool} (${toolResult.status})`);
   const reason = synthesis?.reason === "no_cited_findings"
     ? "No cited findings were returned for this scope."
     : synthesis?.reason
@@ -120,9 +135,8 @@ function interpretInsightKind(result: CanonicalCopilotResult): InsightState {
     findings: [],
     warning: [
       reason,
-      unavailableTools.length ? `Unavailable evidence: ${unavailableTools.join(", ")}.` : "",
-      result.uncertainty?.[0] ?? "",
-    ].filter(Boolean).join(" ") || warning || "No grounded insight was produced for this scope.",
+      warning,
+    ].filter(Boolean).join(" ") || "No grounded insight was produced for this scope.",
   };
 }
 
@@ -255,11 +269,12 @@ export function CopilotInsights({
       {!loading && result?.warning && (result.kind === "llm" || result.findings.length > 0) && (
         <small>{result.warning}</small>
       )}
-      {!loading && result && (result.confidence || result.specialists?.length) ? (
+      {!loading && result && (result.confidence || result.specialists?.length || result.provider) ? (
         <small className="copilot-insights-provenance">
           {[
             result.confidence ? `Synthesis confidence: ${result.confidence}` : "",
             result.specialists?.length ? `Specialists: ${result.specialists.join(", ")}` : "",
+            result.provider ? `Foundry agent: ${result.provider.agent}:${result.provider.version} · Model: ${result.provider.model}` : "",
           ].filter(Boolean).join(" · ")}
         </small>
       ) : null}
