@@ -90,6 +90,23 @@ For a live audit, inspect the actual authenticated browser response and rendered
 panel together. HTTP 200 alone, a specialist name, or replayed test fixtures
 does not establish a successful live LLM answer.
 
+### Live incident and remediation scope parity
+
+Incident and remediation tools use the existing live adapters for an explicit
+subscription, an active selected connection, or an unrestricted selection over
+active onboarded subscriptions, just like their REST pages. Combined subscription
+and connection selections intersect; disabled/unmatched connections never trigger
+a broader managed-snapshot fallback. The complete effective scope still filters
+returned rows before narration. A metadata-only scope without subscription or
+connection selectors retains the existing snapshot path rather than querying all
+live subscriptions.
+
+Registry and live-provider construction failures are `unavailable`, not evidence
+that no records exist. This routing repair does not enable deferred semantic
+hydration, change the reviewed tool portfolio or Foundry versions, publish
+remediation catalogs, or manufacture incidents. A successful live read can still
+be empty and must remain an explicitly deterministic status in that case.
+
 ## Source the non-secret provider environment
 
 Terraform output `copilot_provider_environment` is the authority for the

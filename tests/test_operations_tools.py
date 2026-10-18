@@ -416,6 +416,225 @@ def test_network_registry_failure_returns_unavailable_without_io() -> None:
     assert managed_calls == []
 
 
+@pytest.fixture(
+    params=[
+        ("incidents", "hybrid_incident_provider"),
+        ("remediation_plans", "hybrid_remediation_provider"),
+    ]
+)
+def live_operations_tool(request):
+    return request.param
+
+
+def _operations_hybrid_context(tool, connections, rows):
+    tool_name, provider_name = tool
+    calls: list[list[str]] = []
+    managed_calls: list[str] = []
+    context = _hybrid_context(connections, None, managed_calls=managed_calls)
+    provider = (
+        SimpleNamespace(report=lambda: {"incidents": rows})
+        if tool_name == "incidents"
+        else SimpleNamespace(generate_plans=lambda: {"plans": rows})
+    )
+    setattr(
+        context,
+        provider_name,
+        lambda subscriptions: calls.append(subscriptions) or provider,
+    )
+    return context, calls, managed_calls
+
+
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        ({}, ["sub-a", "sub-b"]),
+        ({"subscription_connection": ["b"]}, ["sub-b"]),
+        ({"subscription": ["sub-a"]}, ["sub-a"]),
+        ({"subscription": ["sub-a", "sub-b"], "subscription_connection": ["b"]}, ["sub-b"]),
+    ],
+)
+def test_live_operations_tool_resolves_active_connections(
+    live_operations_tool, selection, expected
+) -> None:
+    rows = [
+        {"id": "visible", "subscription_id": "sub-b", "subscription_connection": "b"},
+    ]
+    context, calls, managed_calls = _operations_hybrid_context(
+        live_operations_tool,
+        [
+            _connection("a", "sub-a"),
+            _connection("b", "sub-b"),
+            _connection("disabled", "sub-hidden", active=False),
+        ],
+        rows,
+    )
+
+    result = call_tool(
+        live_operations_tool[0], {}, context=context, scope=Scope.from_mapping(selection)
+    )
+
+    assert calls == [expected]
+    assert managed_calls == []
+    assert result.status == ("empty" if selection == {"subscription": ["sub-a"]} else "ok")
+    if result.status == "ok":
+        assert result.data == rows
+        assert result.evidence
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        {},
+        {"subscription_connection": ["missing"]},
+        {"subscription": ["sub-a"], "subscription_connection": ["b"]},
+    ],
+)
+def test_live_operations_tool_never_falls_back_after_unmatched_selection(
+    live_operations_tool, selection
+) -> None:
+    context, calls, managed_calls = _operations_hybrid_context(
+        live_operations_tool,
+        [_connection("b", "sub-b", active=bool(selection))],
+        [{"id": "must-not-be-read"}],
+    )
+
+    result = call_tool(
+        live_operations_tool[0], {}, context=context, scope=Scope.from_mapping(selection)
+    )
+
+    assert result.status == "unavailable"
+    assert "no active subscription connection matches" in result.warning
+    assert not result.evidence
+    assert calls == managed_calls == []
+
+
+def test_live_operations_tool_retains_every_scope_dimension(live_operations_tool) -> None:
+    selection = {
+        "subscription": ["sub-b"],
+        "subscription_connection": ["b"],
+        "business_service": ["payments"],
+        "application": ["checkout"],
+        "environment": ["production"],
+        "owner": ["team-a"],
+        "support_team": ["sre"],
+        "region": ["australiaeast"],
+        "criticality": ["critical"],
+    }
+    visible = {"id": "visible", **{key: value[0] for key, value in selection.items()}}
+    rows = [visible]
+    for key in selection:
+        rows.append({**visible, "id": f"hidden-{key}", key: "outside"})
+    context, calls, managed_calls = _operations_hybrid_context(
+        live_operations_tool, [_connection("b", "sub-b")], rows
+    )
+
+    result = call_tool(
+        live_operations_tool[0], {}, context=context, scope=Scope.from_mapping(selection)
+    )
+
+    assert result.status == "ok"
+    assert result.data == [visible]
+    assert calls == [["sub-b"]]
+    assert managed_calls == []
+
+
+@pytest.mark.parametrize(
+    ("stage", "failure"),
+    [
+        ("registry", OSError),
+        ("registry", RuntimeError),
+        ("registry", ValueError),
+        ("registry", TypeError),
+        ("factory", OSError),
+        ("factory", LookupError),
+        ("factory", RuntimeError),
+        ("factory", ValueError),
+        ("factory", TypeError),
+        ("read", OSError),
+        ("read", RuntimeError),
+        ("read", TypeError),
+        ("registry", ApiError),
+        ("factory", ApiError),
+        ("read", ApiError),
+    ],
+)
+def test_live_operations_tool_source_failure_is_not_empty(
+    live_operations_tool, stage, failure
+) -> None:
+    context, calls, managed_calls = _operations_hybrid_context(
+        live_operations_tool, [_connection("b", "sub-b")], []
+    )
+
+    def fail(*args, **kwargs):
+        if failure is ApiError:
+            raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "private source failure")
+        raise failure("private source failure")
+
+    if stage == "registry":
+        context.onboarding.registry.list = fail
+    elif stage == "factory":
+        setattr(context, live_operations_tool[1], fail)
+    else:
+        service = SimpleNamespace(report=fail, generate_plans=fail)
+        setattr(context, live_operations_tool[1], lambda subscriptions: service)
+
+    result = call_tool(
+        live_operations_tool[0], {}, context=context, scope=Scope.unrestricted()
+    )
+
+    assert result.status == "unavailable"
+    assert not result.evidence
+    assert "private source failure" not in result.warning
+    assert managed_calls == []
+    assert calls == []
+
+
+def test_live_operations_tool_without_adapter_does_not_acquire_connections(
+    live_operations_tool,
+) -> None:
+    context, calls, managed_calls = _operations_hybrid_context(
+        live_operations_tool, [], []
+    )
+    setattr(context, live_operations_tool[1], None)
+
+    def fail_if_listed(**kwargs):
+        raise AssertionError("a missing adapter must not query the connection registry")
+
+    context.onboarding.registry.list = fail_if_listed
+    result = call_tool(
+        live_operations_tool[0], {}, context=context, scope=Scope.unrestricted()
+    )
+
+    assert result.status == "unavailable"
+    assert calls == []
+    assert managed_calls == [
+        "incidents" if live_operations_tool[0] == "incidents" else "remediation"
+    ]
+
+
+def test_live_operations_tool_metadata_only_selection_does_not_acquire_connections(
+    live_operations_tool,
+) -> None:
+    context, calls, managed_calls = _operations_hybrid_context(
+        live_operations_tool, [], []
+    )
+
+    def fail_if_listed(**kwargs):
+        raise AssertionError("metadata-only scope must not acquire live connections")
+
+    context.onboarding.registry.list = fail_if_listed
+    result = call_tool(
+        live_operations_tool[0],
+        {},
+        context=context,
+        scope=Scope.from_mapping({"business_service": ["payments"]}),
+    )
+
+    assert result.status == "unavailable"
+    assert calls == []
+    assert managed_calls == ["incidents" if live_operations_tool[0] == "incidents" else "remediation"]
+
+
 def test_g6_discloses_the_bound_and_true_totals_when_agent_lists_truncate() -> None:
     service, result = _run(gaps=30, findings=40)
 

@@ -8,6 +8,8 @@ returns bounded, principal-scoped conversation state.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 from test_connection_lineage_integration import _build_engine, make_connection
@@ -108,6 +110,68 @@ def test_investigation_plans_tools_and_narrates(client, agent):
     ):
         assert field in body
         assert body[field] is not None
+
+
+@pytest.mark.parametrize(
+    ("tool", "provider_attribute", "method", "collection"),
+    [
+        ("incidents", "hybrid_incident_provider", "report", "incidents"),
+        ("remediation_plans", "hybrid_remediation_provider", "generate_plans", "plans"),
+    ],
+)
+@pytest.mark.parametrize("narrowed_grant", [False, True])
+def test_investigation_uses_live_operations_evidence_in_effective_scope(
+    tmp_path, agent, monkeypatch, tool, provider_attribute, method, collection,
+    narrowed_grant,
+):
+    principals = {
+        TOKEN: Principal(
+            subject="operator@example.com",
+            grants=(Grant("reader", Scope.from_mapping({"subscription": ["sub-b"]})),)
+            if narrowed_grant else (Grant("reader"),),
+        )
+    }
+    context = _context(tmp_path, agent, principals=principals)
+    monkeypatch.setattr(
+        context.onboarding.registry,
+        "list",
+        lambda **kwargs: [
+            SimpleNamespace(connection_id="b", subscription_id="sub-b", is_active=True),
+            SimpleNamespace(connection_id="other", subscription_id="sub-hidden", is_active=True),
+        ],
+    )
+    acquired = []
+    rows = [
+        {"id": "visible", "subscription_id": "sub-b"},
+        {"id": "hidden", "subscription_id": "sub-hidden"},
+    ]
+
+    def live_provider(subscription_ids):
+        acquired.append(subscription_ids)
+        return SimpleNamespace(**{method: lambda: {collection: rows}})
+
+    setattr(context, provider_attribute, live_provider)
+    monkeypatch.setattr(
+        context,
+        "resolve_provider",
+        lambda name, **kwargs: agent if name == "copilot" else None,
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+
+    response = _investigate(
+        client, "Summarize current evidence", tool=tool, tool_arguments={},
+    )
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["answer"]["text"] == "Narrated answer."
+    assert acquired == [["sub-b"] if narrowed_grant else ["sub-b", "sub-hidden"]]
+    facts = agent.calls[0]["context"]["facts"]
+    assert facts[0]["tool"] == tool
+    assert facts[0]["status"] == "ok"
+    assert facts[0]["data"] == (rows[:1] if narrowed_grant else rows)
+    assert body["citations"]
+    assert body["mutation_authorized"] is False
 
 
 def test_compatibility_projection_cites_tool_status_without_provider_evidence(

@@ -286,11 +286,15 @@ def _network_scope(
     )
 
 
-def _network_hybrid_subscription_ids(tool_context: ToolContext) -> list[str]:
-    """Resolve the REST-equivalent live scope for a Network tool."""
+def _live_tool_subscription_ids(
+    tool_context: ToolContext, *, default_all: bool
+) -> list[str]:
+    """Resolve active connection selections without widening the tool scope."""
     scope = tool_context.scope
     selected_subscriptions = scope.values("subscription")
     selected_connections = scope.values("subscription_connection")
+    if not default_all and not selected_subscriptions and not selected_connections:
+        return []
     connections = ()
     if selected_connections or not selected_subscriptions:
         onboarding = getattr(tool_context.context, "onboarding", None)
@@ -302,7 +306,7 @@ def _network_hybrid_subscription_ids(tool_context: ToolContext) -> list[str]:
     return subscription_ids_for_scope(
         scope,
         connections,
-        default_all=True,
+        default_all=default_all,
     )
 
 
@@ -330,10 +334,14 @@ def _provider_result(
         hybrid_names.get(name, f"hybrid_{name}_provider"),
         None,
     )
-    if name == "network" and callable(hybrid_provider):
+    connection_scoped_provider = name in {"network", "incidents", "remediation"}
+    if connection_scoped_provider and callable(hybrid_provider):
         try:
-            subscription_ids = _network_hybrid_subscription_ids(tool_context)
-        except (OSError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            subscription_ids = _live_tool_subscription_ids(
+                tool_context,
+                default_all=name == "network" or tool_context.scope.is_unrestricted(),
+            )
+        except (ApiError, OSError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
             _LOGGER.warning(
                 "tool_hybrid_scope_resolution_failed provider=%s error=%s",
                 name,
@@ -341,25 +349,38 @@ def _provider_result(
             )
             return ToolResult(
                 status=STATUS_UNAVAILABLE,
-                warning="Network subscription connections are unavailable",
+                warning=f"{name.capitalize()} subscription connections are unavailable",
             )
-        if not subscription_ids:
+        if not subscription_ids and (
+            name == "network"
+            or tool_context.scope.is_unrestricted()
+            or tool_context.scope.values("subscription")
+            or tool_context.scope.values("subscription_connection")
+        ):
             return ToolResult(
                 status=STATUS_UNAVAILABLE,
                 warning=(
-                    "Network data is unavailable because no active subscription "
+                    f"{name.capitalize()} data is unavailable because no active subscription "
                     "connection matches the authorized scope"
                 ),
             )
-        tool_context.resolved_network_subscription_ids = tuple(subscription_ids)
+        if name == "network":
+            tool_context.resolved_network_subscription_ids = tuple(subscription_ids)
+        elif not subscription_ids:
+            hybrid_provider = None
     elif not subscription_ids:
         hybrid_provider = None
     if callable(hybrid_provider):
         try:
-            return loader(hybrid_provider(subscription_ids))
+            provider = hybrid_provider(subscription_ids)
+        except (ApiError, OSError, LookupError, ValueError, RuntimeError, TypeError, AttributeError) as exc:
+            _LOGGER.warning("tool_hybrid_provider_failed provider=%s error=%s", name, exc)
+            return ToolResult(status=STATUS_UNAVAILABLE, warning=f"The live {name} provider failed to answer")
+        try:
+            return loader(provider)
         except (LookupError, ValueError) as exc:
             return ToolResult(status=STATUS_EMPTY, warning=str(exc) or "No matching context")
-        except (RuntimeError, TypeError, AttributeError) as exc:
+        except (ApiError, OSError, RuntimeError, TypeError, AttributeError) as exc:
             _LOGGER.warning("tool_hybrid_provider_failed provider=%s error=%s", name, exc)
             return ToolResult(status=STATUS_UNAVAILABLE, warning=f"The live {name} provider failed to answer")
     try:
