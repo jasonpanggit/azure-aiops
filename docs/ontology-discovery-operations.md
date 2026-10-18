@@ -91,6 +91,13 @@ Publication revalidates the proposal and rejects changed source/native state.
 Native writes are not automatically retried. Success requires the item to
 resolve and its complete definition/bindings to match actual `getDefinition`
 readback, including LRO result retrieval. A created item alone is not success.
+Comparison ignores JSON formatting/key order and only known Fabric export
+defaults: the exact v1 schema annotations, empty entity `untypedProperties`,
+absent versus null source schema, and service-owned `.platform` metadata.
+All part paths, IDs, entity/relationship properties, nonempty source schemas,
+table targets and key/property bindings must still match. If creation succeeds
+but verification fails, inspect the existing item and compare the saved proposal
+before retrying; do not blindly replay creation or relax binding checks.
 Persist the preview and verified response as release evidence. This publishes
 the already-completed source; it does not claim a new inventory refresh.
 Leave general discovery/publisher schedules held until independently approved

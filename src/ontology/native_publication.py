@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 from collections import Counter, defaultdict
@@ -17,7 +16,7 @@ from fabric.lakehouse_manager import LakehouseManager
 from storage.delta_writer import DeltaWriter
 from storage.onelake_writer import OneLakeWriter
 
-from .ontology_publisher import ENTITY_COLUMNS, OntologyPublisher
+from .ontology_publisher import ENTITY_COLUMNS, OntologyPublisher, definition_parts
 from .ontology_validator import OntologyValidator
 
 
@@ -281,16 +280,7 @@ def _digest(value: object) -> str:
 
 
 def _parts(definition: dict[str, Any]) -> dict[str, Any]:
-    result = {}
-    for part in definition.get("parts") or []:
-        path = part["path"]
-        if path in result or part.get("payloadType") != "InlineBase64":
-            raise ValueError("Native definition has duplicate or unsupported parts")
-        payload = json.loads(base64.b64decode(part["payload"], validate=True))
-        if path == ".platform":
-            metadata = payload.get("metadata") or {}
-            payload = {"metadata": {key: metadata.get(key) for key in ("type", "displayName")}}
-        result[path] = payload
+    result = definition_parts(definition)
     if not result:
         raise ValueError("Native definition has no readable parts")
     return result

@@ -149,13 +149,18 @@ class _PartiallyFailingManager:
 
 
 def test_failed_definition_update_restores_the_previous_active_graph() -> None:
-    previous = {"parts": [{"path": "old", "payload": "old"}]}
-    manager = _PartiallyFailingManager(previous)
+    manager = _PartiallyFailingManager({"parts": []})
     publisher = OntologyPublisher(
         manager,
         workspace_id="workspace-1",
         lakehouse_id="lakehouse-1",
     )
+    previous = publisher.build_definition(
+        {"LogicalImage": "ontology_previous_logical_image_entities"},
+        {},
+        "Operational Context",
+    )
+    manager.active_definition = deepcopy(previous)
 
     with pytest.raises(
         RuntimeError,
