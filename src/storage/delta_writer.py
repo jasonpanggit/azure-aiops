@@ -769,6 +769,20 @@ class DeltaWriter:
             return None
         return DeltaTable(str(table_uri), storage_options=self.storage_options).version()
 
+    def describe(self, table_uri: str | Path, *, version: int) -> dict[str, Any]:
+        """Read schema and configuration at an explicitly pinned Delta version."""
+        if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+            raise ValueError("Delta metadata version must be a non-negative integer")
+        self._refresh_storage_options()
+        table = DeltaTable(
+            str(table_uri), version=version, storage_options=self.storage_options
+        )
+        return {
+            "version": table.version(),
+            "schema": json.loads(table.schema().to_json()),
+            "configuration": dict(table.metadata().configuration),
+        }
+
     def committed_transaction(
         self,
         table_uri: str | Path,

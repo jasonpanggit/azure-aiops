@@ -224,15 +224,36 @@ def test_validation_publisher_is_manual_only() -> None:
     )
 
     assert 'dynamic "manual_trigger_config"' in job
-    assert (
-        'for_each = var.ontology_discovery_environment == "validation" '
-        "? [1] : []"
-    ) in job
+    assert "for_each = local.ontology_publisher_scheduled ? [] : [1]" in job
     assert 'dynamic "schedule_trigger_config"' in job
+    assert "for_each = local.ontology_publisher_scheduled ? [1] : []" in job
+    assert 'local.ontology_publisher_environment != "validation"' in terraform
+    assert "&& var.ontology_publisher_schedule_enabled" in terraform
+    assert "coalesce(var.ontology_publisher_environment, var.ontology_discovery_environment)" in terraform
+    assert 'value = tostring(local.ontology_publisher_environment == "validation")' in job
     assert (
-        'for_each = var.ontology_discovery_environment == "validation" '
-        "? [] : [1]"
+        'var.enable_fabric_publisher_ontology_item && !local.ontology_publisher_scheduled '
+        '? ["native-preview"] : ["run-once"]'
     ) in job
+
+
+def test_native_publisher_gate_does_not_enable_api_native_publication() -> None:
+    terraform = (ROOT / "infra/terraform/fabric_runtime_config.tf").read_text()
+    ordinary, publisher = terraform.split("fabric_publisher_runtime_config =", 1)
+    assert "enabled = var.enable_fabric_ontology_item" in ordinary
+    assert "enable_fabric_publisher_ontology_item" not in ordinary
+    assert "var.enable_fabric_ontology_item || var.enable_fabric_publisher_ontology_item" in publisher
+
+
+def test_native_publisher_image_pin_does_not_roll_other_jobs() -> None:
+    terraform = JOB_TF.read_text()
+    publisher = _resource(terraform, "azurerm_container_app_job", "ontology_publisher")
+    coordinator = _resource(terraform, "azurerm_container_app_job", "ontology_discovery")
+    assert "local.ontology_publisher_image" in publisher
+    assert "local.ontology_publisher_image" not in coordinator
+    assert "local.ontology_discovery_image" in coordinator
+    assert 'var.ontology_publisher_image_digest != ""' in terraform
+    assert 'variable "ontology_publisher_image_digest"' in VARIABLES_TF.read_text()
 
 
 def test_validator_script_is_packaged_in_the_api_image() -> None:

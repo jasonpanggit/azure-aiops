@@ -6,18 +6,28 @@ import argparse
 import json
 import os
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
-from fabric.auth import FabricAuthConfig
+import httpx
+
+from fabric.auth import FabricAuthConfig, build_credential, build_delta_storage_options
 from fabric.config import FabricRuntimeConfig
 from fabric.dataset_mapper import ONTOLOGY_RELATIONSHIP_TYPES
+from fabric.fabric_client import FabricClient
+from fabric.lakehouse_manager import LakehouseManager
 from fabric.runtime import FabricRuntimeMode, build_runtime
 from onboarding.registry import ConnectionRegistry
+from ontology.native_publication import NativeOntologyPublication
+from ontology.ontology_manager import OntologyManager
+from ontology.ontology_publisher import OntologyPublisher
 from ontology.ontology_validator import OntologyValidator
 from storage.datasets import DatasetStore
+from storage.delta_writer import DeltaWriter
 from storage.locking import MonotonicFenceAllocator
 from storage.onelake_documents import OneLakeDocumentStore
+from storage.onelake_writer import OneLakeWriter
 
 from .command_intake import PublisherCommandConsumer
 from .dispatch_store import PublisherDispatchStore
@@ -210,6 +220,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "command",
         choices=(
             "run-once",
+            "native-preview",
+            "native-publish",
             "drill-arm",
             "drill-inspect",
             "drill-resume",
@@ -221,8 +233,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--command-hash", default="")
     parser.add_argument("--fault", default="")
     parser.add_argument("--expires-at", default="")
+    parser.add_argument("--source-generation", default="")
+    parser.add_argument("--preview-hash", default="")
+    parser.add_argument("--yes", action="store_true")
     args = parser.parse_args(argv)
     config = PublisherRuntimeConfig.from_env()
+    if args.command in {"native-preview", "native-publish"}:
+        if not args.source_generation.strip():
+            parser.error("--source-generation is required for native publication")
+        if args.command == "native-publish" and not (args.yes and args.preview_hash):
+            parser.error("native-publish requires an approved --preview-hash and --yes")
+        result = run_native_publication(
+            config,
+            source_generation=args.source_generation,
+            preview_hash=args.preview_hash if args.command == "native-publish" else "",
+        )
+        print(json.dumps(result, sort_keys=True))
+        return 0
     if args.command != "run-once":
         control = build_drill_control(config)
         if control is None:
@@ -268,6 +295,59 @@ def _materialize(service, source_generation: str) -> dict[str, object]:
         "run_id": result.run_id,
         "tables": list(result.tables),
     }
+
+
+def run_native_publication(
+    config: PublisherRuntimeConfig, *, source_generation: str, preview_hash: str = ""
+) -> dict[str, object]:
+    """Read verified existing tables and optionally publish only their native definition."""
+    if (
+        config.runtime_mode != "production"
+        or config.environment != "production"
+        or config.drill_enabled
+    ):
+        raise PermissionError("Native publication requires a non-drill production publisher")
+    loaded = publisher_fabric_config(
+        FabricRuntimeConfig.load(config.fabric_config), config.publisher_client_id
+    )
+    if not loaded.ontology.enabled or loaded.create_lakehouse_if_missing:
+        raise PermissionError("Native publication must be explicitly enabled without lakehouse creation")
+    if len({*config.roots.values(), str(loaded.source_data_root)}) != 5:
+        raise ValueError("Publisher and Fabric capability roots must be pairwise distinct")
+    with ExitStack() as stack:
+        credential = stack.enter_context(build_credential(loaded.auth))
+        http = stack.enter_context(httpx.Client(
+            timeout=60, headers={"x-ms-fabric-skill": "fabriciq-ontology-cli"}
+        ))
+        client = FabricClient(credential, http_client=http, max_attempts=1)
+        lakehouse = LakehouseManager(client, loaded.workspace_id)
+        lakehouse.resolve(lakehouse_id=loaded.lakehouse_id)
+        onelake = OneLakeWriter(
+            loaded.workspace_id, loaded.lakehouse_id,
+            table_schema=loaded.table_schema, credential=credential,
+        )
+        if onelake.service is not None:
+            stack.callback(onelake.service.close)
+        native = NativeOntologyPublication(
+            delta=DeltaWriter(
+                storage_options_provider=lambda: build_delta_storage_options(credential)
+            ),
+            onelake=onelake,
+            lakehouse=lakehouse,
+            publisher=OntologyPublisher(
+                OntologyManager(client, loaded.workspace_id),
+                workspace_id=loaded.workspace_id,
+                lakehouse_id=loaded.lakehouse_id,
+                source_schema=loaded.table_schema,
+            ),
+            ontology_id=loaded.ontology.ontology_id,
+            ontology_name=loaded.ontology.ontology_name,
+        )
+        if preview_hash:
+            return native.publish(
+                source_generation=source_generation, expected_preview_hash=preview_hash
+            )
+        return native.preview(source_generation=source_generation)
 
 
 def _required(value: object, name: str) -> str:

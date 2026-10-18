@@ -215,6 +215,35 @@ def test_fabric_client_follows_completed_operation_location() -> None:
     assert result["id"] == "l1"
 
 
+def test_native_definition_lro_uses_canonical_operation_and_reads_result() -> None:
+    operation = "3bfaee72-8618-46a5-869d-0e4b8bb65bc9"
+    paths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        assert request.headers["x-ms-fabric-skill"] == "fabriciq-ontology-cli"
+        if request.method == "POST":
+            return httpx.Response(202, headers={
+                "x-ms-operation-id": operation,
+                "Location": "https://untrusted.invalid/do-not-follow", "Retry-After": "0",
+            })
+        if request.url.path.endswith("/result"):
+            return httpx.Response(200, json={"definition": {"parts": [{"path": "definition.json"}]}})
+        return httpx.Response(200, json={"status": "Succeeded"})
+
+    client = FabricClient(
+        FakeCredential(),
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            headers={"x-ms-fabric-skill": "fabriciq-ontology-cli"},
+        ),
+        sleep=lambda _: None,
+    )
+    result = client.request("POST", "/workspaces/w/ontologies/o/getDefinition", json_body={})
+    assert result["definition"]["parts"][0]["path"] == "definition.json"
+    assert paths[1:] == [f"/v1/operations/{operation}", f"/v1/operations/{operation}/result"]
+
+
 def test_fabric_client_follows_operation_location_on_analysis_windows_net() -> None:
     """Long-running Fabric item operations (e.g. creating an Ontology item)
     return a 202 Location on a regional Power BI/Fabric backend cluster host

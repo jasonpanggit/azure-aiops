@@ -36,6 +36,9 @@ locals {
   }) : null
   onelake_aiops_home = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops" : "/tmp/aiops"
   fabric_publisher_runtime_config = var.enable_fabric ? merge(local.fabric_runtime_config, {
+    ontology = merge(local.fabric_runtime_config.ontology, {
+      enabled = var.enable_fabric_ontology_item || var.enable_fabric_publisher_ontology_item
+    })
     auth = {
       mode                       = "managed_identity"
       tenant_id                  = var.tenant_id

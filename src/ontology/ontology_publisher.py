@@ -275,16 +275,7 @@ class OntologyPublisher:
         return source
 
     def _relationship_table(self, table_name: str) -> dict[str, str]:
-        source = self._source_table(table_name)
-        relationship = {
-            "workspaceId": source["workspaceId"],
-            "itemId": source["itemId"],
-            "sourceTableName": source["sourceTableName"],
-            "sourceType": source["sourceType"],
-        }
-        if self.source_schema:
-            relationship["sourceSchema"] = self.source_schema
-        return relationship
+        return self._source_table(table_name)
 
 
 def _numeric_id(value: str) -> str:

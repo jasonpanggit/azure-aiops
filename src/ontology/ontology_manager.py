@@ -35,7 +35,7 @@ class OntologyManager:
 
     def get_definition(self, ontology_id: str) -> dict[str, Any]:
         response = self.client.request(
-            "POST", f"{self.base_path}/{ontology_id}/getDefinition"
+            "POST", f"{self.base_path}/{ontology_id}/getDefinition", json_body={}
         )
         return dict(response.get("definition") or {})
 

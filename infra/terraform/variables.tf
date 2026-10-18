@@ -259,6 +259,34 @@ variable "ontology_discovery_environment" {
   }
 }
 
+variable "ontology_publisher_image_digest" {
+  description = "Optional immutable digest for only the dedicated ontology publisher; empty inherits the other Phase 13 Jobs' image."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.ontology_publisher_image_digest == "" || can(regex("^sha256:[0-9a-f]{64}$", var.ontology_publisher_image_digest))
+    error_message = "ontology_publisher_image_digest must be empty or an immutable sha256 digest."
+  }
+}
+
+variable "ontology_publisher_environment" {
+  description = "Optional publisher runtime classification, independent of coordinator/fixture classification. Does not change source eligibility."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.ontology_publisher_environment == null ? true : contains(["production", "validation"], var.ontology_publisher_environment)
+    error_message = "ontology_publisher_environment must be production, validation, or null to inherit the coordinator classification."
+  }
+}
+
+variable "ontology_publisher_schedule_enabled" {
+  description = "Allow the production publisher schedule. Disable for a manually approved native-only repair; does not start any execution."
+  type        = bool
+  default     = true
+}
+
 variable "api_image_repository" {
   description = "Repository name for the Operations API image."
   type        = string
@@ -948,6 +976,12 @@ variable "enable_fabric_iq" {
 
 variable "enable_fabric_ontology_item" {
   description = "Publish the Fabric Ontology item after its managed source tables and definition have been verified. Does not disable deterministic ontology table publication."
+  type        = bool
+  default     = false
+}
+
+variable "enable_fabric_publisher_ontology_item" {
+  description = "Enable native Ontology publication only in the dedicated publisher configuration, without enabling API or inventory publication native writes."
   type        = bool
   default     = false
 }
