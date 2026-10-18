@@ -1,5 +1,8 @@
 locals {
-  fabric_runtime_defaults = yamldecode(file("${path.module}/../../fabric.config.deploy.yaml")).fabric
+  fabric_runtime_defaults = {
+    for key, value in yamldecode(file("${path.module}/../../fabric.config.deploy.yaml")).fabric :
+    key => value if key != "gold_grounding_agent"
+  }
   fabric_runtime_config = var.enable_fabric ? merge(local.fabric_runtime_defaults, {
     workspace_id                = fabric_workspace.ops[0].id
     workspace_name              = fabric_workspace.ops[0].display_name
@@ -25,6 +28,11 @@ locals {
     ontology = merge(local.fabric_runtime_defaults.ontology, {
       enabled = var.enable_fabric_ontology_item
     })
+    }, var.fabric_gold_grounding_agent_id == "" ? {} : {
+    gold_grounding_agent = {
+      display_name = "AI Ops Data Agent"
+      item_id      = var.fabric_gold_grounding_agent_id
+    }
   }) : null
   onelake_aiops_home = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops" : "/tmp/aiops"
   fabric_publisher_runtime_config = var.enable_fabric ? merge(local.fabric_runtime_config, {

@@ -6,6 +6,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1] / "infra" / "terraform"
 
 
+def test_runtime_grounding_never_inherits_historical_item_identity() -> None:
+    runtime = (ROOT / "fabric_runtime_config.tf").read_text(encoding="utf-8")
+    assert 'key => value if key != "gold_grounding_agent"' in runtime
+    assert 'var.fabric_gold_grounding_agent_id == "" ? {}' in runtime
+    assert "item_id      = var.fabric_gold_grounding_agent_id" in runtime
+    variables = (ROOT / "variables.tf").read_text(encoding="utf-8")
+    option = variables.split('variable "fabric_gold_grounding_agent_id" {', 1)[1]
+    option = option.split('\nvariable "', 1)[0]
+    assert 'default     = ""' in option
+    assert "validation {" in option
+
+
 def test_deployer_is_always_in_fabric_capacity_administrators() -> None:
     fabric = (ROOT / "fabric.tf").read_text(encoding="utf-8")
     admins = fabric.split("fabric_admins =", 1)[1].split("\n}", 1)[0]

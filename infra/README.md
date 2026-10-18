@@ -49,6 +49,11 @@ operations workspace grant into
 `fabric_workspace_role_assignment.terraform_deployer[0]` using
 `<workspace-id>/<principal-object-id>` before planning.
 
+Optional grounding metadata requires `fabric_gold_grounding_agent_id` to be
+set to a verified item in this environment's workspace. Empty omits that
+metadata; historical item IDs in deployment defaults are never inherited by
+Terraform runtime configuration. Setting it does not enable runtime grounding.
+
 When changing Terraform credentials, set `foundry_deployer_object_id` in the
 environment's private `terraform.tfvars` to the existing Foundry deployment
 role recipient's object ID. This keeps the five existing Foundry/search
