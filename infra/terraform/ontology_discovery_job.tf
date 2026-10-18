@@ -20,6 +20,9 @@ variable "ontology_discovery_schedule" {
 locals {
   ontology_discovery_image = var.ontology_discovery_image_digest != "" ? "${local.registry_server}/${var.api_image_repository}@${var.ontology_discovery_image_digest}" : (var.api_image_digest != "" ? local.api_image : (var.ontology_discovery_image_tag != "" ? "${local.registry_server}/${var.api_image_repository}:${var.ontology_discovery_image_tag}" : local.api_image))
 
+  ontology_publisher_environment = coalesce(var.ontology_publisher_environment, var.ontology_discovery_environment)
+  ontology_publisher_scheduled   = local.ontology_publisher_environment != "validation" && var.ontology_publisher_schedule_enabled
+
   ontology_connection_home            = var.enable_fabric ? "abfss://${fabric_workspace.ops[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.context_graph[0].id}/Files/aiops/connections" : "/tmp/aiops/connections"
   ontology_command_home               = var.enable_fabric ? "abfss://${fabric_workspace.ontology_command[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.ontology_command[0].id}/Files/aiops/ontology/commands" : "/tmp/aiops/ontology/commands"
   ontology_state_home                 = var.enable_fabric ? "abfss://${fabric_workspace.ontology_discovery_state[0].id}@onelake.dfs.fabric.microsoft.com/${fabric_lakehouse.ontology_discovery_state[0].id}/Files/aiops/ontology/state" : "/tmp/aiops/ontology/state"
@@ -266,7 +269,7 @@ resource "azurerm_container_app_job" "ontology_publisher" {
   }
 
   dynamic "schedule_trigger_config" {
-    for_each = var.ontology_discovery_environment == "validation" ? [] : [1]
+    for_each = local.ontology_publisher_scheduled ? [1] : []
     content {
       cron_expression          = "*/5 * * * *"
       parallelism              = 1
@@ -274,7 +277,7 @@ resource "azurerm_container_app_job" "ontology_publisher" {
     }
   }
   dynamic "manual_trigger_config" {
-    for_each = var.ontology_discovery_environment == "validation" ? [1] : []
+    for_each = local.ontology_publisher_scheduled ? [] : [1]
     content {
       parallelism              = 1
       replica_completion_count = 1
@@ -288,7 +291,7 @@ resource "azurerm_container_app_job" "ontology_publisher" {
       cpu     = var.ontology_discovery_job_cpu
       memory  = var.ontology_discovery_job_memory
       command = ["python", "-m", "ontology_discovery.publisher_cli"]
-      args    = ["run-once"]
+      args    = var.enable_fabric_publisher_ontology_item && !local.ontology_publisher_scheduled ? ["native-preview"] : ["run-once"]
 
       env {
         name  = "AIOPS_RUNTIME_MODE"
@@ -335,19 +338,19 @@ resource "azurerm_container_app_job" "ontology_publisher" {
       }
       env {
         name  = "AIOPS_ONTOLOGY_DRILL_ENABLED"
-        value = tostring(var.ontology_discovery_environment == "validation")
+        value = tostring(local.ontology_publisher_environment == "validation")
       }
       env {
         name  = "AIOPS_ENVIRONMENT"
-        value = var.ontology_discovery_environment
+        value = local.ontology_publisher_environment
       }
       env {
         name  = "AIOPS_DRILL_CONNECTION_ENVIRONMENT"
-        value = var.ontology_discovery_environment
+        value = local.ontology_publisher_environment
       }
       env {
         name  = "AIOPS_DRILL_WORKSPACE_ENVIRONMENT"
-        value = var.ontology_discovery_environment
+        value = local.ontology_publisher_environment
       }
       env {
         name  = "AIOPS_ONTOLOGY_DRILL_HOME"

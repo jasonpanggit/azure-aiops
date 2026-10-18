@@ -34,6 +34,65 @@ live validator.
 
 ## Credentialed validation
 
+### Native-only deterministic repair
+
+Missing native items are distinct from missing deterministic Delta tables.
+Do not use `publisher_cli run-once` for a native-only repair: it consumes
+intake and can replay a complete table publication.
+
+Keep API/inventory `enable_fabric_ontology_item = false`. Set only the
+dedicated publisher's `enable_fabric_publisher_ontology_item = true`, use
+`ontology_publisher_environment = "production"`, and hold
+`ontology_publisher_schedule_enabled = false`. This changes neither the
+coordinator/fixture classification nor connection eligibility. Review a
+publisher-only saved infrastructure plan, current targets, immutable image,
+distinct durable capability roots and effective publisher identity access
+before starting anything. No `STATE_HOME` or validation drill is permitted.
+In this held native-only configuration the Job defaults to `native-preview`,
+not full `run-once`; execution must explicitly supply the source-generation
+argument or fail without processing intake.
+
+Under that dedicated publisher identity, preview an explicit **ingestion run
+ID**, not an expired command or inventory source-run ID:
+
+```bash
+python -m ontology_discovery.publisher_cli native-preview \
+  --source-generation <latest-completed-ingestion-run-id>
+```
+
+The read-only preview checks the latest successful ingestion marker, matching
+canonical Delta heads, graph validity, deterministic authority, managed typed
+tables, string property/key schemas, unsupported column mapping and exact
+typed-table contents. It binds only nonempty active registered entity types
+and their observed relationships. Its hash includes source versions, all
+binding tables, proposed definition, target and existing item definition.
+Unchanged typed tables can legitimately retain earlier row `ontology_version`,
+ingestion and timestamp metadata because existing Delta overwrite idempotency compares
+resource/change versions. The preview accepts this only when every other
+value matches the current active graph **and** the complete retained row is
+proven in a completed canonical generation; it reports those retained row
+versions explicitly. Unknown provenance or any content/key change is rejected.
+It does not create folders, process intake, sync tables, stage generations
+or change active pointers.
+
+Render and review the proposed entities, relationships, every affected part
+and binding with the operator. After explicit approval of that exact preview:
+
+```bash
+python -m ontology_discovery.publisher_cli native-publish \
+  --source-generation <same-completed-ingestion-run-id> \
+  --preview-hash <approved-preview-hash> --yes
+```
+
+Publication revalidates the proposal and rejects changed source/native state.
+Native writes are not automatically retried. Success requires the item to
+resolve and its complete definition/bindings to match actual `getDefinition`
+readback, including LRO result retrieval. A created item alone is not success.
+Persist the preview and verified response as release evidence. This publishes
+the already-completed source; it does not claim a new inventory refresh.
+Leave general discovery/publisher schedules held until independently approved
+command eligibility, durable intake/dispatch and scheduled behavior are proven.
+
 ### Prerequisites
 
 - Azure CLI is authenticated to the deployment subscription.

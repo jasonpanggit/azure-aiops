@@ -64,10 +64,19 @@ class FabricClient:
             request_id=str(uuid.uuid4()),
         )
         if response.status_code == 202 and wait_for_completion:
-            location = response.headers.get("Location")
+            operation_id = response.headers.get("x-ms-operation-id")
+            location = (
+                f"/operations/{uuid.UUID(operation_id)}"
+                if operation_id
+                else response.headers.get("Location")
+            )
             if not location:
                 raise RuntimeError("Fabric returned 202 without an operation Location header")
-            return self._wait_for_operation(location, response.headers.get("Retry-After"))
+            return self._wait_for_operation(
+                location,
+                response.headers.get("Retry-After"),
+                fetch_result=httpx.URL(url).path.rstrip("/").endswith("/getDefinition"),
+            )
         return self._json(response)
 
     def iter_items(
@@ -156,7 +165,9 @@ class FabricClient:
         last_response.raise_for_status()
         return last_response
 
-    def _wait_for_operation(self, location: str, retry_after: str | None) -> dict[str, Any]:
+    def _wait_for_operation(
+        self, location: str, retry_after: str | None, *, fetch_result: bool = False
+    ) -> dict[str, Any]:
         location = self._trusted_url(location)
         delay = float(retry_after) if retry_after else 1.0
         for _ in range(120):
@@ -165,6 +176,8 @@ class FabricClient:
             payload = self._json(response)
             status = str(payload.get("status") or "").lower()
             if status in {"succeeded", "completed"}:
+                if fetch_result:
+                    return self.request("GET", f"{location.rstrip('/')}/result")
                 resource_location = response.headers.get("Location") or payload.get("resourceLocation")
                 if resource_location:
                     return self.request("GET", str(resource_location))
