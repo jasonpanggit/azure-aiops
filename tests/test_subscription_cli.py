@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
+import pytest
 from test_subscription_onboarding import (
     CLIENT,
     SUBSCRIPTION,
@@ -131,6 +134,107 @@ def test_cli_secret_never_appears_in_output(tmp_path, monkeypatch, capsys) -> No
 def test_cli_subscriptions_without_command_shows_usage(capsys) -> None:
     assert _run(["subscriptions"]) == 2
     assert "subscriptions" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("graph_status", [200, 403])
+def test_cli_identity_evidence_is_read_only_and_preserves_incomplete_sources(
+    tmp_path, monkeypatch, capsys, graph_status
+) -> None:
+    from onboarding.identity_evidence import IdentityEvidenceClient
+
+    data = tmp_path / "data"
+    service = build_service(data)
+    service.add(
+        connection_id="prod-core", name="Core", tenant_id=TENANT,
+        subscription_id=SUBSCRIPTION, client_id=CLIENT,
+        secret_ref="env://SPN_SECRET",
+    )
+    credential = SimpleNamespace(get_token=lambda scope: SimpleNamespace(token="private-token"))
+    resolved = []
+
+    def build_credential(connection):
+        resolved.append(connection)
+        return credential
+
+    def requester(method, url, **kwargs):
+        assert method == "GET"
+        assert CLIENT in url if "graph.microsoft.com" in url else SUBSCRIPTION in url
+        return (
+            httpx.Response(graph_status, text="private-error")
+            if graph_status != 200 and "graph.microsoft.com" in url
+            else httpx.Response(200, json={"value": []})
+        )
+
+    def no_service(*args, **kwargs):
+        pytest.fail("Read-only diagnostic must not construct the reconciling onboarding service")
+
+    monkeypatch.setattr("onboarding.runtime.build_onboarding_service", no_service)
+    monkeypatch.setattr("onboarding.runtime.build_connection_credential", build_credential)
+    monkeypatch.setattr(
+        "onboarding.identity_evidence.IdentityEvidenceClient",
+        lambda supplied: IdentityEvidenceClient(supplied, requester=requester),
+    )
+    config = _config(tmp_path)
+    before = {str(path): path.read_bytes() for path in data.rglob("*") if path.is_file()}
+    assert _run([
+        "subscriptions", "identity-evidence", "prod-core",
+        "--principal-id", CLIENT, "--principal-type", "service_principal",
+        "--config", config,
+    ]) == (0 if graph_status == 200 else 1)
+    text = capsys.readouterr().out
+    result = json.loads(text)
+    assert result["connection_id"] == "prod-core"
+    assert result["tenant_id"] == TENANT
+    assert result["source_reads_complete"] is (graph_status == 200)
+    assert result["effective_access"] == "not_evaluated"
+    assert len(resolved) == 1
+    assert resolved[0].subscription_id == SUBSCRIPTION
+    assert "private-token" not in text
+    assert "private-error" not in text
+    assert {str(path): path.read_bytes() for path in data.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("state", ["disabled", "missing"])
+def test_cli_identity_evidence_rejects_unavailable_connection_without_credentials(
+    tmp_path, monkeypatch, capsys, state
+) -> None:
+    service = build_service(tmp_path / "data")
+    if state == "disabled":
+        service.add(
+            connection_id="prod-core", name="Core", tenant_id=TENANT,
+            subscription_id=SUBSCRIPTION, client_id=CLIENT, secret_ref="env://SPN_SECRET",
+        )
+        service.disable("prod-core")
+
+    def no_credentials(*args, **kwargs):
+        pytest.fail("Disabled/unknown connections must not resolve credentials")
+
+    monkeypatch.setattr("onboarding.runtime.build_connection_credential", no_credentials)
+    assert _run([
+        "subscriptions", "identity-evidence", "prod-core",
+        "--principal-id", CLIENT, "--principal-type", "service_principal",
+        "--config", _config(tmp_path),
+    ]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "error"
+
+
+def test_cli_identity_evidence_credential_setup_failure_is_sanitized(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from onboarding.credentials import SecretNotFoundError
+
+    def unavailable(*args, **kwargs):
+        raise SecretNotFoundError("private-credential-detail")
+
+    monkeypatch.setattr("onboarding.identity_evidence.collect_connection_identity_evidence", unavailable)
+    assert _run([
+        "subscriptions", "identity-evidence", "prod-core",
+        "--principal-id", CLIENT, "--principal-type", "service_principal",
+        "--config", _config(tmp_path),
+    ]) == 1
+    text = capsys.readouterr().out
+    assert json.loads(text)["message"] == "Connection credential unavailable"
+    assert "private-credential-detail" not in text
 
 
 def test_cli_local_seeds_file_backed_api_snapshot(tmp_path, monkeypatch, capsys) -> None:
