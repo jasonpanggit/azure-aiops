@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -12,6 +13,8 @@ import { TopologyWorkspace } from "@/components/network/TopologyWorkspace";
 import type { TopologyDetailLevel } from "@/components/network/TopologyWorkspace";
 import type { TopologySelection } from "@/components/network/TopologyGraph";
 import { TopologyInsights } from "@/components/network/TopologyInsights";
+import { ConnectivityIntents } from "@/components/network/ConnectivityIntents";
+import { TopologyHistory } from "@/components/network/TopologyHistory";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { useApi } from "@/hooks/useApi";
 import { titleize } from "@/lib/format";
@@ -25,6 +28,7 @@ import type { NetworkCopilotSelection } from "@/lib/copilot/page-adapters";
 import { scopeToSearchParams } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import { networkApi } from "@/lib/services";
+import { networkReviewHref } from "@/lib/network-review";
 import { ApiError } from "@/lib/types";
 import type {
   FlowResult,
@@ -40,7 +44,7 @@ import {
   MANUAL_ENDPOINT_VALUE,
 } from "./endpoint-options";
 
-type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy";
+type NetworkTab = "flow" | "topology" | "gaps" | "rules" | "policy" | "intents" | "history";
 const NETWORK_PAGE_SIZE = 20;
 const GENERIC_TRUNCATION_WARNING =
   "Results are truncated; narrow the scope or use pagination for a complete view.";
@@ -359,6 +363,8 @@ export default function NetworkPage() {
             ["gaps", "Inspection gaps"],
             ["rules", "Rule findings"],
             ["policy", "Design policy"],
+            ["intents", "Saved connectivity tests"],
+            ["history", "Topology history"],
           ] as Array<[NetworkTab, string]>
         ).map(([value, label]) => (
           <button
@@ -374,6 +380,8 @@ export default function NetworkPage() {
         ))}
       </div>
 
+      {tab === "intents" && <ConnectivityIntents scope={scope} />}
+      {tab === "history" && <TopologyHistory scope={scope} />}
       {tab === "flow" && (
         <TrafficFlowWorkspace
           scopeKey={scopeKey}
@@ -439,6 +447,7 @@ export default function NetworkPage() {
             detail: gap.detail,
             recommendation: gap.recommendation,
             basis: gap.basis,
+            reviewHref: networkReviewHref("gap", gap.gap_id, gap.reviewed_digest, scope),
           }))}
           loading={gaps.loading}
           error={gaps.error}
@@ -462,7 +471,10 @@ export default function NetworkPage() {
         <FindingList
           title="Rule tightening opportunities"
           description="Configuration-derived findings. “Unused” means no structural path was observed, not that no traffic occurred."
-          items={(findings.data?.data.findings ?? []).map((finding) => ruleListItem(finding))}
+          items={(findings.data?.data.findings ?? []).map((finding) => ({
+            ...ruleListItem(finding),
+            reviewHref: networkReviewHref("rule", finding.finding_id, finding.reviewed_digest, scope),
+          }))}
           loading={findings.loading}
           error={findings.error}
           errorTitle="Rule findings are unavailable"
@@ -1028,6 +1040,7 @@ interface FindingListItem {
   detail: string;
   recommendation: string;
   basis?: string;
+  reviewHref?: string | null;
 }
 
 function FindingList({
@@ -1108,6 +1121,8 @@ function FindingList({
                 <span>{item.recommendation}</span>
               </div>
               {item.basis && <small>Evidence basis: {item.basis}</small>}
+              {item.reviewHref ? <p><Link href={item.reviewHref}>Review a proposed change for this finding</Link></p>
+                : <p>Exact review reference unavailable. Refresh the finding before handing it to pre-deployment review.</p>}
             </div>
           </article>
         ))}

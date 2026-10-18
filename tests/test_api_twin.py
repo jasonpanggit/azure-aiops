@@ -11,6 +11,7 @@ from api.app import create_app
 from api.auth import StaticTokenAuthenticator
 from api.dependencies import ApiContext
 from api.rbac import Authorizer, Grant, Principal
+from api.scope import Scope
 from api.telemetry import ApiTelemetry
 from onboarding.service import SubscriptionOnboardingService
 
@@ -203,6 +204,11 @@ def test_twin_graph_composes_live_sources_with_semantic_envelope(tmp_path):
     )
     assert data["temporal"]["current_state_version"] == data["version"]
     assert data["timeline"]
+    assert body["live_observed_at"] == ""
+    assert data["composed_at"] == data["observed_at"]
+    resource = next(row for row in data["entities"] if row["kind"] == "resource")
+    assert "observed_at" not in resource["properties"]["temporal_state"]
+    assert resource["properties"]["temporal_state"]["composed_at"]
 
 
 def test_twin_source_status_reports_missing_optional_providers(tmp_path):
@@ -247,7 +253,10 @@ def test_twin_scenario_and_traversal_explain_business_impact(tmp_path):
     ]
 
     assert scenario["scenario"] == "cve_exploitation"
-    assert scenario["risk_delta"] > 0
+    assert scenario["risk_delta"] is None
+    assert scenario["analysis_kind"] == "bounded_topology_review"
+    assert scenario["authority"] == "none"
+    assert scenario["impacted_total"] >= len(scenario["impacted_entities"])
     assert "Payroll" in traversal["business_consequence"]
     assert any(entity["kind"] == "application" for entity in traversal["path"])
 
@@ -259,3 +268,79 @@ def test_twin_export_is_auditable(tmp_path):
     data = response.json()["data"]
     assert data["format"] == "operational-twin-export"
     assert data["snapshot"]["version"]
+
+
+def test_twin_never_fabricates_a_prior_revision(tmp_path):
+    client = _client(tmp_path)
+    data = client.get("/api/v1/twin/graph", headers=_auth()).json()["data"]
+    assert data["previous_version"] is None
+    assert data["observation_kind"] == "request_time_composition"
+    assert data["temporal"]["previous_state_version"] is None
+    assert data["temporal"]["change_history"] == []
+    assert all(row["previous_count"] is None for row in data["temporal"]["dependency_evolution"])
+    comparison = client.get("/api/v1/twin/compare", headers=_auth()).json()["data"]
+    assert comparison["comparison_available"] is False
+    assert comparison["added"] == comparison["removed"] == comparison["changed"] == []
+    assert comparison["previous_version"] is None
+
+
+def test_twin_rejects_unknown_scenarios_and_nonexact_targets(tmp_path):
+    client = _client(tmp_path)
+    for payload, expected in [
+        ({"scenario": "execute", "target": "vm-payroll-1"}, 400),
+        ({"scenario": "firewall_failure"}, 404),
+        ({"scenario": "firewall_failure", "target": "payroll"}, 404),
+        ({"scenario": "firewall_failure", "target": "payroll-vm"}, 404),
+        ({"scenario": "firewall_failure", "target": "vm-foreign"}, 404),
+        ({"scenario": ["firewall_failure"], "target": "vm-payroll-1"}, 400),
+        ({"scenario": "firewall_failure", "target": {"id": "vm-payroll-1"}}, 400),
+        ({"scenario": False, "target": "vm-payroll-1"}, 400),
+        ({"scenario": "firewall_failure", "target": []}, 400),
+        ({"scenario": "firewall_failure", "target": None}, 400),
+        ({"scenario": "firewall_failure", "target": "x" * 2049}, 400),
+    ]:
+        response = client.post("/api/v1/twin/scenarios", headers=_auth(), json=payload)
+        assert response.status_code == expected, response.text
+    response = client.post(
+        "/api/v1/twin/scenarios", headers=_auth(),
+        json={"scenario": "route_change", "target": "resource:vm-payroll-1"},
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_twin_request_and_reader_grant_filter_operational_contributions(tmp_path):
+    client = _client(tmp_path)
+    context = client.app.state.context
+    context.authenticator = StaticTokenAuthenticator({TOKEN: Principal(
+        subject="reader@example.com",
+        grants=(Grant("reader", scope=Scope.from_mapping(
+            {"subscription": ["sub-prod"]},
+        )),),
+    )})
+    attributes = {
+        "subscription_id": "sub-prod", "supportTeam": "payroll-ops",
+        "location": "eastus", "severity_tier": "high",
+    }
+    incidents = [
+        {"incident": {"incident_id": "visible-incident", **attributes}},
+        {"incident": {"incident_id": "foreign-incident", **attributes, "location": "westus"}},
+        {"incident": {"incident_id": "unmapped-incident"}},
+    ]
+    plans = [
+        {"plan_id": "visible-plan", "resource": attributes},
+        {"plan_id": "foreign-plan", "resource": {**attributes, "subscription_id": "sub-other"}},
+        {"plan_id": "unmapped-plan"},
+    ]
+    context.incident_provider = lambda: SimpleNamespace(report=lambda: {"incidents": incidents})
+    context.remediation_provider = lambda: SimpleNamespace(generate_plans=lambda: {"plans": plans})
+    response = client.get(
+        "/api/v1/twin/graph?support_team=payroll-ops&region=eastus&criticality=high",
+        headers=_auth(),
+    )
+    assert response.status_code == 200, response.text
+    assert {entity["id"] for entity in response.json()["data"]["entities"]} >= {
+        "incident:visible-incident", "remediation:visible-plan",
+    }
+    for hidden in ["foreign-incident", "unmapped-incident", "foreign-plan", "unmapped-plan"]:
+        assert hidden not in response.text
+    assert response.json()["scope"]["subscription"] == ["sub-prod"]

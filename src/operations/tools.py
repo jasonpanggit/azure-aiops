@@ -278,14 +278,11 @@ def _network_scope(
     *,
     default_subscription_ids: tuple[str, ...] = (),
 ) -> NetworkScope:
-    subscription_ids = tuple(scope.dimensions.get("subscription", ()))
-    return NetworkScope(
-        connection_ids=tuple(scope.dimensions.get("subscription_connection", ())),
-        subscription_ids=subscription_ids or default_subscription_ids,
-        environments=tuple(scope.dimensions.get("environment", ())),
-        business_services=tuple(scope.dimensions.get("business_service", ())),
-        applications=tuple(scope.dimensions.get("application", ())),
-        owners=tuple(scope.dimensions.get("owner", ())),
+    return NetworkScope.from_dimensions(
+        {
+            **scope.dimensions,
+            "subscription": scope.values("subscription") or default_subscription_ids,
+        }
     )
 
 

@@ -218,13 +218,17 @@ class GovernancePipeline:
 
         # Summary metrics
         summary = engine.summary()
-        if summary.get("identified_annual_savings", 0) > 0:
+        identified_savings = summary.get("identified_annual_savings")
+        if isinstance(identified_savings, (int, float)) and identified_savings > 0:
             findings.append(
                 GovernanceFinding(
                     finding_type="finops_summary",
                     resource_id="",
                     severity="info",
-                    title=f"FinOps summary: ${summary.get('identified_annual_savings', 0)} identified savings",
+                    title=(
+                        f"FinOps summary: {identified_savings} "
+                        f"{summary.get('currency') or 'currency unreported'} identified savings"
+                    ),
                     description="Cost optimization opportunities identified by Azure Advisor",
                     finding_data=summary,
                 )

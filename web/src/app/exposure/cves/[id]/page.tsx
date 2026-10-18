@@ -13,6 +13,8 @@ import {
   type RiskExceptionRevokeResult,
 } from "@/components/exposure/RiskExceptionDialog";
 import { SourceFreshnessRail } from "@/components/exposure/SourceFreshnessRail";
+import { CveFixMatrix } from "@/components/exposure/CveFixMatrix";
+import { CveEvidence } from "@/components/exposure/CveEvidence";
 import { AttackPathGraphView } from "@/components/ui/AttackPathGraphView";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -299,7 +301,7 @@ function catalogDetail(
     affected_applications: [],
     affected_business_services: [],
     findings: [],
-    recommended_patch: Array.from(associatedKbs).sort()[0] ?? "",
+    recommended_patch: "",
   };
 }
 
@@ -451,9 +453,8 @@ function Section({
   );
 }
 
-/** Scoped CVE detail with independent core, graph, and enrichment state. */
-export default function CveDetailPage({ params }: { params: { id: string } }) {
-  const cveId = decodeURIComponent(params.id);
+function CveDetailBody({ params }: { params: { id: string } }) {
+  const cveId = decodeURIComponent(params.id).toUpperCase();
   const { scope } = useScope();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -636,6 +637,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
     detailContext,
   );
   const findingPage = findings.data;
+  const retainedQuery = useMemo(() => ({ ...findingState, generation: findingPage?.generation ?? findingState.generation }), [findingState, findingPage?.generation]);
   const first = rows.length ? (findingState.page - 1) * findingState.pageSize + 1 : 0;
   const last = rows.length ? first + rows.length - 1 : 0;
   const representedTargets = findingPage?.contract.counts.represented;
@@ -650,7 +652,7 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
         : "Validate applicability, reachability, and business impact before scheduling the recommended update through the governed remediation workflow.";
 
   const kbHref = (kbId: string) =>
-    exposureDetailHref("kbs", kbId, queryState, detailContext);
+    exposureDetailHref("kbs", kbId, { ...queryState, generation: findings.data?.generation ?? queryState.generation }, detailContext);
 
   async function recordRiskException(
     request: RiskExceptionRecordRequest,
@@ -987,17 +989,19 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
                 </div>
                 <p>{remediationGuidance}</p>
                 <p className="muted">
-                  Recommended update:{" "}
+                  Selected update:{" "}
                   {data?.recommended_patch ? (
                     <Link className="table-primary-link" href={kbHref(data.recommended_patch)}>
                       {data.recommended_patch}
                     </Link>
                   ) : (
-                    "No durable update mapping is available"
+                    "None. Catalog associations do not establish applicability; review the fix evidence matrix."
                   )}
                   . Approval and execution remain in the governed remediation workflow.
                 </p>
               </section>
+              <CveFixMatrix cveId={cveId} catalog={catalog.data} catalogScope={catalog.envelope?.scope ?? {}}
+                page={findingPage} pageScope={findings.envelope?.scope ?? {}} query={findingState} kbHref={kbHref} />
 
               {containerOnly ? (
                 <section role="region" aria-label="Attack path section">
@@ -1245,6 +1249,9 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
         />
       )}
 
+      <CveEvidence key={exposureQueryKey(retainedQuery)} cveId={cveId.toUpperCase()} query={retainedQuery}
+        ready={Boolean(findingPage && catalog.data && findingPage.generation === catalog.data.generation
+          && !findings.loading && !findings.retained && !catalog.loading && !catalog.retained && !restartRequired)} />
       <CopilotDrawer
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}
@@ -1255,4 +1262,12 @@ export default function CveDetailPage({ params }: { params: { id: string } }) {
       />
     </div>
   );
+}
+
+/** Isolates local CVE filters, dialogs and asynchronous evidence at the URL/scope boundary. */
+export default function CveDetailPage({ params }: { params: { id: string } }) {
+  const { scope } = useScope();
+  const searchParams = useSearchParams();
+  const query = parseExposureQueryState(new URLSearchParams(searchParams.toString()), { authorizedScope: scope });
+  return <CveDetailBody key={`${params.id}:${exposureQueryKey(query)}`} params={params} />;
 }

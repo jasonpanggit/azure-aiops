@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CountBarChart } from "@/components/ui/CountBarChart";
@@ -17,6 +17,7 @@ import { buildFinOpsCopilotContext } from "@/lib/copilot/page-adapters";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { governanceApi } from "@/lib/services";
+import type { FinOpsVerifiedRemediation } from "@/lib/types";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
@@ -30,22 +31,115 @@ const DIMENSIONS = [
 ] as const;
 
 type Dimension = (typeof DIMENSIONS)[number];
+type ScenarioName = "A" | "B";
+
+interface ScenarioSummary {
+  name: ScenarioName;
+  selectedCount: number;
+  currencyTotals: Array<{ currency: string; amount: number }>;
+  unreportedCurrencyCount: number;
+  unquantifiedCount: number;
+}
+
+const EMPTY_SELECTION = new Set<string>();
+
+function opportunityKey(row: {
+  recommendation_id: string;
+  resource_id: string;
+  problem: string;
+  solution: string;
+  currency: string;
+}): string {
+  return JSON.stringify([
+    row.recommendation_id,
+    row.resource_id,
+    row.problem,
+    row.solution,
+    row.currency,
+  ]);
+}
 
 /** Renders a saving, keeping "not quantified" visibly distinct from zero. */
 function money(amount: number | null | undefined, currency: string): string {
   if (amount === null || amount === undefined) return "Not quantified";
-  const suffix = currency && currency !== "mixed" ? ` ${currency}` : "";
-  return `${Math.round(amount).toLocaleString()}${suffix}`;
+  const formatted = Math.round(amount).toLocaleString();
+  return currency ? `${formatted} ${currency}` : `${formatted} (currency unreported)`;
+}
+
+function aggregateMoney(amount: number | null | undefined, currency: string): string {
+  if (currency === "mixed") return "Mixed currencies — not aggregated";
+  if (currency === "unreported") return "Currency unreported — not aggregated";
+  return money(amount, currency);
+}
+
+function currencyTotalsText(
+  totals: Array<{ currency: string; amount: number | null; count: number }>,
+): string {
+  return totals
+    .map((total) =>
+      total.currency === "unreported"
+        ? `${total.count} ${total.count === 1 ? "amount" : "amounts"} with currency unreported`
+        : money(total.amount, total.currency),
+    )
+    .join("; ");
 }
 
 export default function FinOpsPage() {
   const { scope } = useScope();
   const [dimension, setDimension] = useState<Dimension>("subscription");
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [executionOffset, setExecutionOffset] = useState(0);
+  const [selectedExecution, setSelectedExecution] = useState<{
+    scopeKey: string;
+    executionId: string;
+  }>(() => ({ scopeKey: JSON.stringify(scope), executionId: "" }));
+  const [baselineStart, setBaselineStart] = useState("");
+  const [baselineEnd, setBaselineEnd] = useState("");
+  const [followupStart, setFollowupStart] = useState("");
+  const [followupEnd, setFollowupEnd] = useState("");
+  const [comparisonRequest, setComparisonRequest] = useState<{
+    scopeKey: string;
+    execution_id: string;
+    baseline_start: string;
+    baseline_end: string;
+    followup_start: string;
+    followup_end: string;
+  } | null>(null);
+  const [scenarioSelection, setScenarioSelection] = useState<{
+    scopeKey: string;
+    a: Set<string>;
+    b: Set<string>;
+  }>(() => ({ scopeKey: JSON.stringify(scope), a: new Set(), b: new Set() }));
+  const scenarioScopeKey = JSON.stringify(scope);
+  const scenarioASelection =
+    scenarioSelection.scopeKey === scenarioScopeKey
+      ? scenarioSelection.a
+      : EMPTY_SELECTION;
+  const scenarioBSelection =
+    scenarioSelection.scopeKey === scenarioScopeKey
+      ? scenarioSelection.b
+      : EMPTY_SELECTION;
 
   const summary = useApi(() => governanceApi.finopsSummary(scope), [scope]);
   const opportunities = useApi(() => governanceApi.finopsOpportunities(scope), [scope]);
   const waste = useApi(() => governanceApi.finopsWaste(scope), [scope]);
+  const verifiedRemediations = useApi(
+    () => governanceApi.finopsVerifiedRemediations(scope, executionOffset),
+    [scope, executionOffset],
+  );
+  const costComparison = useApi(
+    () =>
+      comparisonRequest?.scopeKey === scenarioScopeKey
+        ? governanceApi.finopsRemediationCostComparison(scope, {
+            execution_id: comparisonRequest.execution_id,
+            baseline_start: comparisonRequest.baseline_start,
+            baseline_end: comparisonRequest.baseline_end,
+            followup_start: comparisonRequest.followup_start,
+            followup_end: comparisonRequest.followup_end,
+          })
+        : Promise.resolve(null),
+    [scope, comparisonRequest],
+  );
   const attribution = useApi(
     () => governanceApi.finopsAttribution(dimension, scope),
     [scope, dimension],
@@ -58,11 +152,15 @@ export default function FinOpsPage() {
   const currency = totals?.currency ?? "";
   const billedSpendCurrency = totals?.actual_spend_currency ?? currency;
   const billedSpendDetail =
-    totals?.actual_spend !== undefined
+    totals?.actual_spend !== undefined && totals.actual_spend !== null
       ? `${totals.actual_spend_period_start || "Current period"} to ${
           totals.actual_spend_period_end || "latest"
         } from Cost Management (${totals.actual_spend_record_count ?? 0} rows). ` +
         "Not real-time — refreshed on sync. Go to Connections, click \"Sync now\" to refresh."
+      : totals?.actual_spend === null
+        ? `${totals.actual_spend_record_count ?? 0} Cost Management rows from ${
+            totals.actual_spend_period_start || "an unknown start"
+          } to ${totals.actual_spend_period_end || "an unknown end"} were observed, but their currencies cannot be combined. No foreign-exchange conversion is applied.`
       : "Not real-time — synced periodically from Cost Management. " +
         "Go to Connections, click \"Sync now\" on the subscription connection to refresh.";
 
@@ -70,18 +168,82 @@ export default function FinOpsPage() {
     () => opportunities.data?.data.opportunities ?? [],
     [opportunities.data],
   );
+  const scenarioSummaries = useMemo(() => {
+    const summarize = (
+      name: ScenarioName,
+      selectedIds: Set<string>,
+    ): ScenarioSummary => {
+      const totals = new Map<string, number>();
+      let selectedCount = 0;
+      let unreportedCurrencyCount = 0;
+      let unquantifiedCount = 0;
+
+      for (const row of rows) {
+        if (!selectedIds.has(opportunityKey(row))) continue;
+        selectedCount += 1;
+        if (
+          typeof row.annual_savings !== "number" ||
+          !Number.isFinite(row.annual_savings) ||
+          row.annual_savings < 0
+        ) {
+          unquantifiedCount += 1;
+          continue;
+        }
+        const code = row.currency.trim().toUpperCase();
+        if (!/^[A-Z]{3}$/.test(code)) {
+          unreportedCurrencyCount += 1;
+          continue;
+        }
+        totals.set(code, (totals.get(code) ?? 0) + row.annual_savings);
+      }
+
+      return {
+        name,
+        selectedCount,
+        currencyTotals: Array.from(totals.entries())
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([currencyCode, amount]) => ({ currency: currencyCode, amount })),
+        unreportedCurrencyCount,
+        unquantifiedCount,
+      };
+    };
+
+    return [
+      summarize("A", scenarioASelection),
+      summarize("B", scenarioBSelection),
+    ];
+  }, [rows, scenarioASelection, scenarioBSelection]);
   const wasteRows = useMemo(() => waste.data?.data.waste ?? [], [waste.data]);
   const attributionGroups = useMemo(
     () => attribution.data?.data.groups ?? [],
     [attribution.data],
   );
+  const remediationExecutions =
+    verifiedRemediations.data?.data.executions ?? [];
+  const selectedExecutionId =
+    selectedExecution.scopeKey === scenarioScopeKey
+      ? selectedExecution.executionId
+      : "";
+  const comparisonResult = costComparison.data?.data ?? null;
+  const currencyBreakdownVisible =
+    totals?.currency === "mixed" ||
+    totals?.currency === "unreported" ||
+    totals?.actual_spend_currency === "mixed" ||
+    totals?.actual_spend_currency === "unreported";
 
   const {
     filteredRows: filteredAttributionGroups,
     filters: attributionFilters,
     resetFilters: resetAttributionFilters,
   } = useColumnFilters(attributionGroups, [
-    { id: "group", label: titleize(dimension), getValues: (group) => group[dimension] ?? "Unattributed" },
+    {
+      id: "group",
+      label: titleize(dimension),
+      getValues: (group) => {
+        const value = group[dimension];
+        return typeof value === "string" ? value : "Unattributed";
+      },
+    },
   ]);
   const {
     filteredRows: filteredOpportunities,
@@ -95,7 +257,14 @@ export default function FinOpsPage() {
     const palette = ["var(--color-brand)", "#3ea3e0", "var(--color-success)", "var(--color-warning)", "var(--color-text-muted)"];
     const totalsBySource = new Map<string, number>();
     for (const opportunity of filteredOpportunities) {
-      const key = titleize(opportunity.savings_source || "unknown");
+      const currencyCode = opportunity.currency.trim().toUpperCase();
+      if (
+        opportunity.annual_savings === null ||
+        !/^[A-Z]{3}$/.test(currencyCode)
+      ) {
+        continue;
+      }
+      const key = `${titleize(opportunity.savings_source || "unknown")} (${currencyCode})`;
       totalsBySource.set(key, (totalsBySource.get(key) ?? 0) + (opportunity.annual_savings ?? 0));
     }
     return Array.from(totalsBySource.entries())
@@ -124,6 +293,58 @@ export default function FinOpsPage() {
       .map(([label, value], index) => ({ id: `waste-${index}`, label, value }));
   }, [filteredWasteRows]);
 
+  const toggleScenarioSelection = (
+    scenario: ScenarioName,
+    key: string,
+  ) => {
+    setScenarioSelection((current) => {
+      const base =
+        current.scopeKey === scenarioScopeKey
+          ? current
+          : { scopeKey: scenarioScopeKey, a: new Set<string>(), b: new Set<string>() };
+      const field = scenario === "A" ? "a" : "b";
+      const next = new Set(base[field]);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return scenario === "A"
+        ? { ...base, scopeKey: scenarioScopeKey, a: next }
+        : { ...base, scopeKey: scenarioScopeKey, b: next };
+    });
+  };
+
+  const clearScenarioSelection = (scenario: ScenarioName) => {
+    setScenarioSelection((current) => {
+      const base =
+        current.scopeKey === scenarioScopeKey
+          ? current
+          : { scopeKey: scenarioScopeKey, a: new Set<string>(), b: new Set<string>() };
+      return scenario === "A"
+        ? { ...base, scopeKey: scenarioScopeKey, a: new Set() }
+        : { ...base, scopeKey: scenarioScopeKey, b: new Set() };
+    });
+  };
+
+  const submitCostComparison = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (
+      !selectedExecutionId ||
+      !baselineStart ||
+      !baselineEnd ||
+      !followupStart ||
+      !followupEnd
+    ) {
+      return;
+    }
+    setComparisonRequest({
+      scopeKey: scenarioScopeKey,
+      execution_id: selectedExecutionId,
+      baseline_start: baselineStart,
+      baseline_end: baselineEnd,
+      followup_start: followupStart,
+      followup_end: followupEnd,
+    });
+  };
+
   const attributionPaging = useTablePagination(filteredAttributionGroups);
   const opportunityPaging = useTablePagination(filteredOpportunities);
   const wastePaging = useTablePagination(filteredWasteRows);
@@ -138,11 +359,14 @@ export default function FinOpsPage() {
       ? {
           identified_annual_savings: totals.identified_annual_savings,
           currency: totals.currency,
+          identified_annual_savings_currency_totals:
+            totals.identified_annual_savings_currency_totals ?? [],
           savings_opportunity_count: totals.savings_opportunity_count,
           quantified_opportunity_count: totals.quantified_opportunity_count,
           waste_item_count: totals.waste_item_count,
           actual_spend: totals.actual_spend,
           actual_spend_currency: totals.actual_spend_currency,
+          actual_spend_currency_totals: totals.actual_spend_currency_totals ?? [],
           actual_spend_period_start: totals.actual_spend_period_start,
           actual_spend_period_end: totals.actual_spend_period_end,
           unavailable_metrics: totals.unavailable_metrics ?? [],
@@ -152,7 +376,10 @@ export default function FinOpsPage() {
     attribution: attributionGroups.map((group) => ({
       dimension,
       group: String(group[dimension] ?? "Unattributed"),
-      identified_annual_savings: Number(group.identified_annual_savings ?? 0),
+      identified_annual_savings: group.identified_annual_savings,
+      currency: group.currency,
+      identified_annual_savings_currency_totals:
+        group.identified_annual_savings_currency_totals ?? [],
       savings_opportunity_count: Number(group.savings_opportunity_count ?? 0),
       waste_item_count: Number(group.waste_item_count ?? 0),
     })),
@@ -245,9 +472,16 @@ export default function FinOpsPage() {
           <div className="metric-grid">
             <MetricCard
               label="Identified annual savings"
-              value={money(totals?.identified_annual_savings ?? null, currency)}
+              value={aggregateMoney(
+                totals?.identified_annual_savings,
+                currency,
+              )}
               detail="Azure Advisor's own computation, not an estimate of ours"
-              tone="success"
+              tone={
+                typeof totals?.identified_annual_savings === "number"
+                  ? "success"
+                  : "warning"
+              }
             />
             <MetricCard
               label="Savings opportunities"
@@ -262,13 +496,17 @@ export default function FinOpsPage() {
             />
             <MetricCard
               label="Billed spend"
-              value={
-                totals?.actual_spend !== undefined
-                  ? money(totals.actual_spend, billedSpendCurrency)
-                  : "Unavailable"
-              }
+              value={totals?.actual_spend === undefined
+                ? "Unavailable"
+                : aggregateMoney(totals.actual_spend, billedSpendCurrency)}
               detail={billedSpendDetail}
-              tone={totals?.actual_spend !== undefined ? "success" : "critical"}
+              tone={
+                typeof totals?.actual_spend === "number"
+                  ? "success"
+                  : totals?.actual_spend === null
+                    ? "warning"
+                    : "critical"
+              }
             />
           </div>
 
@@ -276,10 +514,13 @@ export default function FinOpsPage() {
             <div className="card dashboard-charts-row">
               {savingsByCategory.length > 0 && (
                 <div className="chart-card">
-                  <h3 className="chart-card-title">Savings by category</h3>
+                  <h3 className="chart-card-title">Savings by source and currency</h3>
                   <DonutChart
                     segments={savingsByCategory}
-                    centerValue={money(totals?.identified_annual_savings ?? null, currency)}
+                    centerValue={aggregateMoney(
+                      totals?.identified_annual_savings,
+                      currency,
+                    )}
                     centerLabel="Identified"
                   />
                 </div>
@@ -299,8 +540,8 @@ export default function FinOpsPage() {
                 <div>
                   <h2>What this page cannot tell you</h2>
                   <p>
-                    These figures are deliberately absent rather than estimated,
-                    so nothing here is mistaken for billed cost.
+                These figures are deliberately absent rather than estimated
+                or inferred from unrelated observations.
                   </p>
                 </div>
               </div>
@@ -322,6 +563,76 @@ export default function FinOpsPage() {
                             </span>
                           </td>
                           <td>{item.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {currencyBreakdownVisible && (
+            <section className="card">
+              <div className="card-header">
+                <div>
+                  <h2>Financial totals by currency</h2>
+                  <p>
+                    Amounts are grouped only when Azure reports the same
+                    currency. No exchange-rate conversion is applied.
+                  </p>
+                </div>
+              </div>
+              <div className="card-body">
+                <div className="table-scroll">
+                  <table className="operations-table">
+                    <thead>
+                      <tr>
+                        <th>Evidence</th>
+                        <th>Currency</th>
+                        <th>Amount</th>
+                        <th>Records</th>
+                        <th>Period</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {totals?.identified_annual_savings_currency_totals?.map(
+                        (total) => (
+                          <tr key={`savings-${total.currency}`}>
+                            <td>Azure Advisor annual savings</td>
+                            <td>
+                              {total.currency === "unreported"
+                                ? "Not reported"
+                                : total.currency}
+                            </td>
+                            <td>
+                              {total.amount === null
+                                ? "Not aggregated — currency unreported"
+                                : money(total.amount, total.currency)}
+                            </td>
+                            <td>{total.count} opportunities</td>
+                            <td>Annualized</td>
+                          </tr>
+                        ),
+                      )}
+                      {totals?.actual_spend_currency_totals?.map((total) => (
+                        <tr key={`spend-${total.currency}`}>
+                          <td>Cost Management actual spend</td>
+                          <td>
+                            {total.currency === "unreported"
+                              ? "Not reported"
+                              : total.currency}
+                          </td>
+                          <td>
+                            {total.amount === null
+                              ? "Not aggregated — currency unreported"
+                              : money(total.amount, total.currency)}
+                          </td>
+                          <td>{total.count} rows</td>
+                          <td>
+                            {totals.actual_spend_period_start || "Unknown"} to{" "}
+                            {totals.actual_spend_period_end || "Unknown"}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -399,7 +710,14 @@ export default function FinOpsPage() {
                             </span>
                           </td>
                           <td>
-                            {money(Number(group.identified_annual_savings), currency)}
+                            {group.identified_annual_savings_currency_totals?.length
+                              ? currencyTotalsText(
+                                  group.identified_annual_savings_currency_totals,
+                                )
+                              : aggregateMoney(
+                                  group.identified_annual_savings,
+                                  group.currency ?? currency,
+                                )}
                           </td>
                           <td>{group.savings_opportunity_count}</td>
                           <td>{group.waste_item_count}</td>
@@ -425,10 +743,304 @@ export default function FinOpsPage() {
           <section className="card">
             <div className="card-header">
               <div>
+                <h2>Review scenarios</h2>
+                <p>
+                  Compare temporary selections of Azure Advisor opportunities.
+                  The annualized figures stay separate by currency and are
+                  potential amounts only—not realized, approved, or guaranteed.
+                </p>
+              </div>
+            </div>
+            <div className="card-body">
+              <div className="table-scroll">
+                <table className="operations-table">
+                  <thead>
+                    <tr>
+                      <th>Scenario</th>
+                      <th>Selected opportunities</th>
+                      <th>Potential annualized amounts</th>
+                      <th>Unreported currency</th>
+                      <th>Not quantified</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scenarioSummaries.map((scenario) => {
+                      const amounts = scenario.currencyTotals
+                        .map((total) => money(total.amount, total.currency))
+                        .join("; ");
+                      const detail = [
+                        amounts || "No comparable quantified amounts",
+                        scenario.unreportedCurrencyCount > 0
+                          ? `${scenario.unreportedCurrencyCount} excluded from totals`
+                          : null,
+                        scenario.unquantifiedCount > 0
+                          ? `${scenario.unquantifiedCount} unquantified`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join("; ");
+                      return (
+                        <tr key={scenario.name}>
+                          <td>
+                            <span className="table-primary-link">
+                              Scenario {scenario.name}
+                            </span>
+                          </td>
+                          <td>{scenario.selectedCount}</td>
+                          <td>{detail}</td>
+                          <td>{scenario.unreportedCurrencyCount}</td>
+                          <td>{scenario.unquantifiedCount}</td>
+                          <td>
+                            <button
+                              type="button"
+                              aria-label={`Clear Scenario ${scenario.name}`}
+                              onClick={() => clearScenarioSelection(scenario.name)}
+                              disabled={scenario.selectedCount === 0}
+                            >
+                              Clear
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="table-secondary">
+                Selections are held only in this page session. They do not save
+                a decision, approve an action, or trigger remediation.
+              </p>
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <div>
+                <h2>Compare cost around a verified change</h2>
+                <p>
+                  Compare equal-length Cost Management windows for the exact
+                  resource in a successfully executed, cleanly reconciled
+                  remediation. This is observed cost movement, not proof of
+                  realized savings or causality.
+                </p>
+              </div>
+            </div>
+            <div className="card-body">
+              {verifiedRemediations.error ? (
+                <StatePanel
+                  title="Verified remediation evidence is unavailable"
+                  message={
+                    verifiedRemediations.error.message ??
+                    "Stored remediation evidence could not be confirmed."
+                  }
+                  tone="error"
+                />
+              ) : verifiedRemediations.loading ? (
+                <StatePanel
+                  title="Reading verified changes"
+                  message="Checking successful remediation records and their stored evidence reconciliation."
+                  tone="loading"
+                />
+              ) : remediationExecutions.length === 0 ? (
+                <StatePanel
+                  title="No verified remediation changes in this scope"
+                  message="Only successful executions with clean stored evidence reconciliation are eligible for a cost comparison."
+                />
+              ) : (
+                <>
+                  <form
+                    className="form-grid"
+                    onSubmit={submitCostComparison}
+                    aria-label="Compare cost around a verified change"
+                  >
+                    <label className="form-field form-span">
+                      <span>Verified remediation</span>
+                      <select
+                        value={selectedExecutionId}
+                        onChange={(event) => {
+                          setSelectedExecution({
+                            scopeKey: scenarioScopeKey,
+                            executionId: event.target.value,
+                          });
+                          setComparisonRequest(null);
+                        }}
+                        required
+                      >
+                        <option value="">Select a verified change</option>
+                        {remediationExecutions.map(
+                          (execution: FinOpsVerifiedRemediation) => (
+                            <option
+                              key={execution.execution_id}
+                              value={execution.execution_id}
+                            >
+                              {execution.changed_at.slice(0, 10)} —{" "}
+                              {execution.target_resource_id} (
+                              {execution.execution_id})
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    </label>
+                    <label className="form-field">
+                      <span>Baseline start</span>
+                      <input
+                        type="date"
+                        value={baselineStart}
+                        onChange={(event) => setBaselineStart(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>Baseline end</span>
+                      <input
+                        type="date"
+                        value={baselineEnd}
+                        onChange={(event) => setBaselineEnd(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>Follow-up start</span>
+                      <input
+                        type="date"
+                        value={followupStart}
+                        onChange={(event) => setFollowupStart(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>Follow-up end</span>
+                      <input
+                        type="date"
+                        value={followupEnd}
+                        onChange={(event) => setFollowupEnd(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <div className="form-actions">
+                      <button
+                        type="submit"
+                        disabled={costComparison.loading || !selectedExecutionId}
+                      >
+                        {costComparison.loading
+                          ? "Comparing…"
+                          : "Compare observed costs"}
+                      </button>
+                    </div>
+                  </form>
+                  {verifiedRemediations.data?.pagination?.next_offset !==
+                    undefined &&
+                    verifiedRemediations.data.pagination.next_offset !== null && (
+                      <div className="form-actions">
+                        <button
+                          type="button"
+                          disabled={executionOffset === 0}
+                          onClick={() =>
+                            setExecutionOffset((offset) => Math.max(0, offset - 50))
+                          }
+                        >
+                          Previous changes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExecutionOffset(
+                              verifiedRemediations.data?.pagination?.next_offset ?? 0,
+                            )
+                          }
+                        >
+                          Next changes
+                        </button>
+                      </div>
+                    )}
+                  {costComparison.error && (
+                    <StatePanel
+                      title="Cost comparison could not be completed"
+                      message={
+                        costComparison.error.message ??
+                        "The requested comparison was rejected."
+                      }
+                      tone="error"
+                    />
+                  )}
+                  {comparisonResult && (
+                    <div className="card" aria-live="polite">
+                      {comparisonResult.available &&
+                      comparisonResult.baseline &&
+                      comparisonResult.followup &&
+                      comparisonResult.currency &&
+                      typeof comparisonResult.baseline.average_daily_cost ===
+                        "number" &&
+                      typeof comparisonResult.followup.average_daily_cost ===
+                        "number" ? (
+                        <>
+                          <h3>Observed cost movement</h3>
+                          <p>
+                            Baseline average:{" "}
+                            {comparisonResult.baseline.average_daily_cost.toFixed(
+                              2,
+                            )}{" "}
+                            {comparisonResult.currency}/day (
+                            {comparisonResult.baseline.start} to{" "}
+                            {comparisonResult.baseline.end}). Follow-up average:{" "}
+                            {comparisonResult.followup.average_daily_cost.toFixed(
+                              2,
+                            )}{" "}
+                            {comparisonResult.currency}/day (
+                            {comparisonResult.followup.start} to{" "}
+                            {comparisonResult.followup.end}).
+                          </p>
+                          <p>
+                            Average daily cost change:{" "}
+                            {comparisonResult.observed_average_daily_cost_change?.toFixed(
+                              2,
+                            )}{" "}
+                            {comparisonResult.currency}/day; positive means the
+                            observed average was lower in the follow-up period.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <h3>Comparison unavailable</h3>
+                          <p>{comparisonResult.reason}</p>
+                        </>
+                      )}
+                      <p className="table-secondary">
+                        Coverage:{" "}
+                        {comparisonResult.coverage.baseline_days_observed}/
+                        {comparisonResult.coverage.expected_days_per_window}{" "}
+                        baseline days and{" "}
+                        {comparisonResult.coverage.followup_days_observed}/
+                        {comparisonResult.coverage.expected_days_per_window}{" "}
+                        follow-up days. Snapshot observed at{" "}
+                        {comparisonResult.coverage.snapshot_observed_at || "unknown"}.
+                      </p>
+                      <ul>
+                        {comparisonResult.limitations.map((limitation) => (
+                          <li key={limitation}>{limitation}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <p className="table-secondary">
+                    Windows must be equal length, non-overlapping, no more than
+                    30 days each, and fully covered by same-currency daily
+                    records. This read-only comparison does not approve or
+                    execute remediation.
+                  </p>
+                </>
+              )}
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <div>
                 <h2>Savings opportunities</h2>
                 <p>
                   Azure Advisor cost recommendations, richest quantified saving
-                  first.
+                  first. Use the checkboxes to compare opportunities above.
                 </p>
               </div>
             </div>
@@ -450,6 +1062,8 @@ export default function FinOpsPage() {
                   <table className="operations-table">
                     <thead>
                       <tr>
+                        <th>Scenario A</th>
+                        <th>Scenario B</th>
                         <th>Recommendation</th>
                         <th>Impact</th>
                         <th>Annual saving</th>
@@ -458,8 +1072,26 @@ export default function FinOpsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {opportunityPaging.pageRows.map((row, index) => (
-                        <tr key={row.recommendation_id || row.resource_id || index}>
+                      {opportunityPaging.pageRows.map((row) => {
+                        const key = opportunityKey(row);
+                        return (
+                        <tr key={key}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              aria-label={`Include ${row.problem || "cost recommendation"} in Scenario A`}
+                              checked={scenarioASelection.has(key)}
+                              onChange={() => toggleScenarioSelection("A", key)}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="checkbox"
+                              aria-label={`Include ${row.problem || "cost recommendation"} in Scenario B`}
+                              checked={scenarioBSelection.has(key)}
+                              onChange={() => toggleScenarioSelection("B", key)}
+                            />
+                          </td>
                           <td>
                             <span className="table-primary-link">
                               {row.problem || "Cost recommendation"}
@@ -489,7 +1121,8 @@ export default function FinOpsPage() {
                             </div>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

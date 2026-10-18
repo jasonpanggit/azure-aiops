@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { formatDateTime } from "@/lib/format";
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { ScopeProvider, useScope } from "@/lib/scope-context";
 import type { ScopeSelection } from "@/lib/scope";
@@ -20,8 +21,16 @@ import type {
 // The readiness journey has its own independent contract and failure tests.
 vi.mock("@/components/ConnectionReadiness", () => ({ ConnectionReadiness: () => null }));
 
+const navigation = vi.hoisted(() => ({ query: "", push: vi.fn() }));
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(navigation.query),
+  useRouter: () => ({ push: navigation.push }),
+}));
+beforeEach(() => { navigation.query = ""; navigation.push.mockClear(); });
+
 const {
   create,
+  preflight,
   fabricCapabilities,
   fabricDataset,
   fabricGovernance,
@@ -48,6 +57,7 @@ const {
   updateConnection,
 } = vi.hoisted(() => ({
   create: vi.fn(),
+  preflight: vi.fn(),
   fabricCapabilities: vi.fn(),
   fabricDataset: vi.fn(),
   fabricGovernance: vi.fn(),
@@ -82,6 +92,7 @@ vi.mock("@/lib/services", async (importOriginal) => {
     investigateCanonical: vi.fn(() => new Promise(() => undefined)),
     connectionsApi: {
       create,
+      preflight,
       get: getConnection,
       health,
       list,
@@ -518,6 +529,70 @@ describe("Connections page Ontology automation tab", () => {
     });
   });
 
+  it("restores a bookmarked non-default connection only after authorized rows arrive", async () => {
+    const second = { ...connection, connection_id: "other", name: "Other authorized", subscription_id: "sub-b" };
+    list.mockResolvedValue({ ...emptyEnvelope, data: [connection, second] });
+    navigation.query = "tab=ontology-automation&connection=other";
+    renderConnectionsPage();
+    await waitFor(() => expect(ontologyStatus).toHaveBeenCalledWith("other", {}));
+    expect(ontologyStatus).not.toHaveBeenCalledWith(connection.connection_id, {});
+    expect(await screen.findByRole("combobox", { name: "Connection" })).toHaveValue("other");
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+  });
+
+  it("does not read a forged connection or silently select the first authorized connection", async () => {
+    navigation.query = "tab=ontology-automation&connection=forged";
+    renderConnectionsPage();
+    expect(await screen.findByText("Bookmarked connection is unavailable in this scope")).toBeInTheDocument();
+    expect(ontologyStatus).not.toHaveBeenCalled();
+    expect(ontologyRuns).not.toHaveBeenCalled();
+    expect(ontologyProposals).not.toHaveBeenCalled();
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Connection" }), { target: { value: connection.connection_id } });
+    expect(navigation.push).toHaveBeenLastCalledWith("/connections?tab=ontology-automation&connection=prod", { scroll: false });
+  });
+
+  it("restores tab and selection on URL history changes without starting discovery", async () => {
+    const view = renderConnectionsPage();
+    expect(await screen.findByRole("heading", { name: "Subscription connections" })).toBeInTheDocument();
+    navigation.query = "tab=ontology-automation&connection=prod";
+    view.rerender(<ScopeProvider><ConnectionsPage /></ScopeProvider>);
+    await waitFor(() => expect(ontologyStatus).toHaveBeenCalledWith("prod", {}));
+    navigation.query = "";
+    view.rerender(<ScopeProvider><ConnectionsPage /></ScopeProvider>);
+    expect(await screen.findByRole("heading", { name: "Subscription connections" })).toBeInTheDocument();
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+  });
+
+  it.each(["prod" + "x".repeat(257), "prod\u0000"])("does not reinterpret malformed bookmarks as another authorized connection (%s)", async value => {
+    navigation.query = `tab=ontology-automation&connection=${encodeURIComponent(value)}`;
+    renderConnectionsPage();
+    await screen.findByText("Bookmarked connection is unavailable in this scope");
+    expect(ontologyStatus).not.toHaveBeenCalled();
+    expect(ontologyRuns).not.toHaveBeenCalled();
+    expect(ontologyProposals).not.toHaveBeenCalled();
+  });
+
+  it("does not read a former-scope connection while the next authorized list is loading", async () => {
+    navigation.query = "tab=ontology-automation&connection=prod";
+    function ScopedPage() {
+      const { setScope } = useScope();
+      return <><button onClick={() => setScope({ subscription: ["sub-b"] })}>Change scope</button><ConnectionsPage /></>;
+    }
+    const view = render(<ScopeProvider><ScopedPage /></ScopeProvider>);
+    await waitFor(() => expect(ontologyStatus).toHaveBeenCalledWith("prod", {}));
+    ontologyStatus.mockClear();
+    ontologyRuns.mockClear();
+    ontologyProposals.mockClear();
+    list.mockImplementationOnce(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole("button", { name: "Change scope" }));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith({ subscription: ["sub-b"] }));
+    expect(ontologyStatus).not.toHaveBeenCalled();
+    expect(ontologyRuns).not.toHaveBeenCalled();
+    expect(ontologyProposals).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
   it("uses only server eligibility and preserves stale evaluation evidence with the disabled reason", async () => {
     ontologyStatus.mockResolvedValue(envelope({
       ...ontologyStatusData(),
@@ -658,6 +733,7 @@ describe("Connections page Ontology automation tab", () => {
 describe("Connections page Fabric Medallion tab", () => {
   beforeEach(() => {
     create.mockReset();
+    preflight.mockReset();
     getConnection.mockReset();
     health.mockReset();
     list.mockReset();
@@ -698,7 +774,7 @@ describe("Connections page Fabric Medallion tab", () => {
     expect(screen.getByRole("button", { name: "Add subscription connection" })).toBeInTheDocument();
   });
 
-  async function fillOnboarding() {
+  async function fillOnboarding(submit = true) {
     fireEvent.click(screen.getByRole("button", { name: "Add subscription connection" }));
     const form = within(screen.getByRole("heading", { name: "Onboard an Azure subscription" }).closest("form")!);
     const fields = {
@@ -720,10 +796,85 @@ describe("Connections page Fabric Medallion tab", () => {
       fireEvent.change(form.getByLabelText(label), { target: { value } });
     }
     fireEvent.change(form.getByLabelText("Criticality"), { target: { value: "high" } });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /^Add subscription$/ }));
-    });
+    if (submit) {
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^Add subscription$/ }));
+      });
+    }
   }
+
+  const previewReport = {
+    connection_id: "new-connection", subscription_id: connection.subscription_id,
+    checked_at: "2026-10-16T06:00:00Z", passed: true, status: "degraded",
+    advisory_only: true, persisted: false, sync_started: false,
+    checks: [{ name: "arg_read", passed: true, required: true, skipped: false, detail: "read 1 row(s)", remediation: null },
+      { name: "advisor_read", passed: false, required: false, skipped: false, detail: "Access probe failed", remediation: "Review Reader access" }],
+  };
+
+  it("previews access without creating, storing or syncing and invalidates the report on edits", async () => {
+    preflight.mockResolvedValue(envelope(previewReport));
+    renderConnectionsPage();
+    await screen.findByText("Production");
+    await fillOnboarding(false);
+    fireEvent.click(screen.getByRole("button", { name: "Preview connection access" }));
+    await screen.findByRole("heading", { name: "Required access checks passed" });
+    expect(preflight).toHaveBeenCalledWith(expect.objectContaining({
+      connection_id: "new-connection", credential: expect.objectContaining({ client_secret: " test-only-secret " }),
+    }));
+    expect(screen.getByRole("region", { name: "Connection access preview" })).toHaveTextContent("advisor read: Failed");
+    expect(screen.getByText(/Preview is advisory/)).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+    expect(sync).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Service principal client ID *"), { target: { value: "new-client" } });
+    expect(screen.queryByRole("region", { name: "Connection access preview" })).not.toBeInTheDocument();
+  });
+
+  it("discards an in-flight preview when its submitted fields change", async () => {
+    let finish: (result: TestEnvelope<typeof previewReport>) => void = () => { throw new Error("preview not started"); };
+    preflight.mockReturnValue(new Promise<TestEnvelope<typeof previewReport>>((resolve) => { finish = resolve; }));
+    renderConnectionsPage();
+    await screen.findByText("Production");
+    await fillOnboarding(false);
+    fireEvent.click(screen.getByRole("button", { name: "Preview connection access" }));
+    const form = screen.getByRole("heading", { name: "Onboard an Azure subscription" }).closest("form")!;
+    fireEvent.change(within(form).getByLabelText("Environment"), { target: { value: "staging" } });
+    await act(async () => { finish(envelope(previewReport)); });
+    expect(screen.queryByRole("region", { name: "Connection access preview" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview connection access" })).toBeEnabled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("shows preview errors and clears secret memory when the form closes", async () => {
+    preflight.mockRejectedValue(new Error("Read-only preflight unavailable"));
+    renderConnectionsPage();
+    await screen.findByText("Production");
+    await fillOnboarding(false);
+    fireEvent.click(screen.getByRole("button", { name: "Preview connection access" }));
+    await screen.findByText("Read-only preflight unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Close onboarding form" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add subscription connection" }));
+    expect(screen.getByLabelText("Client secret *")).toHaveValue("");
+    expect(screen.queryByText("Read-only preflight unavailable")).not.toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("clears preflight and submitted secret when current scope changes", async () => {
+    let finish: (result: TestEnvelope<typeof previewReport>) => void = () => { throw new Error("preview not started"); };
+    preflight.mockReturnValue(new Promise<TestEnvelope<typeof previewReport>>((resolve) => { finish = resolve; }));
+    function ScopedPage() {
+      const { setScope } = useScope();
+      return <><button type="button" onClick={() => setScope({ subscription: ["sub-b"] })}>Change preview scope</button><ConnectionsPage /></>;
+    }
+    render(<ScopeProvider><ScopedPage /></ScopeProvider>);
+    await screen.findByText("Production");
+    await fillOnboarding(false);
+    fireEvent.click(screen.getByRole("button", { name: "Preview connection access" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change preview scope" }));
+    await act(async () => { finish(envelope(previewReport)); });
+    expect(screen.getByLabelText("Client secret *")).toHaveValue("");
+    expect(screen.queryByRole("region", { name: "Connection access preview" })).not.toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
 
   it("submits the existing create contract, polls initial sync, refreshes and clears the form", async () => {
     create.mockResolvedValue(envelope({
@@ -1047,7 +1198,7 @@ describe("Connections page Fabric Medallion tab", () => {
     expect(subscriptionSelect).toHaveAttribute("name", "subscriptionId");
   });
 
-  it("explains an unpublished watermark instead of labelling it unknown", async () => {
+  it("does not infer nonpublication from a missing recorded checkpoint", async () => {
     mockFabricHealth(["bronze_resources"]);
     fabricDataset.mockResolvedValue(envelope({ ...dataset("bronze_resources", "healthy", 4), watermark: "" }));
 
@@ -1055,12 +1206,13 @@ describe("Connections page Fabric Medallion tab", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
     const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
-    expect(await within(fabricPanel).findByText("Not yet published")).toBeInTheDocument();
-    expect(within(fabricPanel).queryByText("watermark unknown")).not.toBeInTheDocument();
-    expect(within(fabricPanel).getAllByText(/Watermark/).length).toBeGreaterThan(0);
+    expect(await within(fabricPanel).findByText("Unreported")).toBeInTheDocument();
+    expect(within(fabricPanel).queryByText("Not yet published")).not.toBeInTheDocument();
+    expect(within(fabricPanel).getByText("Recorded checkpoint")).toHaveAttribute("title",
+      "A reported watermark, or the metadata status time when a watermark is absent. This is not proof that all upstream records were published.");
   });
 
-  it("renders a populated watermark as a caught-up checkpoint", async () => {
+  it("renders a populated checkpoint without claiming upstream catch-up", async () => {
     mockFabricHealth(["bronze_resources"]);
     fabricDataset.mockResolvedValue(envelope(dataset("bronze_resources", "healthy", 4)));
 
@@ -1068,7 +1220,10 @@ describe("Connections page Fabric Medallion tab", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
     const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
-    expect(await within(fabricPanel).findByText(/Caught up to/)).toBeInTheDocument();
+    const checkpoint = await within(fabricPanel).findByText("Recorded checkpoint");
+    expect(checkpoint.nextElementSibling?.textContent).not.toBe("Unreported");
+    expect(checkpoint.nextElementSibling?.textContent).toBe(formatDateTime("2026-01-01T00:00:00Z"));
+    expect(within(fabricPanel).queryByText(/Caught up to/)).not.toBeInTheDocument();
   });
 
   it("groups lifecycle contracts by disposition with blockers listed first", async () => {

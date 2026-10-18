@@ -278,7 +278,7 @@ def test_drawer_endpoint_honors_invalid_rollback_as_compatibility(
     }
 
 
-def test_drawer_default_without_separate_authority_is_denied(
+def test_drawer_deterministic_override_retains_compatibility_without_authority(
     tmp_path,
     monkeypatch,
 ):
@@ -296,9 +296,11 @@ def test_drawer_default_without_separate_authority_is_denied(
         json=body,
     )
 
-    assert response.status_code == 400, response.text
-    assert response.json()["error"]["code"] == "invalid_request"
-    assert "rollout percentage is malformed" in response.json()["error"]["message"]
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["rollout"]["mode"] == "compatibility"
+    assert result["rollout"]["canonical_enabled"] is False
+    assert result["mutation_authorized"] is False
 
 
 def test_shadow_rejects_invalid_hint_before_primary_or_preview_io(

@@ -306,6 +306,11 @@ def _confidence(
                 "reach could be established."
             ),
         }
+    if change.withheld_value_count:
+        return {
+            "band": CONFIDENCE_LOW,
+            "rationale": "Redacted artifact values cannot establish complete configuration intent.",
+        }
 
     penalties: list[str] = []
     unresolved = int(comparison.get("counts", {}).get(FINDING_MISSING_TARGET, 0))

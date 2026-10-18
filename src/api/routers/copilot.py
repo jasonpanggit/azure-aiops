@@ -22,12 +22,20 @@ import time
 import uuid as _uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Query
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from operations.autonomous_investigation import ledger_store, run_context_investigation
+from operations.copilot_request_store import (
+    REQUEST_KEY_PATTERN,
+    CopilotRequestStore,
+    RequestAlreadyAccepted,
+    RequestKeyExpired,
+    RequestReceiptNotFound,
+    RequestReceiptUnavailable,
+)
 from operations.cve_response import canonical_cve_id, deterministic_cve_narrative
 from operations.foundry_agent import (
     FoundryAgentError,
@@ -171,6 +179,18 @@ class InvestigationRequest(BaseModel):
         description="Optional tool name a UI starter question already knows to call, bypassing the planner.",
     )
     tool_arguments: dict[str, Any] = Field(default_factory=dict)
+    request_key: str | None = Field(default=None, pattern=f"^{REQUEST_KEY_PATTERN}$")
+    thread_id: str | None = Field(default=None, pattern=r"^thr-[a-f0-9]{32}$")
+    expected_thread_revision: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_exact_continuation(self) -> InvestigationRequest:
+        """Explicit continuation requires an exact reviewed revision and admission."""
+        if (self.thread_id is None) != (self.expected_thread_revision is None):
+            raise ValueError("Exact continuation requires paired thread ID and expected revision")
+        if self.thread_id is not None and self.request_key is None:
+            raise ValueError("Exact continuation requires a durable request key")
+        return self
 
 
 class ContextInvestigationRequest(BaseModel):
@@ -1287,6 +1307,8 @@ def _investigate_via_canonical(
     hint_tool: str,
     hint_arguments: Mapping[str, Any],
     rollout_decision: CopilotRolloutDecision,
+    thread_id: str | None = None,
+    expected_thread_revision: int | None = None,
 ) -> dict[str, Any]:
     """Route ``/copilot/investigate`` through the canonical OrchestrationService.
 
@@ -1307,6 +1329,7 @@ def _investigate_via_canonical(
             session_id=session_id,
             hint_tool=hint_tool,
             hint_arguments=hint_arguments,
+            **({"thread_id": thread_id, "expected_thread_revision": expected_thread_revision} if thread_id is not None else {}),
         )
     except ThreadStoreUnavailable as exc:
         raise ApiError(
@@ -1318,6 +1341,8 @@ def _investigate_via_canonical(
             ErrorCode.CONFLICT,
             "Investigation thread changed; retry the request",
         ) from exc
+    except ThreadNotFound as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Investigation thread not found") from exc
     duration_ms = (time.monotonic() - started) * 1000.0
     if duration_ms > INVESTIGATION_TIMEOUT_SECONDS * 1000.0:
         logger.warning(
@@ -1427,16 +1452,42 @@ def investigate(
         )
 
     if canonical_enabled:
-        return _investigate_via_canonical(
-            question,
-            started=started,
-            context=context,
-            scope=scope,
-            principal=principal,
-            session_id=payload.session_id,
-            hint_tool=payload.tool,
-            hint_arguments=validated_arguments,
-            rollout_decision=rollout,
+        receipt_store = CopilotRequestStore(investigation_thread_store().documents)
+        try:
+            if payload.request_key:
+                receipt_store.accept(
+                    principal.subject, payload.request_key, scope,
+                    payload.model_dump(exclude={"request_key"}),
+                )
+            result = _investigate_via_canonical(
+                question,
+                started=started,
+                context=context,
+                scope=scope,
+                principal=principal,
+                session_id=payload.session_id,
+                hint_tool=payload.tool,
+                hint_arguments=validated_arguments,
+                rollout_decision=rollout,
+                **({"thread_id": payload.thread_id, "expected_thread_revision": payload.expected_thread_revision} if payload.thread_id is not None else {}),
+            )
+            if payload.request_key:
+                receipt_store.complete(
+                    principal.subject, payload.request_key, scope,
+                    thread_id=result["data"].get("thread_id", ""),
+                    thread_revision=result["data"].get("thread_revision", 0),
+                )
+                result["data"]["request_key"] = payload.request_key
+            return result
+        except (RequestAlreadyAccepted, RequestKeyExpired) as exc:
+            raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+        except RequestReceiptUnavailable as exc:
+            raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, str(exc)) from exc
+
+    if payload.request_key:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Durable request recovery requires canonical orchestration; no provider work was dispatched",
         )
 
     if payload.tool and payload.tool not in known_tools:
@@ -2473,6 +2524,78 @@ def investigate_canonical(
         result_data,
         scope=scope.to_dict(),
         warnings=list(result.uncertainty),
+    )
+
+
+@router.get("/copilot/requests/{request_key}", summary="Inspect exact accepted request outcome")
+def request_receipt(
+    request_key: str, context: Context, scope: ReadScope, principal: CurrentPrincipal,
+) -> dict[str, Any]:
+    """Recover only exact caller/scope receipt metadata, never rerun a question."""
+    try:
+        data = CopilotRequestStore(investigation_thread_store().documents).read(
+            principal.subject, request_key, scope,
+        )
+    except RequestReceiptNotFound as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Request receipt not found") from exc
+    except RequestReceiptUnavailable as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, str(exc)) from exc
+    return envelope(data, scope=scope.to_dict(), warnings=[
+        "Admission is not proof of active work or cancellation. Only completed receipts point to exact historical review; reads do not renew retention.",
+    ])
+
+
+@router.get("/copilot/threads", summary="Discover authorized retained investigation threads")
+def retained_threads(
+    context: Context, scope: ReadScope, principal: CurrentPrincipal,
+    page: Annotated[int, Query(ge=0, le=31)] = 0,
+) -> dict[str, Any]:
+    """List one bounded principal/scope-authorized storage page, without tools."""
+    try:
+        data = investigation_thread_store().list_owned(principal.subject, scope, page=page)
+    except ThreadStoreUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Retained thread discovery is temporarily unavailable",
+        ) from exc
+    return envelope(data, scope=scope.to_dict(), warnings=[
+        "Storage-order discovery is not chronological or a snapshot. Pages may be empty after authorization or expiry; reads do not renew retention.",
+    ])
+
+
+@router.get("/copilot/threads/{thread_id}/history", summary="Read exact retained historical turns")
+def retained_thread_history(
+    thread_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal,
+    expected_revision: Annotated[int | None, Query(ge=1)] = None,
+) -> dict[str, Any]:
+    """Read one exact owned thread, without executing or renewing its lifetime."""
+    if not re.fullmatch(r"thr-[a-f0-9]{32}", thread_id):
+        raise ApiError(ErrorCode.NOT_FOUND, "Investigation thread not found")
+    try:
+        data = investigation_thread_store().read_snapshot(
+            thread_id, principal.subject, scope, expected_revision=expected_revision,
+        )
+    except ThreadNotFound as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Investigation thread not found") from exc
+    except ThreadRevisionConflict as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "Retained thread changed since the reviewed revision. No newer evidence was substituted.",
+        ) from exc
+    except ThreadStoreUnavailable as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Investigation history is temporarily unavailable",
+        ) from exc
+    return envelope(
+        data, scope=scope.to_dict(),
+        warnings=[
+            (
+                "Retained historical observations, not current evidence or resumed "
+                "execution. Reading does not renew retention, rerun tools, change "
+                "the active thread or authorize an operational action."
+            )
+        ],
     )
 
 

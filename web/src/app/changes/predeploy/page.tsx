@@ -1,8 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 import BlastRadiusGraph from "@/components/predeploy/BlastRadiusGraph";
+import { NetworkReviewContext } from "@/components/predeploy/NetworkReviewContext";
+import { RetainedAssessments } from "@/components/predeploy/RetainedAssessments";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
@@ -19,9 +23,14 @@ import { buildPredeployCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { predeployApi } from "@/lib/services";
+import { networkReviewBookmark } from "@/lib/network-review";
+import type { NetworkReviewBookmark } from "@/lib/network-review";
+import { scopeToSearchParams } from "@/lib/scope";
+import { ARTIFACT_MAX_BYTES, inspectArtifact } from "@/lib/predeploy-intake";
+import type { ArtifactInspection } from "@/lib/predeploy-intake";
 import { useColumnFilters } from "@/lib/table-column-filters";
 import { useTablePagination } from "@/lib/use-table-pagination";
-import type { ChangeAssessment, Envelope } from "@/lib/types";
+import type { ChangeAssessment, Envelope, NetworkFindingReview } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -56,15 +65,34 @@ function verdictTone(verdict: string): StatusTone {
 /** Review a proposed change before deployment: reach, risk, and approval path. */
 export default function PreDeploymentPage() {
   const { scope } = useScope();
-  const sources = useApi(() => predeployApi.sources(), []);
+  const params = useSearchParams();
+  const query = params.toString();
+  const bookmark = useMemo(() => networkReviewBookmark(new URLSearchParams(query)), [query]);
+  return <PreDeploymentWorkspace key={`${scopeToSearchParams(scope)}|${query}`} bookmark={bookmark} />;
+}
+
+function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark }) {
+  const { scope } = useScope();
+  const sources = useApi(() => predeployApi.sources(scope), [scope]);
   const history = useApi(() => predeployApi.assessments(scope), [scope]);
 
   const [source, setSource] = useState("terraform_plan");
   const [artifact, setArtifact] = useState("");
+  const [inspection, setInspection] = useState<ArtifactInspection | null>(null);
+  const [artifactReviewed, setArtifactReviewed] = useState(false);
+  const [readingFile, setReadingFile] = useState(false);
+  const [intakeError, setIntakeError] = useState<string | null>(null);
+  const fileRead = useRef(0);
   const [result, setResult] = useState<Envelope<ChangeAssessment> | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [networkReview, setNetworkReview] = useState<NetworkFindingReview | null>(null);
+  const [attachNetwork, setAttachNetwork] = useState(false);
+  const [reviewAttempt, setReviewAttempt] = useState(0);
+  const submittingRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => { submittingRequest.current?.abort(); fileRead.current++; }, []);
+  const linkedBlocked = bookmark.present && (!networkReview || !attachNetwork);
 
   const evidence = useMemo(() => result?.data.risk?.evidence ?? [], [result]);
   const { filteredRows: filteredEvidence, filters: evidenceFilters, resetFilters: resetEvidenceFilters } = useColumnFilters(evidence, [
@@ -91,7 +119,7 @@ export default function PreDeploymentPage() {
     { id: "relationship", label: "Relationship", getValues: (resource) => resource.depth === 0 ? "Directly changed" : "Dependent" },
   ]);
   const impactedPaging = useTablePagination(filteredImpactedResources);
-  const historyRows = useMemo(() => history.data?.data.assessments ?? [], [history.data]);
+  const historyRows = useMemo(() => history.data?.data ?? [], [history.data]);
   const { filteredRows: filteredHistoryRows, filters: historyFilters, resetFilters: resetHistoryFilters } = useColumnFilters(historyRows, [
     { id: "source", label: "Source", getValues: (row) => SOURCE_LABELS[row.source] ?? titleize(row.source) },
     { id: "risk", label: "Risk", getValues: (row) => row.risk_level, formatOption: titleize },
@@ -99,28 +127,61 @@ export default function PreDeploymentPage() {
   ]);
   const historyPaging = useTablePagination(filteredHistoryRows);
 
+  function changeArtifact(text: string) {
+    fileRead.current++;
+    setReadingFile(false); setArtifact(text); setInspection(null);
+    setArtifactReviewed(false); setIntakeError(null);
+  }
+
+  function inspect() {
+    setArtifactReviewed(false); setIntakeError(null); setInspection(null);
+    try { setInspection(inspectArtifact(source, artifact)); }
+    catch (failure) { setIntakeError(failure instanceof Error ? failure.message : String(failure)); }
+  }
+
+  async function readFile(file: File | undefined) {
+    if (!file) return;
+    changeArtifact("");
+    if (file.size > ARTIFACT_MAX_BYTES) { setIntakeError("Artifact exceeds the 2 MiB UTF-8 limit."); return; }
+    const read = ++fileRead.current;
+    setReadingFile(true);
+    try {
+      const bytes = await file.arrayBuffer();
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      if (fileRead.current === read) changeArtifact(text);
+    } catch {
+      if (fileRead.current === read) { setIntakeError("Could not read UTF-8 JSON. Choose a valid JSON file again."); setReadingFile(false); }
+    }
+  }
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (submittingRequest.current) return;
     setError(null);
+    if (linkedBlocked) { setError("Review and explicitly attach exact Network evidence, or remove the handoff before submitting a separate change."); return; }
 
-    let payload: Record<string, unknown>;
-    try {
-      payload = JSON.parse(artifact) as Record<string, unknown>;
-    } catch {
-      // Parsed locally so a malformed paste is corrected here rather than
-      // coming back as an opaque server-side rejection.
-      setError("The artifact is not valid JSON. Paste the raw plan or what-if output.");
+    if (!inspection || !artifactReviewed || inspection.detectedSensitiveValues || readingFile) {
+      setError("Inspect the artifact, redact detected sensitive values locally, then review it before assessment.");
       return;
     }
 
-    setSubmitting(true);
+    const controller = new AbortController();
+    submittingRequest.current = controller;
+    setSubmitting(true); setResult(null);
     try {
-      setResult(await predeployApi.assess(source, payload));
+      const response = await predeployApi.assess(source, inspection.payload, "", {
+        scope, signal: controller.signal,
+        ...(bookmark.reference && attachNetwork ? { networkReview: bookmark.reference } : {}),
+      });
+      if (!controller.signal.aborted) setResult(response);
     } catch (submitError: unknown) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
-      setResult(null);
+      if (!controller.signal.aborted) {
+        setError(submitError instanceof Error ? submitError.message : String(submitError));
+        setResult(null);
+        if (bookmark.present) { setNetworkReview(null); setAttachNetwork(false); }
+      }
     } finally {
-      setSubmitting(false);
+      if (!controller.signal.aborted) { submittingRequest.current = null; setSubmitting(false); }
     }
   }
 
@@ -128,7 +189,7 @@ export default function PreDeploymentPage() {
   const risk = assessment?.risk;
   const cab = assessment?.cab_recommendation;
   const blast = assessment?.blast_radius;
-  const rows = history.data?.data.assessments ?? [];
+  const rows = history.data?.data ?? [];
 
   // Read-only contextual Copilot over the loaded assessment. Simulation, risk,
   // and CAB verdicts are predicted, never observed; nothing here deploys or
@@ -214,15 +275,29 @@ export default function PreDeploymentPage() {
         onOpenCopilot={() => setCopilotOpen(true)}
       />
 
-      <form className="card" onSubmit={submit}>
+      {bookmark.present && <div className="network-review-handoff">
+        {bookmark.reference ? <NetworkReviewContext key={reviewAttempt} scope={scope} reference={bookmark.reference} onReady={setNetworkReview} />
+          : <p role="alert">{bookmark.error}</p>}
+        {bookmark.reference && error && !networkReview && <button type="button" className="button button-secondary"
+          onClick={() => { setError(null); setReviewAttempt(current => current + 1); }}>Reload exact Network evidence before retrying</button>}
+        <label><input type="checkbox" checked={attachNetwork} disabled={!networkReview || submitting}
+          onChange={event => setAttachNetwork(event.target.checked)} /> Attach this exact Network finding context to my separately supplied artifact for advisory review.</label>
+        <p>The artifact must be prepared and reviewed separately. This attachment does not establish that it addresses the finding.</p>
+        <Link href={`/changes/predeploy?${scopeToSearchParams(scope)}`}>Remove Network context and review a separate change</Link>
+      </div>}
+
+      <form className="card predeploy-artifact" onSubmit={submit}>
         <div className="card-header">
           <h2>Submit a proposed change</h2>
-          <p>Paste a plan, what-if result, or pull request payload. Nothing is deployed.</p>
+          <p>Inspect a plan, what-if result, or pull request payload locally before sending it. Nothing is deployed.</p>
         </div>
         <div className="card-body form-grid">
-          <label>
+          <label className="form-field">
             <span>Change source</span>
-            <select value={source} onChange={(event) => setSource(event.target.value)}>
+            <select className="form-control" value={source} disabled={submitting} onChange={(event) => {
+              fileRead.current++; setReadingFile(false); setSource(event.target.value);
+              setInspection(null); setArtifactReviewed(false); setIntakeError(null);
+            }}>
               {(sources.data?.data.sources ?? Object.keys(SOURCE_LABELS)).map((option) => (
                 <option key={option} value={option}>
                   {SOURCE_LABELS[option] ?? titleize(option)}
@@ -230,18 +305,39 @@ export default function PreDeploymentPage() {
               ))}
             </select>
           </label>
-          <label className="form-span">
+          <label className="form-field form-span">
+            <span>Choose a JSON artifact (maximum 2 MiB)</span>
+            <input className="form-control" type="file" accept=".json,application/json" disabled={submitting}
+              onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; void readFile(file); }} />
+          </label>
+          <label className="form-field form-span">
             <span>Change artifact (JSON)</span>
             <textarea
+              className="form-control"
               value={artifact}
-              onChange={(event) => setArtifact(event.target.value)}
+              onChange={(event) => changeArtifact(event.target.value)}
+              disabled={submitting}
               placeholder={PLACEHOLDER}
               rows={10}
               spellCheck={false}
             />
           </label>
+          <div className="predeploy-intake form-span">
+            <p>Maximum 500 changes/files, 24 nesting levels and 50,000 values. Inspection recognizes common credential keys and Terraform sensitivity masks; it cannot detect every secret in prose, source code or arbitrary values. Review the full artifact yourself. File contents stay in this page until assessment; no raw artifact is retained in assessment history.</p>
+            <button type="button" className="button button-secondary" onClick={inspect} disabled={submitting || readingFile || !artifact.trim()}>Inspect artifact locally</button>
+            {readingFile && <p role="status">Reading local JSON file…</p>}
+            {intakeError && <p role="alert">{intakeError}</p>}
+            {inspection && <>
+              <p role="status">{inspection.bytes.toLocaleString()} UTF-8 bytes inspected. {inspection.detectedSensitiveValues} detected sensitive values; {inspection.withheldValues} withheld values.</p>
+              {inspection.detectedSensitiveValues > 0
+                ? <><p>Assessment is blocked. Replace detected values with explicit redaction markers locally, inspect the changed artifact, and review it again. Redacted configuration remains unknown.</p>
+                  <button type="button" className="button button-secondary" disabled={submitting} onClick={() => changeArtifact(inspection.redactedText)}>Redact detected values locally</button></>
+                : <label><input type="checkbox" checked={artifactReviewed} disabled={submitting}
+                    onChange={event => setArtifactReviewed(event.target.checked)} /> I reviewed this artifact and removed sensitive content. Redaction and declared configuration are not verified runtime evidence or deployment approval.</label>}
+            </>}
+          </div>
           <div className="form-actions">
-            <button type="submit" disabled={submitting || artifact.trim() === ""}>
+            <button type="submit" className="button button-primary" disabled={submitting || readingFile || linkedBlocked || !inspection || !artifactReviewed || inspection.detectedSensitiveValues > 0}>
               {submitting ? "Assessing…" : "Assess impact"}
             </button>
           </div>
@@ -249,9 +345,19 @@ export default function PreDeploymentPage() {
       </form>
 
       {error && <StatePanel title="Assessment failed" message={error} tone="error" />}
+      <RetainedAssessments scope={scope} current={assessment ?? null} />
 
       {assessment && risk && cab && blast && (
         <>
+          {assessment.artifact && <div className="predeploy-intake">
+            <h2>Submitted artifact provenance</h2>
+            <p>SHA-256 <code>{assessment.artifact.sha256}</code></p>
+            <p>{assessment.artifact.utf8_bytes.toLocaleString()} canonical UTF-8 bytes; {assessment.artifact.withheld_value_count} withheld values. {assessment.artifact.interpretation}</p>
+          </div>}
+          {assessment.network_review && <p className="network-review-result" role="status">
+            Network finding {assessment.network_review.finding_id} retained with assessment {assessment.assessment_id}.
+            {" "}Exact review digest: {assessment.network_review.reviewed_digest}. Advisory context only; the artifact-to-finding relationship is not verified.
+          </p>}
           <EvidenceBar
             evidence={result?.evidence}
             knowledgeVersion={result?.knowledge_version}

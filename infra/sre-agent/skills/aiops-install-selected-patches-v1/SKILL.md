@@ -34,6 +34,15 @@ decision ID and approver, valid snapshot hash, and exact equality among every
 top-level, approved-snapshot, read-skill, and write-skill target and patch
 field.
 
+The approved snapshot may additionally contain exactly one `rollout` object:
+`rollout_id` (`RMO-` plus 32 lowercase hex digits), `terms_hash` (64 lowercase
+hex digits), and integer `wave` (1 through 5). Include that complete object in
+the canonical snapshot hash when present; never drop, replace or infer it.
+The dispatching API enforces immutable maintenance terms, explicit wave
+admission and stop conditions immediately before submission. This metadata
+adds no command argument or provider-side scheduler. Do not advance a wave,
+extend a window, cancel in-flight work, or infer successful target verification.
+
 Require one UUID subscription, a canonical top-level Azure VM or Arc-enabled
 server ID of the matching kind, and 1 through 256 unique patch IDs matching
 `^[A-Za-z0-9][A-Za-z0-9._:+-]{0,255}$`. Reject child, malformed, cross-kind,

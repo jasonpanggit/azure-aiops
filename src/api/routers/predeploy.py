@@ -2,31 +2,46 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import Annotated, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
+from pydantic import ValidationError
 
 # Imported from submodules rather than the package root: the package __init__
 # imports modules that import ``api``, so routing through it here would make
 # ``import intelligence.predeploy`` fail whenever it is imported before ``api``.
 from intelligence.predeploy.discovery import project_discovered_resources
+from intelligence.predeploy.intake import inspect_artifact
 from intelligence.predeploy.models import CHANGE_SOURCES
 from intelligence.predeploy.service import SOURCE_ENGINE, PreDeploymentImpactService
 from intelligence.predeploy.simulation import SIMULATION_DOMAINS
+from operations.predeploy_history import (
+    AssessmentReceipt,
+    PredeployHistoryStore,
+    ReceiptRemoval,
+    RetentionRequest,
+    assessment_receipt,
+    compare_receipts,
+)
+from operations.predeploy_review import review_contract
+from storage.onelake_documents import DocumentConflictError
 
-from ..dependencies import Context, Page, ReadScope, WritePrincipal
+from ..artifact_request import ArtifactRoute
+from ..dependencies import Context, CurrentPrincipal, Page, ReadScope, WritePrincipal
 from ..errors import ApiError, ErrorCode
 from ..evidence import Evidence, envelope
 from ..models import ChangeAssessmentRequest
 from ..scope import Scope
+from .network import resolve_finding_review
 
-router = APIRouter(prefix="/api/v1", tags=["predeploy"])
+router = APIRouter(prefix="/api/v1", tags=["predeploy"], route_class=ArtifactRoute)
 
 # Assessments are user-submitted mutations rather than snapshot projections, so
 # like the settings and risk-exception stores they live in a module-level
 # handle rather than being rebuilt per request. Keeping them here also means an
 # assessment stays readable after the snapshot it was derived from is replaced,
-# which is what makes the audit trail meaningful.
+# but remains bounded process-local history, not a durable audit trail.
 _SERVICE = PreDeploymentImpactService()
 
 
@@ -79,6 +94,7 @@ def assess_change(
     payload: ChangeAssessmentRequest,
     context: Context,
     principal: WritePrincipal,
+    scope: ReadScope,
 ) -> dict[str, Any]:
     if payload.source not in CHANGE_SOURCES:
         raise ApiError(
@@ -86,11 +102,18 @@ def assess_change(
             f"Unsupported change source '{payload.source}'",
             details={"supported_sources": list(CHANGE_SOURCES)},
         )
+    try:
+        inspect_artifact(payload.source, payload.payload)
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
 
     # Assessment reads the estate, so it runs under the caller's *read* scope
     # even though submitting is a write. A caller must not be able to widen the
     # estate view they see by submitting a change.
-    scope: Scope = context.authorizer.effective_scope(principal, "read")
+    review = (
+        resolve_finding_review(context, scope, payload.network_review)
+        if payload.network_review is not None else None
+    )
     discovered = _discovered(context, scope)
 
     assessment = _service(context).assess(
@@ -99,8 +122,9 @@ def assess_change(
         discovered=discovered,
         scope=scope,
         change_id=payload.change_id,
+        network_review=review,
+        reviewed_by=principal.subject,
     )
-    assessment["submitted_by"] = getattr(principal, "subject", "")
     return envelope(
         assessment,
         evidence=_evidence(assessment),
@@ -108,9 +132,135 @@ def assess_change(
     )
 
 
+def _review_visible(assessment: dict | None, principal: CurrentPrincipal, scope: Scope) -> bool:
+    return assessment is not None and (
+        "network_review" not in assessment or (
+            assessment.get("network_review_subject") == principal.subject
+            and assessment.get("scope") == scope.to_dict()
+        )
+    )
+
+
+def _history_store(context: Context) -> PredeployHistoryStore:
+    if context.predeploy_history_store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable assessment receipts are unavailable")
+    return context.predeploy_history_store
+
+
+def _history_call(operation: Callable[[], dict]) -> dict:
+    try:
+        return operation()
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+    except KeyError as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, "Retained assessment was not found in this personal scope") from exc
+    except ValidationError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Assessment receipt or comparison exceeds its supported bounds") from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Assessment history operation was not confirmed; reload before retrying") from exc
+
+
+def _history_response(data: dict, scope: Scope) -> dict:
+    return envelope(
+        data, scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="operations.predeploy_history", source_table="state/predeploy-history",
+            timestamp=str(data.get("updated_at", "")), confidence="unknown",
+        ),
+        warnings=["Personal exact-scope historical analysis receipts, not raw artifacts, full analysis, verified revision lineage, runtime outcomes or deployment authority."],
+    )
+
+
+@router.get("/changes/retained-assessments")
+def retained_assessments(context: Context, principal: CurrentPrincipal, scope: ReadScope) -> dict:
+    """Recover personal receipts without invoking current inventory or analysis providers."""
+    data = _history_call(lambda: _history_store(context).read(principal.subject, scope.to_dict()))
+    return _history_response(data, scope)
+
+
+@router.post("/changes/retained-assessments", status_code=201)
+def retain_assessment(
+    payload: RetentionRequest, context: Context, principal: WritePrincipal, scope: ReadScope,
+) -> dict:
+    """Retain only the owned exact-scope server analysis matching the reviewed artifact."""
+    store = _history_store(context)
+    assessment = _service(context).get_assessment(payload.assessment_id)
+    if (
+        assessment is None or assessment.get("submitted_by") != principal.subject
+        or assessment.get("scope") != scope.to_dict()
+        or not _review_visible(assessment, principal, scope)
+    ):
+        raise ApiError(ErrorCode.NOT_FOUND, "Owned assessment is unavailable in this exact scope; it may have expired")
+    if (assessment.get("artifact") or {}).get("sha256") != payload.artifact_sha256:
+        raise ApiError(ErrorCode.CONFLICT, "Assessment artifact changed; review it again before retaining")
+    def capture() -> dict:
+        try:
+            receipt = assessment_receipt(assessment)
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError("Current assessment summary schema is invalid") from exc
+        return store.append(
+            principal.subject, scope.to_dict(), payload.expected_revision, receipt,
+        )
+
+    data = _history_call(capture)
+    return _history_response(data, scope)
+
+
+@router.post("/changes/retained-assessments/remove")
+def remove_retained_assessment(
+    payload: ReceiptRemoval, context: Context, principal: WritePrincipal, scope: ReadScope,
+) -> dict:
+    """Explicitly remove a personal receipt; never delete source changes or assessments."""
+    data = _history_call(lambda: _history_store(context).remove(
+        principal.subject, scope.to_dict(), payload.expected_revision, payload.assessment_id,
+    ))
+    return _history_response(data, scope)
+
+
+@router.get("/changes/retained-assessments/compare")
+def compare_retained_assessments(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+    baseline_id: Annotated[str, Query(pattern=r"^[0-9a-f]{32}$")],
+    candidate_id: Annotated[str, Query(pattern=r"^[0-9a-f]{32}$")],
+) -> dict:
+    """Compare explicitly selected historical summaries, without current source acquisition."""
+    state = _history_call(lambda: _history_store(context).read(principal.subject, scope.to_dict()))
+    selected = {row["assessment_id"]: row for row in state["receipts"]}
+    if baseline_id not in selected or candidate_id not in selected:
+        raise ApiError(ErrorCode.NOT_FOUND, "Both retained assessments must belong to this exact personal scope")
+    data = _history_call(lambda: compare_receipts(
+        AssessmentReceipt.model_validate(selected[baseline_id]),
+        AssessmentReceipt.model_validate(selected[candidate_id]),
+    ))
+    return _history_response(data, scope)
+
+
+@router.get("/changes/retained-assessments/{assessment_id}/review-contract")
+def retained_review_contract(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope,
+    assessment_id: str,
+    artifact_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+) -> dict:
+    """Export one exact owned receipt as advisory CI evidence, never execution authority."""
+    state = _history_call(lambda: _history_store(context).read(principal.subject, scope.to_dict()))
+    selected = next((row for row in state["receipts"] if row["assessment_id"] == assessment_id), None)
+    if selected is None:
+        raise ApiError(ErrorCode.NOT_FOUND, "Retained assessment was not found in this exact personal scope")
+    if selected["artifact_sha256"] != artifact_sha256:
+        raise ApiError(ErrorCode.CONFLICT, "Artifact digest differs from the retained review; inspect and assess it again")
+    data = _history_call(lambda: review_contract(AssessmentReceipt.model_validate(selected), scope.to_dict()))
+    return _history_response(data, scope)
+
+
 @router.get("/changes/assessments", summary="List pre-deployment assessments")
-def list_assessments(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
-    rows = _service(context).list_assessments(scope=scope)
+def list_assessments(context: Context, scope: ReadScope, page: Page, principal: CurrentPrincipal) -> dict[str, Any]:
+    service = _service(context)
+    rows = [
+        row for row in service.list_assessments(scope=scope)
+        if _review_visible(service.get_assessment(row["assessment_id"]), principal, scope)
+    ]
     return envelope(
         rows[page.offset : page.offset + page.limit],
         evidence=_evidence(),
@@ -127,13 +277,14 @@ def get_assessment(
     assessment_id: str,
     context: Context,
     scope: ReadScope,
+    principal: CurrentPrincipal,
 ) -> dict[str, Any]:
     service = _service(context)
     assessment = service.get_assessment(assessment_id)
     # Re-check visibility through the same listing filter rather than trusting
     # the id: a direct fetch must not become a way around scope isolation.
     visible = {row["assessment_id"] for row in service.list_assessments(scope=scope)}
-    if assessment is None or assessment_id not in visible:
+    if assessment is None or assessment_id not in visible or not _review_visible(assessment, principal, scope):
         raise ApiError(
             ErrorCode.NOT_FOUND,
             f"Assessment '{assessment_id}' was not found in the authorized scope",
@@ -150,6 +301,7 @@ def explain_assessment(
     assessment_id: str,
     context: Context,
     scope: ReadScope,
+    principal: CurrentPrincipal,
 ) -> dict[str, Any]:
     """Answer "what might this change affect, and what is required first?".
 
@@ -159,7 +311,7 @@ def explain_assessment(
     with every qualifier attached, so a summary cannot be produced by dropping
     them.
     """
-    assessment = get_assessment(assessment_id, context, scope)["data"]
+    assessment = get_assessment(assessment_id, context, scope, principal)["data"]
     risk = assessment.get("risk", {})
     cab = assessment.get("cab_recommendation", {})
     blast = assessment.get("blast_radius", {})
@@ -196,6 +348,7 @@ def explain_assessment(
                 "establish that any listed resource would be disrupted."
             ),
             "confirmed_cause": False,
+            "network_review": assessment.get("network_review"),
         },
         evidence=_evidence(assessment),
         scope=scope.to_dict(),

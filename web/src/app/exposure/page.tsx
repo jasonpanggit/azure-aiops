@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
+import { ExposureMovement } from "@/components/exposure/ExposureMovement";
+import { ExposureDecision } from "@/components/exposure/ExposureDecision";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CountBarChart } from "@/components/ui/CountBarChart";
@@ -28,11 +30,14 @@ import {
 import { buildExposureCopilotContext } from "@/lib/copilot/page-adapters";
 import {
   DEFAULT_EXPOSURE_SORT,
+  encodeExposureQueryState,
+  exposureDetailHref,
   exposureQueryKey,
   exposureRetentionKey,
   type ExposureQueryState,
 } from "@/lib/exposure-query-state";
 import { useScope } from "@/lib/scope-context";
+import { ScopeBookmarkError, scopedBookmark, scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import { vulnerabilityApi } from "@/lib/services";
 import type {
   ExposureFacets,
@@ -111,7 +116,7 @@ function facetCount(
   name: string,
   value: string,
 ): number | null {
-  if (!facets) return null;
+  if (!facets || !Object.hasOwn(facets.facets, name)) return null;
   const folded = value.toLocaleLowerCase("en-US");
   const match = (facets.facets[name] ?? []).find(
     (item) => item.value.toLocaleLowerCase("en-US") === folded,
@@ -124,7 +129,7 @@ function facetCountMatching(
   name: string,
   predicate: (value: string) => boolean,
 ): number | null {
-  if (!facets) return null;
+  if (!facets || !Object.hasOwn(facets.facets, name)) return null;
   return (facets.facets[name] ?? []).reduce(
     (total, item) => total + (predicate(item.value) ? item.count : 0),
     0,
@@ -145,10 +150,11 @@ function countTone(
   return value > 0 ? alertTone : "success";
 }
 
-function priorityHref(item: OverviewFinding, generation: string): string {
+function priorityHref(item: OverviewFinding, state: ExposureQueryState): string {
   const segment = item.weakness_kind === "kb" ? "kbs" : "cves";
-  const params = new URLSearchParams({ generation, origin: "/exposure" });
-  return `/exposure/${segment}/${encodeURIComponent(item.weakness_id)}?${params.toString()}`;
+  return exposureDetailHref(segment, item.weakness_id, state, {
+    origin: "/exposure", row: item.exposure_id, scroll: null,
+  });
 }
 
 function sourceStatus<T>(section: ExposureSectionResult<T>): string {
@@ -188,7 +194,31 @@ function OverviewSection<T>({
 
 /** Exposure Overview backed only by bounded, generation-pinned Fabric SQL reads. */
 export default function ExposurePage() {
+  return <Suspense fallback={<StatePanel title="Reading exposure bookmark" message="Validating the selected scope and generation before reading findings." tone="loading" />}><ScopedExposure /></Suspense>;
+}
+
+function ScopedExposure() {
   const { scope } = useScope();
+  const search = useSearchParams();
+  let effectiveScope: ScopeSelection;
+  let generation = "";
+  try {
+    effectiveScope = scopedBookmark(search, scope);
+    if (search.has("generation")) {
+      generation = search.get("generation") ?? "";
+      if (search.getAll("generation").length !== 1 || !/^[a-zA-Z0-9._:-]{1,256}$/.test(generation)) {
+        throw new ScopeBookmarkError("Use one exact exposure generation of at most 256 letters, digits, dots, underscores, colons or hyphens.");
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof ScopeBookmarkError)) throw error;
+    const query = scopeToSearchParams(scope);
+    return <main className="page-container"><StatePanel title="Exposure bookmark unavailable" message={error.message} tone="error" /><Link className="button" href={`/exposure${query.size ? `?${query}` : ""}`}>Clear exposure bookmark</Link></main>;
+  }
+  return <ExposureOverview key={`${JSON.stringify(effectiveScope)}::${generation}`} scope={effectiveScope} generation={generation} />;
+}
+
+function ExposureOverview({ scope, generation }: { scope: ScopeSelection; generation: string }) {
   const router = useRouter();
   const [copilotOpen, setCopilotOpen] = useState(false);
   const queryState = useMemo<ExposureQueryState>(
@@ -202,9 +232,9 @@ export default function ExposurePage() {
       page: 1,
       target: "",
       drawer: "",
-      generation: "",
+      generation,
     }),
-    [scope],
+    [scope, generation],
   );
 
   const facets = useExposureSection<ExposureFacets>({
@@ -239,6 +269,8 @@ export default function ExposurePage() {
   const warnings = facets.envelope?.warnings ?? [];
   const knowledgeVersion = facetData?.generation;
   const observedAt = facets.metadata.observedAt;
+  const loadedQuery = { ...queryState, generation: facetData?.generation ?? generation };
+  const collectionHref = (path: string) => `${path}?${encodeExposureQueryState(loadedQuery)}`;
 
   const severityBreakdown = useMemo(() => {
     const order = ["critical", "high", "medium", "low", "unknown"];
@@ -256,9 +288,14 @@ export default function ExposurePage() {
 
   const goToSeverity = useCallback(
     (value: string) => {
-      router.push(`/exposure/patch-priorities?severity=${encodeURIComponent(value)}`);
+      const query = encodeExposureQueryState({
+        ...queryState,
+        generation: facetData?.generation ?? generation,
+        filters: { severity: value },
+      });
+      router.push(`/exposure/patch-priorities?${query}`);
     },
-    [router],
+    [router, queryState, facetData?.generation, generation],
   );
 
   const targetKindBreakdown = useMemo(
@@ -270,15 +307,19 @@ export default function ExposurePage() {
     [facetData],
   );
 
-  const overduePercent = useMemo(() => {
+  const slaCounts = useMemo(() => {
     const items = facetData?.facets.sla_state ?? [];
-    const totalSla = items.reduce((sum, item) => sum + item.count, 0);
-    if (totalSla === 0) return null;
-    const overdue = items
-      .filter((item) => item.value.toLocaleLowerCase("en-US").includes("overdue"))
-      .reduce((sum, item) => sum + item.count, 0);
-    return Math.round((overdue / totalSla) * 100);
-  }, [facetData]);  const topFindings = (facetData?.items ?? []).slice(0, 3) as OverviewFinding[];
+    let scored = 0, overdue = 0, unclassified = 0;
+    for (const item of items) {
+      const state = item.value.toLocaleLowerCase("en-US");
+      if (state === "overdue" || state === "within_sla") {
+        scored += item.count;
+        if (state === "overdue") overdue += item.count;
+      } else unclassified += item.count;
+    }
+    return { scored, overdue, unclassified, percent: scored ? Math.round(overdue / scored * 100) : null };
+  }, [facetData]);
+  const topFindings = (facetData?.items ?? []).slice(0, 3) as OverviewFinding[];
   const copilotFreshness = facets.status === "current"
     ? "fresh" as const
     : facets.status === "stale"
@@ -373,6 +414,8 @@ export default function ExposurePage() {
       )}
 
       <div className="exposure-landing-sections">
+        <ExposureDecision data={facetData} sourceStatus={facets.status} query={loadedQuery} />
+        <ExposureMovement scope={scope} generation={knowledgeVersion ?? generation} />
         <OverviewSection
           title="Exposure findings"
           description="Current findings in the authorized, generation-pinned Fabric SQL partition."
@@ -401,27 +444,27 @@ export default function ExposurePage() {
           <div className="dashboard-charts-row">
             <div className="chart-card">
               <h3 className="chart-card-title">Severity distribution</h3>
-              <DonutChart
+              {facetData?.facets.severity ? <DonutChart
                 segments={severityBreakdown}
                 centerValue={facetData?.total_count ?? "—"}
                 centerLabel="findings"
                 onSegmentClick={goToSeverity}
-              />
+              /> : <StatePanel title="Severity distribution unavailable" message="The response did not include severity classifications. Missing classifications are not zero findings." tone="partial" />}
             </div>
             <div className="chart-card">
               <h3 className="chart-card-title">Findings by target kind</h3>
               <CountBarChart data={targetKindBreakdown} unit="target kind" />
             </div>
-            {overduePercent !== null && (
+            {slaCounts.percent !== null ? (
               <div className="chart-card">
                 <h3 className="chart-card-title">SLA overdue rate</h3>
                 <RiskGauge
-                  score={overduePercent}
+                  score={slaCounts.percent}
                   label="Overdue findings"
-                  detail={`${overduePercent}% of scored findings are past SLA`}
                 />
+                <p>{slaCounts.overdue.toLocaleString("en-US")} overdue / {slaCounts.scored.toLocaleString("en-US")} classified findings. {slaCounts.unclassified.toLocaleString("en-US")} unclassified findings excluded; this is not an estate-wide SLA rate.</p>
               </div>
-            )}
+            ) : <StatePanel title="SLA rate unavailable" message="No findings have a recorded overdue or within_sla classification. Indeterminate or missing SLA evidence is not treated as compliant." tone="empty" />}
           </div>
         </OverviewSection>
 
@@ -458,7 +501,7 @@ export default function ExposurePage() {
           sourceName="Priority preview"
           itemLabel="priority findings"
           section={facets}
-          action={<Link className="button" href="/exposure/patch-priorities">Open Patch priorities</Link>}
+          action={<Link className="button" href={collectionHref("/exposure/patch-priorities")}>Open Patch priorities</Link>}
         >
           <div className="metric-grid exposure-metrics">
             {topFindings.map((item) => (
@@ -470,7 +513,7 @@ export default function ExposurePage() {
                 detail={`${item.severity ?? "Unknown"} severity · Priority ${item.priority_score ?? "unknown"}`}
                 tone={item.severity?.toLocaleLowerCase("en-US") === "critical" ? "critical" : "warning"}
                 completeness={sectionCompleteness(facets.status)}
-                action={<Link href={priorityHref(item, facetData?.generation ?? "")}>Open {item.weakness_id}</Link>}
+                action={<Link href={priorityHref(item, loadedQuery)}>Open {item.weakness_id}</Link>}
               />
             ))}
           </div>
@@ -482,7 +525,7 @@ export default function ExposurePage() {
           sourceName="Source distribution"
           itemLabel="source groups"
           section={facets}
-          action={<Link className="button" href="/exposure/defender-posture">Open Defender exposure</Link>}
+          action={<Link className="button" href={collectionHref("/exposure/defender-posture")}>Open Defender exposure</Link>}
         >
           <div className="metric-grid exposure-metrics">
             <MetricCard label="Defender image findings" value={defenderFindings} detail="Container image findings sourced from Defender" completeness={sectionCompleteness(facets.status)} />
@@ -496,7 +539,7 @@ export default function ExposurePage() {
           sourceName="SLA classification"
           itemLabel="SLA groups"
           section={facets}
-          action={<Link className="button" href="/exposure/patch-priorities">Review priorities</Link>}
+          action={<Link className="button" href={collectionHref("/exposure/patch-priorities")}>Review priorities</Link>}
         >
           <div className="metric-grid exposure-metrics">
             {(facetData?.facets.sla_state ?? []).map((item) => (
@@ -505,7 +548,7 @@ export default function ExposurePage() {
                 label={`${displayFacet(item.value)} SLA findings`}
                 value={item.count}
                 detail={`Provider-reported SLA state: ${item.value}`}
-                tone={item.value.toLocaleLowerCase("en-US").includes("overdue") ? "critical" : "default"}
+                tone={item.value.toLocaleLowerCase("en-US") === "overdue" ? "critical" : "default"}
                 completeness={sectionCompleteness(facets.status)}
               />
             ))}

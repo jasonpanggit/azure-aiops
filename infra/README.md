@@ -39,6 +39,30 @@ that group is read or modified.
 
 ## Deploying
 
+### Preserving deployment access
+
+Fabric capacity administration and workspace access are separate grants.
+For an existing platform, bootstrap the deployment service principal as an
+administrator on the intended capacity and managed workspaces using an
+already-authorized administrator. Preserve existing members. Import the
+operations workspace grant into
+`fabric_workspace_role_assignment.terraform_deployer[0]` using
+`<workspace-id>/<principal-object-id>` before planning.
+
+Optional grounding metadata requires `fabric_gold_grounding_agent_id` to be
+set to a verified item in this environment's workspace. Empty omits that
+metadata; historical item IDs in deployment defaults are never inherited by
+Terraform runtime configuration. Setting it does not enable runtime grounding.
+
+When changing Terraform credentials, set `foundry_deployer_object_id` in the
+environment's private `terraform.tfvars` to the existing Foundry deployment
+role recipient's object ID. This keeps the five existing Foundry/search
+deployment role assignments independent of the caller identity. Empty retains
+the current-deployer default for new environments. These assignments use
+`prevent_destroy` so an omitted override cannot silently replace existing
+access. Any additional deployment-principal roles must be reviewed separately;
+this override does not grant the caller access.
+
 The registry is created empty, so the container apps have nothing to pull on a
 first apply. Deployment is therefore three steps.
 

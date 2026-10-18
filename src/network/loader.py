@@ -152,6 +152,12 @@ def _common(row: Mapping[str, Any]) -> dict[str, Any]:
         or _tag_lookup(tags, "application", "app"),
         "owner": _get(row, payload, "owner_name", "ownerName", default="")
         or _tag_lookup(tags, "owner", "ownedBy"),
+        "support_team": _get(
+            row, payload, "support_team", "support_team_name", "supportTeam", "supportTeamName", default=""
+        ) or _tag_lookup(tags, "support_team", "supportTeam", "support-team", "support team"),
+        "region": _get(row, payload, "region", "location", default=""),
+        "criticality": _get(row, payload, "criticality", "severity_tier", default="")
+        or _tag_lookup(tags, "criticality", "severity_tier"),
         "tags": tags,
         "properties": payload.get("properties") if isinstance(payload.get("properties"), dict) else {},
     }

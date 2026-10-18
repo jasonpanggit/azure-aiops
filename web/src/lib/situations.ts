@@ -5,7 +5,28 @@ import type {
   IncidentIdentity,
   IncidentReportEntry,
   IncidentTimelineEvent,
+  DurableSituationLink,
 } from "./types";
+import { scopeToSearchParams, type ScopeSelection } from "./scope";
+
+/** Navigate only resolved, supported entity identities; destination reads reauthorize. */
+export function situationEntityHref(link: DurableSituationLink, scope: ScopeSelection): string | null {
+  const id = link.entity_id;
+  if (link.quality !== "resolved" || !id.trim() || id.length > 2048 || /[\u0000-\u001f\u007f]/.test(id)) return null;
+  const params = scopeToSearchParams(scope);
+  let path: string;
+  if (link.entity_type === "Situation") path = `/situations/${encodeURIComponent(id)}`;
+  else if (link.entity_type === "BusinessService") path = `/services/${encodeURIComponent(id)}`;
+  else if (link.entity_type === "CVE" && /^CVE-\d{4}-\d{4,}$/i.test(id)) path = `/exposure/cves/${encodeURIComponent(id)}`;
+  else if (link.entity_type === "KB" && /^KB\d+$/i.test(id)) path = `/exposure/kbs/${encodeURIComponent(id)}`;
+  else if (link.entity_type === "SubscriptionConnection") { path = "/connections"; params.set("connection", id); }
+  else if (link.entity_type === "Resource") { path = "/inventory/assets"; params.set("resource_id", id); }
+  else if (["Application", "Environment", "Incident", "NetworkGap", "RemediationPlan"].includes(link.entity_type)) {
+    path = "/investigate"; params.set("type", link.entity_type); params.set("value", id);
+  } else return null;
+  const query = params.toString();
+  return `${path}${query ? `?${query}` : ""}`;
+}
 
 export type SituationPriority = "P1" | "P2" | "P3";
 
@@ -24,6 +45,7 @@ export interface SituationSummary {
   confidence: number;
   latestChange: IncidentTimelineEvent | null;
   impactScore: number;
+  responseDeadline?: import("./types").SituationResponseDeadline;
 }
 
 function priorityFor(incident: IncidentIdentity, blastRadius: IncidentBlastRadius): SituationPriority {
@@ -113,6 +135,7 @@ export function durableSituationSummary(situation: import("./types").DurableSitu
     confidence: situation.evidence_state === "complete" ? 1 : 0,
     latestChange: null,
     impactScore: situation.priority === "P1" ? 100 : situation.priority === "P2" ? 50 : 10,
+    responseDeadline: situation.response_deadline,
   };
 }
 

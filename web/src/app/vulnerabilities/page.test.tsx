@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const redirect = vi.hoisted(() => vi.fn());
 
@@ -10,7 +10,9 @@ import { COPILOT_ROUTE_DISPOSITIONS } from "@/lib/copilot/page-adapters";
 describe("legacy vulnerability collection route", () => {
   beforeEach(() => {
     redirect.mockReset();
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
   });
+  afterEach(() => vi.restoreAllMocks());
 
   it("redirects to Patch priorities while retaining only canonical collection context", () => {
     VulnerabilitiesPage({
@@ -52,5 +54,20 @@ describe("legacy vulnerability collection route", () => {
     expect(destination.searchParams.has("cursor")).toBe(false);
     expect(destination.searchParams.has("origin")).toBe(false);
     expect(destination.searchParams.has("unsafe")).toBe(false);
+  });
+
+  it("logs only aggregate counts and allowlisted historical names, never bookmark values", () => {
+    VulnerabilitiesPage({ searchParams: {
+      search: "secret-query", subscription_id: "private-subscription",
+      "private-unknown-name": "secret-value", cursor: "private-cursor",
+    } });
+    expect(console.info).toHaveBeenCalledTimes(1);
+    const event = JSON.parse(vi.mocked(console.info).mock.calls[0][0]);
+    expect(event).toEqual({
+      event: "legacy_exposure_redirect", count: 1,
+      translated_parameter_names: ["search", "subscription_id"], discarded_key_count: 2,
+    });
+    expect(JSON.stringify(event)).not.toMatch(/secret|private/);
+    expect(redirect).toHaveBeenCalledWith(expect.stringContaining("q=secret-query"));
   });
 });

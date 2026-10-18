@@ -85,10 +85,47 @@ Before onboarding a pilot subscription, confirm:
 
 A 20–30 minute walkthrough proving the end-to-end value chain:
 
+For `/agents`, foreground investigation remains available. **Start background
+investigation** instead retains a caller-known request identity before dispatch.
+Use its scoped recovery link to inspect last reported progress without restarting
+tools. A running record is not worker-liveness proof; process loss leaves the
+outcome unconfirmed rather than automatically replaying. **Stop new scheduling**
+requests a checkpoint stop, not cancellation of already dispatched remote work.
+Completion loads only the exact durably retained ledger. Status polling is bounded
+and can be explicitly paused/resumed; request metadata expires after 24 hours
+without renewal. Creating a separate request can duplicate unconfirmed work.
+
 1. **Executive Investigation Workspace** (`/investigate`) — start from a
    Business Service. Show it summarizes risk, evidence, topology, timeline,
    vulnerabilities, and impact in one place, in both Executive and Engineer
-   modes.
+   modes. Shared entry links preserve all nine selected scope dimensions;
+   a bookmark cannot widen the current operating scope. Malformed entry
+   parameters fail before source reads. Changing the subject clears prior
+   evidence while replacement sources load; late Copilot responses cannot
+   publish into another subject, operating scope, or continuity generation.
+   Narrowed bookmarks do not reuse or rebind a broader root conversation.
+   The Team workspace disclosure saves server-backed navigation, immutable
+   ownership, explicit reader/editor membership and reviewed revisions.
+   Membership still requires independent platform access; revocation covers
+   historical revisions. Applying saved navigation loads current evidence,
+   not past provider conditions. Local saves remain browser-local fallbacks,
+   and JSON exports include the effective scope; neither is team authorization.
+   The Operator hypothesis board records visible team explanations, supporting
+   and contradicting reference text, unknowns and explicit dispositions. These
+   are operator assessments, not verified source facts or model reasoning.
+   Owners/editors save one annotation per reviewed CAS revision; the original
+   saved subject stays fixed, and dismissal retains history. Current membership
+   and scope protect historical boards. References are not fetched or validated;
+   keep secrets out, and copy unsaved drafts before reopening or leaving.
+   Retained source evidence is separate: an owner/editor explicitly acquires
+   bounded server-governed projections for the saved subject, then links an
+   immutable source receipt into workspace history. Reopening a receipt makes
+   no provider calls or freshness changes. An explicit current comparison
+   reacquires that retained subject and leaves historical sources untouched.
+   Tool coverage may be partial and lists bounded; unavailable sources stay
+   unknown, and an unchanged projection is not an unchanged-estate claim.
+   Current-signal counts describe the loaded subset, not a historical trend;
+   unavailable incident or exposure sources do not imply quiet conditions.
 2. **Drill into a real finding** — pick a live vulnerability or network gap
    surfaced for the pilot's actual subscription; show the evidence trail
    (which ARG/Defender/Update Manager record backs the claim) and the

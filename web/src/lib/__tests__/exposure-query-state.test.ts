@@ -13,6 +13,7 @@ import {
 } from "@/lib/exposure-query-state";
 import { vulnerabilityApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
+import { SCOPE_DIMENSIONS } from "@/lib/scope";
 
 const AUTHORIZED_SCOPE = {
   subscription: scenario.scope.authorized_subscriptions,
@@ -63,6 +64,22 @@ describe("Exposure query state", () => {
     expect(scenario.scope.unauthorized_subscriptions).toHaveLength(1);
     expect(scenario.cursor_case.page_size).toBe(50);
     expect(scenario.cursor_case.row_count).toBe(101);
+  });
+
+  it("forwards every bookmarked dimension when the browser selector is unconstrained", async () => {
+    const query = new URLSearchParams();
+    for (const dimension of SCOPE_DIMENSIONS) {
+      query.append(dimension, `${dimension}-a`);
+      query.append(dimension, `${dimension}-b`);
+    }
+    const state = parseExposureQueryState(query, { authorizedScope: {} });
+    const fetchSpy = captureFetch({ data: {}, evidence: [], warnings: [], scope: {} });
+    await vulnerabilityApi.exposureFacets(state, ["severity"]);
+    const requested = apiUrl(fetchSpy);
+    for (const dimension of SCOPE_DIMENSIONS) {
+      expect(state.scope[dimension]).toEqual([`${dimension}-a`, `${dimension}-b`]);
+      expect(requested.searchParams.getAll(dimension)).toEqual([`${dimension}-a`, `${dimension}-b`]);
+    }
   });
 
   it("round-trips supported scope, filters, sort, page, target, drawer, and generation canonically", () => {

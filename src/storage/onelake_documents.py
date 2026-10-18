@@ -114,7 +114,7 @@ def _create_remote_bytes(file_client: Any, body: bytes, *, name: str) -> str:
 
 @contextmanager
 def _interprocess_lock(path: Path):
-    """Serialize local document updates across processes."""
+    """Serialize local document access across processes."""
     lock_path = Path(f"{path}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as handle:
@@ -209,21 +209,28 @@ class OneLakeDocumentStore:
         callers treat "no document" and "unreadable document" identically
         (start from scratch), and a corrupt blob must not take the API down.
 
-        Guarded by the same lock as :meth:`write`: ``upload_data`` on OneLake's
-        DFS endpoint is a non-atomic create/append/flush sequence, so an
-        unguarded read racing a concurrent write in this process could observe
-        a partially-written (empty or truncated) file, fail to parse it, and
-        silently return ``{}`` -- making an existing connection look
-        "not registered" for the instant the write was in flight. The lock
-        only serializes this process's own threads; cross-replica safety
-        comes from the conditional ETag write in :meth:`write`.
+        Local reads share the interprocess lock with document creation and
+        updates, preventing a read from observing a partially written file.
+        Remote writes are conditional on OneLake ETags.
         """
         with self._lock:
+            local_path = Path(self._path(name))
+            if not self.is_remote:
+                if not local_path.parent.exists():
+                    return {}
+                with _interprocess_lock(local_path):
+                    return self._read_locked(name)
             return self._read_locked(name)
 
     def read_or_raise(self, name: str) -> dict[str, Any]:
         """Return a document while preserving missing-vs-unreadable semantics."""
         with self._lock:
+            local_path = Path(self._path(name))
+            if not self.is_remote:
+                if not local_path.parent.exists():
+                    return {}
+                with _interprocess_lock(local_path):
+                    return self._read_locked(name, suppress_errors=False)
             return self._read_locked(name, suppress_errors=False)
 
     def read_snapshot(self, name: str) -> DocumentSnapshot:

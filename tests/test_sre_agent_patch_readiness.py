@@ -324,7 +324,7 @@ def test_canonical_render_and_hash_are_deterministic() -> None:
     assert body["payloadSchema"]["additionalProperties"] is False
     assert (
         module.canonical_hash(body)
-        == "ac7c65f5fd8c206e8d6c88707114404f27615cc9092a6d47c48c0a5a8e8cf767"
+        == "92ff1f5e5bfc22f394feccef2c47d64b4f653dc2a016562b42a8cd3ead23c5d3"
     )
 
 
@@ -1986,11 +1986,11 @@ def test_secret_metadata_rejects_secret_values() -> None:
     "secret_id",
     [
         (
-            "https://aiops-dev-kv-g6ludc.vault.azure.net/"
+            "https://aiops-example-kv.vault.azure.net/"
             "secrets/sre-agent-http-trigger-url"
         ),
         (
-            "https://aiops-dev-kv-g6ludc.vault.azure.net/"
+            "https://aiops-example-kv.vault.azure.net/"
             "secrets/wrong-name/00000000000000000000000000000001"
         ),
     ],
@@ -2033,7 +2033,7 @@ def test_same_name_and_version_in_other_vault_is_rejected() -> None:
     module = _load_module()
     secret = _fixture(SECRET_FIXTURE)
     other_id = (
-        "https://other-vault.vault.azure.net/secrets/"
+        "https://other-example-vault.vault.azure.net/secrets/"
         f"{module.SECRET_NAME}/{SECRET_VERSION}"
     )
     secret["secretReference"]["keyVaultSecretId"] = other_id
@@ -2160,7 +2160,7 @@ def test_render_cli_loads_runtime_contract_outside_repository(
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["canonicalHash"] == (
-        "ac7c65f5fd8c206e8d6c88707114404f27615cc9092a6d47c48c0a5a8e8cf767"
+        "92ff1f5e5bfc22f394feccef2c47d64b4f653dc2a016562b42a8cd3ead23c5d3"
     )
 
 

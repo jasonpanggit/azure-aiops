@@ -307,6 +307,32 @@ class NetworkTopology:
         """
         all_resources = _topology_resources(self, detail=detail)
         omitted_ids = _summary_omitted_resource_ids(self.snapshot) if detail == "summary" else set()
+        summary_identity_cache: dict[
+            int, tuple[frozenset[str], frozenset[str]]
+        ] = {}
+
+        def summary_canvas_identity(
+            resources: list[dict[str, Any]],
+            unresolved_ids: tuple[str, ...] | list[str] = (),
+        ) -> tuple[set[str], set[str]]:
+            # Summary resource selections are prefixes of all_resources.
+            count = len(resources)
+            identities = summary_identity_cache.get(count)
+            if identities is None:
+                nodes, groups = _summary_canvas_identity(resources)
+                identities = (frozenset(nodes), frozenset(groups))
+                summary_identity_cache[count] = identities
+            node_ids, group_ids = map(set, identities)
+            for resource_id in unresolved_ids:
+                normalized_id = str(resource_id or "")
+                if not normalized_id:
+                    continue
+                node_ids.add(normalized_id.casefold())
+                group_id = _subscription_group_id(normalized_id)
+                if group_id:
+                    group_ids.add(group_id)
+            return node_ids, group_ids
+
         (
             relationships,
             dropped_relationships,
@@ -414,11 +440,11 @@ class NetworkTopology:
                         and not link.get("remote_vnet_observed")
                     )
                 )
-                returned_nodes, returned_groups = _summary_canvas_identity(
+                returned_nodes, returned_groups = summary_canvas_identity(
                     resources,
                     tuple(returned_unresolved_ids),
                 )
-                total_nodes, total_groups = _summary_canvas_identity(
+                total_nodes, total_groups = summary_canvas_identity(
                     all_resources,
                     [
                         *self.unresolved_peer_vnet_ids,
@@ -532,8 +558,32 @@ class NetworkTopology:
             name: [] for name in collection_totals
         }
 
-        def serialized_size(payload: dict[str, Any]) -> int:
-            return len(json.dumps(payload).encode())
+        serialized_value_sizes: dict[int, tuple[Any, int]] = {}
+
+        def serialized_size(value: Any) -> int:
+            if isinstance(value, (dict, list, tuple)):
+                cached = serialized_value_sizes.get(id(value))
+                if cached is not None and cached[0] is value:
+                    return cached[1]
+                if isinstance(value, dict):
+                    if any(not isinstance(key, str) for key in value):
+                        return len(json.dumps(value).encode())
+                    size = 2 + sum(
+                        len(json.dumps(key))
+                        + 2
+                        + serialized_size(item)
+                        + (2 if index else 0)
+                        for index, (key, item) in enumerate(value.items())
+                    )
+                else:
+                    size = 2 + sum(
+                        serialized_size(item)
+                        + (2 if index else 0)
+                        for index, item in enumerate(value)
+                    )
+                serialized_value_sizes[id(value)] = (value, size)
+                return size
+            return len(json.dumps(value).encode())
 
         def resource_payload(count: int) -> dict[str, Any]:
             return serialize(
@@ -550,7 +600,7 @@ class NetworkTopology:
         low, high = 0, min(len(all_resources), SUMMARY_NODE_CAP)
         while low < high:
             candidate = (low + high + 1) // 2
-            candidate_nodes, candidate_groups = _summary_canvas_identity(
+            candidate_nodes, candidate_groups = summary_canvas_identity(
                 all_resources[:candidate]
             )
             if (
@@ -601,7 +651,7 @@ class NetworkTopology:
             if not folded_id or folded_id in resource_ids:
                 continue
             candidate_unresolved = (*allowed_unresolved_ids, folded_id)
-            candidate_nodes, candidate_groups = _summary_canvas_identity(
+            candidate_nodes, candidate_groups = summary_canvas_identity(
                 resources,
                 candidate_unresolved,
             )
@@ -917,6 +967,9 @@ class TopologyBuilder:
                     business_service=firewall.business_service,
                     application=firewall.application,
                     owner=firewall.owner,
+                    support_team=firewall.support_team,
+                    region=firewall.region,
+                    criticality=firewall.criticality,
                     tags=dict(firewall.tags),
                     service_kind="firewall",
                     provider_resource_id=firewall.resource_id,
@@ -941,6 +994,9 @@ class TopologyBuilder:
                     business_service=gateway.business_service,
                     application=gateway.application,
                     owner=gateway.owner,
+                    support_team=gateway.support_team,
+                    region=gateway.region,
+                    criticality=gateway.criticality,
                     tags=dict(gateway.tags),
                     service_kind=kind,
                     provider_resource_id=gateway.resource_id,
@@ -959,6 +1015,13 @@ class TopologyBuilder:
                     resource_group=zone.resource_group,
                     location=zone.location,
                     connection_id=zone.connection_id,
+                    environment=zone.environment,
+                    business_service=zone.business_service,
+                    application=zone.application,
+                    owner=zone.owner,
+                    support_team=zone.support_team,
+                    region=zone.region,
+                    criticality=zone.criticality,
                     tags=dict(zone.tags),
                     service_kind="private_dns",
                     provider_resource_id=zone.resource_id,
@@ -1075,6 +1138,9 @@ class TopologyBuilder:
                     business_service=service.business_service,
                     application=service.application,
                     owner=service.owner,
+                    support_team=service.support_team,
+                    region=service.region,
+                    criticality=service.criticality,
                     tags=dict(service.tags),
                     service_kind=service.service_kind,
                     provider_resource_id=service.provider_resource_id,
@@ -1243,17 +1309,26 @@ def _topology_resources(
         for nic in snapshot.nics
         if detail == "full" or nic.attached_resource_id or nic.nsg_id
     )
-    nodes.extend(
-        _resource_node(
-            nsg,
-            details={
-                "rules": [_nsg_rule_summary(rule) for rule in nsg.ordered_rules()],
-                "custom_rule_count": len([rule for rule in nsg.rules if not rule.is_default]),
-                "effective_rule_count": len(nsg.effective_rules()),
-            },
+    for nsg in snapshot.nsgs:
+        effective_rules = nsg.effective_rules()
+        nodes.append(
+            _resource_node(
+                nsg,
+                details={
+                    "rules": [
+                        _nsg_rule_summary(rule)
+                        for rule in sorted(
+                            effective_rules,
+                            key=lambda rule: (rule.priority, rule.name),
+                        )
+                    ],
+                    "custom_rule_count": len(
+                        [rule for rule in nsg.rules if not rule.is_default]
+                    ),
+                    "effective_rule_count": len(effective_rules),
+                },
+            )
         )
-        for nsg in snapshot.nsgs
-    )
     if detail == "full":
         nodes.extend(_resource_node(rule) for nsg in snapshot.nsgs for rule in nsg.rules)
     nodes.extend(

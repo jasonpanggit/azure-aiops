@@ -37,6 +37,33 @@ class NetworkScope:
     business_services: tuple[str, ...] = ()
     applications: tuple[str, ...] = ()
     owners: tuple[str, ...] = ()
+    support_teams: tuple[str, ...] = ()
+    regions: tuple[str, ...] = ()
+    criticalities: tuple[str, ...] = ()
+
+    @classmethod
+    def from_dimensions(cls, dimensions: Mapping[str, Iterable[str]]) -> NetworkScope:
+        """Project every canonical scope dimension without silently widening it."""
+        fields = {
+            "subscription_connection": "connection_ids",
+            "subscription": "subscription_ids",
+            "environment": "environments",
+            "business_service": "business_services",
+            "application": "applications",
+            "owner": "owners",
+            "support_team": "support_teams",
+            "region": "regions",
+            "criticality": "criticalities",
+        }
+        unknown = set(dimensions) - fields.keys()
+        if unknown:
+            raise ValueError(f"Unsupported network scope dimensions: {', '.join(sorted(unknown))}")
+        return cls(
+            **{
+                field: tuple(sorted(dimensions.get(dimension, ())))
+                for dimension, field in fields.items()
+            }
+        )
 
     @property
     def is_empty(self) -> bool:
@@ -48,6 +75,9 @@ class NetworkScope:
                 self.business_services,
                 self.applications,
                 self.owners,
+                self.support_teams,
+                self.regions,
+                self.criticalities,
             )
         )
 
@@ -61,6 +91,9 @@ class NetworkScope:
             and self._match(self.business_services, getattr(item, "business_service", ""))
             and self._match(self.applications, getattr(item, "application", ""))
             and self._match(self.owners, getattr(item, "owner", ""))
+            and self._match(self.support_teams, getattr(item, "support_team", ""))
+            and self._match(self.regions, getattr(item, "region", ""))
+            and self._match(self.criticalities, getattr(item, "criticality", ""))
         )
 
     def filter_snapshot(self, snapshot: NetworkSnapshot) -> NetworkSnapshot:

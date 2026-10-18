@@ -9,6 +9,39 @@ import type { ScopeSelection } from "./scope";
 export type Confidence = "high" | "medium" | "low" | "unknown";
 export type Freshness = "fresh" | "aging" | "stale" | "unknown";
 
+/** Only allowlisted typed change-state values cross this read contract. */
+export type ChangeStateCell = { status: "reported"; value: string | boolean } | { status: "unreported" | "withheld" };
+
+/** An independent source observation, not an incident link or approval. */
+export interface ChangeObservation {
+  observation_id: string;
+  change_id: string;
+  change_type: string;
+  category: string;
+  changed_at: string;
+  source: string;
+  summary: string;
+  resource_name: string;
+  business_service: string;
+  application: string;
+  environment: string;
+  configuration: {
+    basis: "change_states";
+    fields: Array<{ field: string; before: ChangeStateCell; after: ChangeStateCell; comparison: "changed" | "unchanged" | "not_comparable" }>;
+    withheld_field_count: number;
+  };
+}
+
+/** Counts and facets cover authorized rows in the loaded projection, never the estate. */
+export interface ChangeObservationFeed {
+  observations: ChangeObservation[];
+  facets: { category: string[]; source: string[] };
+  facet_metadata: Record<"category" | "source", { total: number; returned: number; truncated: boolean }>;
+  authorized_count: number;
+  extent: "loaded_change_projection";
+  read_only: true;
+}
+
 export interface EvidenceItem {
   source_engine: string;
   source_table: string;
@@ -19,6 +52,80 @@ export interface EvidenceItem {
   freshness: Freshness;
   freshness_threshold_seconds?: number | null;
   freshness_source_family?: string;
+}
+
+/** Explicit server captures, private to the exact caller/effective scope. */
+export interface OverviewHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  observations: OverviewObservation[];
+}
+
+/** Exact-caller/effective-scope server captures, not an inferred service time series. */
+export interface ServicePortfolioHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  observations: ServicePortfolioObservation[];
+}
+
+export interface PortfolioService {
+  service_key: string;
+  kind: "service" | "unmapped";
+  name: string;
+  connection_rows: number;
+  mapped_rows: number;
+  missing_owner: number;
+  missing_support_team: number;
+  missing_environment: number;
+  subscription_count: number;
+  incident_associations: number;
+  critical_associations: number;
+}
+
+/** The 100-row incident extent and reported freshness remain explicit. */
+export interface ServicePortfolioObservation {
+  observation_id: string;
+  captured_at: string;
+  services: PortfolioService[];
+  sources: Array<{
+    id: "connections" | "incidents";
+    started_at: string;
+    finished_at: string;
+    observed_at: string[];
+    source_tables: string[];
+    knowledge_version: string;
+    reported_freshness: Freshness[];
+    loaded: number;
+    total: number;
+    partial: boolean;
+    warning_count: number;
+  }>;
+}
+
+/** Capture time is collection time, not an assertion that all source data was fresh. */
+export interface OverviewObservation {
+  observation_id: string;
+  captured_at: string;
+  formula_version: "overview-v1";
+  critical_situations: number;
+  exposed_findings: number;
+  network_gaps: number;
+  sources: Array<{
+    id: "situations" | "network" | "exposure";
+    started_at: string;
+    finished_at: string;
+    observed_at: string[];
+    source_tables: string[];
+    knowledge_version: string;
+    loaded: number | null;
+    total: number | null;
+    partial: boolean;
+    warning_count: number;
+  }>;
 }
 
 export interface RemediationDecision {
@@ -160,7 +267,14 @@ export interface LifecycleReview {
   provenance: Record<string, unknown> | null;
 }
 
-export interface OsInventoryCollection {
+/** Facets count authorized groups, not distinct machines or installations. */
+export interface InventoryGroupMetadata {
+  facets?: Record<string, Array<{ value: string; count: number }>>;
+  represented_group_count?: number;
+  summary?: Partial<Record<"machine_count" | "install_count" | "unlinked_count" | "resource_count" | "review_group_count" | "expired_machine_count" | "expiring_machine_count" | "provider_count", number>>;
+}
+
+export interface OsInventoryCollection extends InventoryGroupMetadata {
   groups: OsInventoryGroup[];
   source_status: Record<InventorySourceType, InventorySourceStatus>;
   observed_at: string;
@@ -207,7 +321,7 @@ export interface PaasInventoryResource {
   tags: Record<string, string>;
 }
 
-export interface PaasInventoryCollection {
+export interface PaasInventoryCollection extends InventoryGroupMetadata {
   groups: PaasInventoryGroup[];
   source_status: Record<string, InventorySourceStatus>;
   observed_at: string;
@@ -224,6 +338,34 @@ export interface PaasInventoryDetail {
   query_version: string;
   generation_id: string;
   requested_scope: Record<string, string[]>;
+}
+
+/** Durable allowlisted inventory capture; not a queued worker or download receipt. */
+export interface InventoryExportManifest {
+  schema_version: 1;
+  export_id: string;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  status: "ready" | "cancelled" | "expired";
+  generation_id: string;
+  query_version: string;
+  observed_at: string;
+  created_at: string;
+  expires_at: string;
+  total: number;
+  sha256: string;
+  columns: string[];
+  batch_size: 500;
+  resume_basis: "captured_rows_not_active_generation";
+}
+
+/** An immutable, separately downloadable batch within a retained capture. */
+export interface InventoryExportBatch {
+  manifest: InventoryExportManifest;
+  resources: Record<string, string>[];
+  offset: number;
+  next_offset: number | null;
 }
 
 export interface FlatInventoryResource {
@@ -248,6 +390,36 @@ export interface FlatResourceCollection {
   family_availability: Record<string, InventoryFamilyAvailability>;
   requested_scope: Record<string, string[]>;
   query_version: string;
+  generation_id?: string;
+  facets?: Record<string, Array<{ value: string; count: number }>>;
+  represented_count?: number;
+  aggregate_basis?: "authorized_published_observations";
+}
+
+/** Normalized exact-identity details; raw provider properties/tags are excluded. */
+export interface InventoryAsset extends FlatInventoryResource {
+  location?: string;
+  sku?: string;
+  tier?: string;
+  runtime?: string;
+  provisioning_state?: string;
+  os_name?: string;
+  os_version?: string;
+  source_type?: string;
+  observed_at?: string;
+  containment: {
+    management_group_id: string | null;
+    subscription_id: string | null;
+    resource_group_id: string | null;
+  };
+}
+
+/** Filter the published authorized resource projection before server pagination. */
+export interface InventoryResourceQuery {
+  q?: string;
+  family?: string;
+  resource_type?: string;
+  resource_group?: string;
 }
 
 export interface InventoryNarrativeCitation {
@@ -305,7 +477,7 @@ export interface TwinTimelineEvent {
 
 export interface TwinTemporalState {
   current_state_version: string;
-  previous_state_version: string;
+  previous_state_version: string | null;
   change_history: Array<Record<string, unknown>>;
   risk_trend: Array<Record<string, unknown>>;
   dependency_evolution: Array<Record<string, unknown>>;
@@ -314,7 +486,7 @@ export interface TwinTemporalState {
 export interface TwinSnapshot {
   twin_id: string;
   version: string;
-  previous_version: string;
+  previous_version: string | null;
   observed_at: string;
   scope: Record<string, string[]>;
   entities: TwinEntity[];
@@ -338,7 +510,8 @@ export interface TwinQueryResult {
 
 export interface TwinComparison {
   current_version: string;
-  previous_version: string;
+  previous_version: string | null;
+  comparison_available: boolean;
   added: TwinEntity[];
   removed: TwinEntity[];
   changed: Array<Record<string, unknown>>;
@@ -350,7 +523,12 @@ export interface TwinScenarioResult {
   target: string;
   version: string;
   likely_impact: string;
-  risk_delta: number;
+  risk_delta: null;
+  analysis_kind: "bounded_topology_review";
+  authority: "none";
+  impacted_total: number;
+  truncated: boolean;
+  traversal: { direction: "undirected"; max_hops: number; max_entities: number };
   impacted_entities: TwinEntity[];
   assumptions: string[];
 }
@@ -388,6 +566,25 @@ export interface AgentDeploymentStatus {
     source_revision: string;
     release: string;
   };
+}
+
+/** Cached process observations; absent providers have no readiness evidence. */
+export interface AgentRuntimeReadiness {
+  source: "api.ProviderRuntime";
+  report_kind: "cached_process_state";
+  reported_at: string;
+  providers: Record<string, {
+    state: string | null;
+    configured: boolean | null;
+    loaded: boolean | null;
+    freshness: string | null;
+    ontology_version: string | null;
+    loaded_at: string | null;
+    last_attempt_at: string | null;
+    last_success_at: string | null;
+    degraded_reason: string | null;
+    cache_key_stale: boolean | null;
+  } | null>;
 }
 
 export interface AutonomousAgent {
@@ -488,6 +685,24 @@ export interface InvestigationEvaluation {
   convergence: string;
   latency_ms: number;
   cost: Record<string, number>;
+}
+
+/** Durable dispatch metadata; neither last stage nor running status proves liveness. */
+export interface InvestigationJob {
+  revision: number;
+  job_id: string;
+  scope: Record<string, string[]>;
+  objective: string;
+  timeout_seconds: number;
+  created_at: number;
+  updated_at: number;
+  status: "accepted_outcome_unconfirmed" | "running" | "completed" | "stopped" | "failed";
+  stage: string;
+  stop_requested: boolean;
+  ledger_id: string;
+  durability: "durable";
+  liveness: "not_established";
+  cancellation: "scheduling_only";
 }
 
 export interface MultiAgentLedger {
@@ -737,6 +952,7 @@ export interface ExposureCursorPagination {
 }
 
 export interface ExposurePage<TItem = ExposureFinding> {
+  distinct_counts?: { targets?: number; weaknesses?: number; recorded_digests?: number };
   total_count: number;
   items: TItem[];
   next_cursor: string | null;
@@ -748,6 +964,7 @@ export interface ExposurePage<TItem = ExposureFinding> {
 }
 
 export interface ExposureOverview {
+  distinct_counts?: { targets?: number; weaknesses?: number; recorded_digests?: number };
   total_count: number;
   generation: string;
   applied: ExposureAppliedQuery;
@@ -764,6 +981,89 @@ export interface ExposureFacetValue {
 export interface ExposureFacets extends ExposureOverview {
   items: ExposureFinding[];
   facets: Record<string, ExposureFacetValue[]>;
+}
+
+export interface ExposureObservation {
+  observation_id: string;
+  captured_at: string;
+  generation: string;
+  total_count: number;
+  facets: Record<string, ExposureFacetValue[]>;
+  completeness_state: string;
+  represented_connections: number | null;
+  expected_connections: number | null;
+  excluded_count: number | null;
+  coverage_total_count: number | null;
+  freshness_state: string;
+  source_observed_at: string;
+  source_table: "gold_exposure_facts" | "silver_patch_snapshot_findings";
+}
+
+export interface ExposureHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  observations: ExposureObservation[];
+}
+
+export type ExposureRecoveryReason = "source_evidence" | "connection_coverage" | "freshness" | "classification" | "sla_unknown";
+export type ExposureRecoveryDisposition = "queued" | "in_review" | "review_closed";
+export interface ExposureRecoveryReview {
+  expected_revision: number;
+  observation_id: string;
+  reason: ExposureRecoveryReason;
+  disposition: ExposureRecoveryDisposition;
+  owner: string;
+  target_date: string;
+  note: string;
+}
+export interface ExposureRecoveryEvent extends ExposureRecoveryReview {
+  event_id: string;
+  recorded_at: string;
+  actor: string;
+}
+export interface ExposureRecoveryCandidate {
+  observation_id: string;
+  reason: ExposureRecoveryReason;
+  explanation: string;
+  generation: string;
+  captured_at: string;
+  review: ExposureRecoveryEvent | null;
+}
+export interface ExposureRecoveryState {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  events: ExposureRecoveryEvent[];
+  candidates: ExposureRecoveryCandidate[];
+}
+
+export interface PatchReviewBatch {
+  batch_id: string;
+  captured_at: string;
+  generation: string;
+  owner: string;
+  note: string;
+  source_observed_at: string;
+  source_completeness: string;
+  findings: Array<{
+    exposure_id: string;
+    target_id: string;
+    weakness_id: string;
+    target_kind: "server" | "container_image";
+    severity: string;
+    completeness: string;
+    sla_state: string;
+  }>;
+}
+export interface PatchReviewHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  batches: PatchReviewBatch[];
 }
 
 export interface ExposureQueryCatalog {
@@ -783,6 +1083,56 @@ export interface ExposureQueryCatalog {
     path_template: string;
     environment_membership_included: false;
   };
+}
+
+export interface CveSourceReceipt {
+  source: "nvd" | "epss" | "kev" | "msrc";
+  identifier: string;
+  status: string;
+  stale: boolean;
+  has_last_known_good: boolean;
+  source_at: string;
+  safe_error_code: string;
+  severity: string;
+  cvss_score: number | null;
+  cvss_vector: string;
+  epss_score: number | null;
+  kev_listed: boolean | null;
+  kb_ids: string[];
+  product_ids: string[];
+}
+
+export interface CveEvidenceReceipt {
+  receipt_id: string;
+  captured_at: string;
+  actor: string;
+  scope: Record<string, string[]>;
+  cve_id: string;
+  generation: string;
+  query_fingerprint: string;
+  filters: { [K in keyof import("./exposure-query-state").ExposureFilterState]?: import("./exposure-query-state").ExposureFilterState[K] | null };
+  sort_by: string;
+  sort_direction: string;
+  page_size: number;
+  cursor_page: boolean;
+  total_count: number;
+  source_completeness: string;
+  source_observed_at: string;
+  findings: PatchReviewBatch["findings"];
+  sources: CveSourceReceipt[];
+  sha256: string;
+}
+export interface CveEvidenceHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  cve_id: string;
+  revision: number;
+  receipts: CveEvidenceReceipt[];
+}
+export interface CveEvidenceBundle {
+  content: string;
+  manifest: { receipt_id: string; cve_id: string; receipt_sha256: string; sha256: string; size_bytes: number };
 }
 
 export interface ExposureExternalCatalog<TItem = Record<string, unknown>> {
@@ -1040,7 +1390,35 @@ export interface CompliancePolicyState {
     policy_revision: number;
     active: boolean;
   }>;
-  audit: Array<{ revision: number; actor: string; at: string; action: string; reason: string }>;
+  audit: Array<{
+    revision: number; actor: string; at: string; action: string; reason: string;
+    previous_policy_revision?: number;
+    policy_diff?: Array<{ field: keyof ComplianceDesignPolicy; before: string | boolean; after: string | boolean }>;
+    invalidated_exception_ids?: string[];
+  }>;
+}
+
+/** Server-evaluated metadata-status age; not a live schema or resource-data probe. */
+export interface FabricFreshnessBudget {
+  evaluated_at: string;
+  clock: "metadata_status_ingested_then_observed_then_timestamp";
+  state: "fresh" | "stale" | "unknown";
+  threshold_seconds: number;
+  cadence_minutes: number;
+  slo_multiplier: number;
+  policy: "table_override" | "defaults";
+  source_count: number;
+  known_clock_count: number;
+  worst_known_age_seconds: number | null;
+  remaining_seconds: number | null;
+  sources: Array<{
+    scope: Record<string, string[]>;
+    partition_key?: string;
+    status_at: string;
+    state: "fresh" | "stale" | "unknown";
+    age_seconds: number | null;
+    remaining_seconds: number | null;
+  }>;
 }
 
 export interface FabricDataset {
@@ -1055,6 +1433,32 @@ export interface FabricDataset {
   watermark: string;
   error: string;
   lineage_ref: string;
+  freshness_budget?: FabricFreshnessBudget;
+}
+
+/** Registry declarations and scoped metadata references, not verified deployed schema or dataset edges. */
+export interface FabricDatasetContract {
+  table_name: string;
+  evaluated_at: string;
+  declared_schema: {
+    source: "fabric.schema_registry";
+    version: string;
+    status: "available" | "not_registered";
+    fields: Array<{ name: string; type: string; nullable: boolean }>;
+  };
+  deployed_schema_validation: "not_collected";
+  producer_ownership: "not_collected";
+  dataset_dependency_graph: "not_collected";
+  source_diagnostics: Array<{
+    scope: Record<string, string[]>;
+    partition_key: string;
+    status_at: string;
+    freshness: "fresh" | "stale" | "unknown";
+    recorded_status: string;
+    recorded_quality: string;
+    lineage_ref: string;
+    issues: string[];
+  }>;
 }
 
 export interface FabricManifestEntry {
@@ -1364,7 +1768,73 @@ export interface ExposureEnrichmentState {
   sources: Record<string, ExposureEnrichmentSourceState>;
 }
 
+export interface KbObservation {
+  observation_id: string;
+  captured_at: string;
+  generation: string;
+  source_observed_at: string;
+  completeness: string;
+  freshness: string;
+  counts: NonNullable<KbDetail["installation_status_counts"]> | null;
+  targets: NonNullable<KbDetail["target_status_observations"]>;
+  targets_truncated: boolean | null;
+  msrc: { status: string; stale: boolean; has_last_known_good: boolean; source_at: string } | null;
+}
+
+export interface KbObservationHistory {
+  schema_version: 1;
+  actor: string;
+  scope: ScopeSelection;
+  kb_id: string;
+  revision: number;
+  observations: KbObservation[];
+}
+
+export interface KbReviewDeclaration {
+  generation: string;
+  owner: string;
+  window_start: string;
+  window_end: string;
+  dependency_kbs: string[];
+  disposition: "needs_review" | "deferred" | "reviewed";
+  note: string;
+}
+
+export interface KbReviewRecord extends KbReviewDeclaration {
+  expected_revision: number;
+  review_id: string;
+  recorded_at: string;
+  source_observed_at: string;
+  source_completeness: string;
+  source_freshness: string;
+}
+
+export interface KbReviewHistory {
+  schema_version: 1;
+  actor: string;
+  scope: ScopeSelection;
+  kb_id: string;
+  revision: number;
+  reviews: KbReviewRecord[];
+}
+
 export interface KbDetail {
+  generation?: string;
+  snapshot_freshness_at?: string;
+  installation_status_counts?: {
+    observed_targets: number;
+    missing: number;
+    installation_failed: number;
+    installed: number;
+    other: number;
+  } | null;
+  target_status_observations?: { target_id: string; status: string; observed_at: string }[];
+  target_status_observations_truncated?: boolean | null;
+  update_guidance?: {
+    source: "msrc";
+    product_ids: string[];
+    dependency_capability: "not_collected";
+  };
   snapshot?: {
     completeness: string;
     freshness: string;
@@ -1835,6 +2305,19 @@ export interface ConnectionValidationReport {
   health: ConnectionHealthDetail;
 }
 
+/** Advisory read-only access probes, never a credential store or sync receipt. */
+export interface ConnectionPreflightReport {
+  connection_id: string;
+  subscription_id: string;
+  checked_at: string;
+  status: string;
+  passed: boolean;
+  advisory_only: true;
+  persisted: false;
+  sync_started: false;
+  checks: Array<{ name: string; passed: boolean; required: boolean; skipped: boolean; detail: string; remediation: string | null }>;
+}
+
 export interface ConnectionSyncResult {
   connection_id: string;
   status: string;
@@ -1911,6 +2394,16 @@ export interface SearchResult {
   live_observed_at?: string;
   source_status?: Record<string, string>;
   truncated?: boolean;
+  facets?: { entity_type: Record<string, number>; source: Record<string, number> };
+  represented_count?: number;
+  aggregate_basis?: "authorized_provider_results";
+}
+
+/** Search readiness is reported independently; configuration is not a successful probe. */
+export interface SearchCapabilities {
+  live: { state: string; can_query: boolean; phrases: string[]; prerequisite: string };
+  semantic: { state: string; can_query: boolean; phrases: string[]; prerequisite: string };
+  identity: { state: string; prerequisite: string };
 }
 
 export interface DependencyGraphNode {
@@ -2358,6 +2851,7 @@ export interface NetworkGap {
   subscription_id: string;
   environment: string;
   vnet_id?: string;
+  reviewed_digest?: string;
 }
 
 /** One rule in the rule-based, UI-editable network design policy. */
@@ -2422,6 +2916,30 @@ export interface RuleFinding {
   connection_id: string;
   subscription_id: string;
   environment: string;
+  reviewed_digest?: string;
+}
+
+/** Server-issued reference to exact evidence, not a change artifact or approval. */
+export interface NetworkReviewReference {
+  kind: "gap" | "rule";
+  finding_id: string;
+  reviewed_digest: string;
+}
+
+/** Safe reauthorized current finding context; complete source evidence is hash-bound only. */
+export interface NetworkFindingReview extends NetworkReviewReference {
+  title: string;
+  severity: string;
+  category: string;
+  detail: string;
+  recommendation: string;
+  resource_ids: string[];
+  basis: string;
+  flow_log_state: string;
+  source_observed_at: string;
+  scope: Record<string, string[]>;
+  policy_digest: string;
+  source_finding_digest: string;
 }
 
 export interface FlowEndpoint {
@@ -2480,6 +2998,113 @@ export interface FlowResult {
   path_summary: string;
 }
 
+/** A personal declaration, not an infrastructure policy or approval. */
+export interface NetworkIntentTest {
+  test_id: string;
+  name: string;
+  source: string;
+  destination: string;
+  port: number;
+  protocol: "Tcp" | "Udp";
+  expected_verdict: "allowed" | "denied";
+}
+
+/** One immutable server-side configuration analysis, with no packet probing. */
+export interface NetworkIntentRun {
+  run_id: string;
+  reviewed_revision: number;
+  started_at: string;
+  finished_at: string;
+  source_observed_at: string;
+  results: {
+    test: NetworkIntentTest;
+    verdict: FlowVerdict;
+    unknown_count: number;
+    missing_enforcement_count: number;
+    outcome: "match" | "mismatch" | "indeterminate";
+  }[];
+}
+
+/** Bounded declarations and run receipts for the exact principal/effective scope. */
+export interface NetworkIntentSuite {
+  schema_version: number;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  tests: NetworkIntentTest[];
+  runs: NetworkIntentRun[];
+}
+
+/** Safe version-one retained node fields, not raw configuration or complete inventory. */
+export interface RetainedTopologyNode {
+  id: string;
+  name: string;
+  entity_type: string;
+  role: string;
+  subscription_id: string;
+  resource_group: string;
+  location: string;
+  connection_id: string;
+  environment: string;
+  business_service: string;
+  application: string;
+  owner: string;
+}
+
+/** Directed observed relationship with both endpoints in the retained projection. */
+export interface RetainedTopologyEdge {
+  id: string;
+  source: string;
+  target: string;
+  relationship_type: string;
+  label: string;
+  peering: {
+    is_bidirectional: boolean;
+    local_state: string;
+    remote_state: string;
+    allow_forwarded_traffic: boolean;
+    allow_gateway_transit: boolean;
+    use_remote_gateways: boolean;
+  } | null;
+}
+
+/** One explicit server-acquired summary; repeated source timestamps are not independent. */
+export interface RetainedTopologyCapture {
+  capture_id: string;
+  started_at: string;
+  finished_at: string;
+  source_observed_at: string;
+  nodes: RetainedTopologyNode[];
+  edges: RetainedTopologyEdge[];
+  omitted_boundary_peering_count: number;
+  dropped_relationship_count: number;
+}
+
+/** Latest five safe projections for one exact principal/effective scope. */
+export interface NetworkTopologyHistory {
+  schema_version: number;
+  actor: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  captures: RetainedTopologyCapture[];
+}
+
+/** Paginated differences describe retained observations, never lifecycle or causation. */
+export interface NetworkTopologyComparison {
+  baseline_id: string;
+  target_id: string;
+  changes: {
+    kind: "node" | "edge";
+    id: string;
+    change: "added" | "no_longer_observed" | "changed";
+    changed_fields: string[];
+    before: RetainedTopologyNode | RetainedTopologyEdge | null;
+    after: RetainedTopologyNode | RetainedTopologyEdge | null;
+  }[];
+  total: number;
+  counts: Record<"added" | "no_longer_observed" | "changed", number>;
+}
+
 export interface HubDependents {
   hub_vnet_id: string;
   hub_name: string;
@@ -2510,19 +3135,64 @@ export interface UnavailableMetric {
   reason: string;
 }
 
-export interface FinOpsSummary {
-  identified_annual_savings: number;
+export interface FinOpsCurrencyTotal {
   currency: string;
+  amount: number | null;
+  count: number;
+}
+
+export interface FinOpsSummary {
+  identified_annual_savings: number | null;
+  currency: string;
+  identified_annual_savings_currency_totals?: FinOpsCurrencyTotal[];
   savings_opportunity_count: number;
   quantified_opportunity_count: number;
   waste_item_count: number;
-  actual_spend?: number;
+  actual_spend?: number | null;
   actual_spend_currency?: string;
+  actual_spend_currency_totals?: FinOpsCurrencyTotal[];
   actual_spend_source?: string;
   actual_spend_period_start?: string;
   actual_spend_period_end?: string;
   actual_spend_record_count?: number;
   unavailable_metrics: UnavailableMetric[];
+}
+
+export interface FinOpsVerifiedRemediation {
+  execution_id: string;
+  target_resource_id: string;
+  changed_at: string;
+  verified_at: string;
+}
+
+export interface FinOpsRemediationCostComparison {
+  available: boolean;
+  reason?: string;
+  execution: FinOpsVerifiedRemediation;
+  baseline?: {
+    start: string;
+    end: string;
+    total_cost?: number;
+    average_daily_cost?: number;
+  };
+  followup?: {
+    start: string;
+    end: string;
+    total_cost?: number;
+    average_daily_cost?: number;
+  };
+  currency?: string;
+  observed_average_daily_cost_change?: number;
+  coverage: {
+    expected_days_per_window: number;
+    baseline_days_observed: number;
+    baseline_missing_days?: string[];
+    followup_days_observed: number;
+    followup_missing_days?: string[];
+    cost_record_count?: number;
+    snapshot_observed_at?: string;
+  };
+  limitations: string[];
 }
 
 export interface SavingsOpportunity {
@@ -2557,10 +3227,12 @@ export interface WasteItem {
 }
 
 export interface FinOpsAttributionGroup {
-  identified_annual_savings: number;
+  identified_annual_savings: number | null;
+  currency?: string;
+  identified_annual_savings_currency_totals?: FinOpsCurrencyTotal[];
   savings_opportunity_count: number;
   waste_item_count: number;
-  [dimension: string]: string | number;
+  [dimension: string]: string | number | null | FinOpsCurrencyTotal[] | undefined;
 }
 
 export interface IdentitySummary {
@@ -2584,6 +3256,62 @@ export interface PrincipalRisk {
   stale: boolean;
   last_changed: string;
   blast_radius: Record<string, number>;
+  risk_evidence?: {
+    classification: "privileged_signal" | "incomplete" | "no_classified_signal";
+    unresolved_role_assignments: number;
+    unknown_age_assignments: number;
+    stale_assignments: number;
+    age_evaluated_at: string;
+    effective_access: "not_evaluated";
+  };
+}
+
+export interface IdentityPermissionPatternGroup {
+  count: number;
+  patterns: string[];
+  truncated: boolean;
+}
+
+export interface LeastPrivilegeCandidate {
+  assignment_id: string;
+  principal_id: string;
+  principal_type: string;
+  role_definition_id: string;
+  role: string;
+  scope: string;
+  scope_breadth: string;
+  age_state: "stale" | "within_review_window" | "unknown";
+  last_changed: string;
+  condition_state: "present" | "not_present" | "not_collected";
+  permission_profile: {
+    actions: IdentityPermissionPatternGroup;
+    not_actions: IdentityPermissionPatternGroup;
+    data_actions: IdentityPermissionPatternGroup;
+    not_data_actions: IdentityPermissionPatternGroup;
+    wildcard_pattern_count: number;
+  };
+  review_reasons: string[];
+  recommendation: string;
+}
+
+export interface IdentityLeastPrivilegeReview {
+  effective_access: "not_evaluated";
+  assignment_count: number;
+  candidate_count: number;
+  offset: number;
+  limit: number;
+  candidates: LeastPrivilegeCandidate[];
+  coverage: {
+    role_definitions_resolved: number;
+    assignment_age_unknown: number;
+    assignment_scope_unknown: number;
+    conditional_assignments_observed: number;
+    group_membership: "not_collected";
+    deny_assignments: "not_collected";
+    pim_eligibility: "not_collected";
+    role_conditions: "presence_only_not_evaluated";
+    effective_access: "not_evaluated";
+  };
 }
 
 export interface SubscriptionOwnerRecord {
@@ -2594,6 +3322,7 @@ export interface SubscriptionOwnerRecord {
   subscription_id: string;
   assigned_on: string;
   stale: boolean;
+  age_state?: "stale" | "within_review_window" | "unknown";
 }
 
 export interface StaleAccessRecord {
@@ -2676,6 +3405,10 @@ export interface EnterpriseRole {
 }
 
 export interface EnterpriseSettings {
+  revision?: number;
+  persistent?: boolean;
+  can_write?: boolean;
+  last_change?: { actor: string; reason: string; recorded_at: string } | null;
   roles: EnterpriseRole[];
   taxonomies: Record<string, string[]>;
   onboarding_policy: Record<string, unknown>;
@@ -2687,6 +3420,12 @@ export interface EnterpriseSettings {
   [key: string]: unknown;
 }
 
+/** Explicit reviewed revision and reason for an enterprise-wide partial update. */
+export interface EnterpriseSettingsChange {
+  expected_revision: number;
+  reason: string;
+  changes: Record<string, Record<string, unknown>>;
+}
 // --------------------------------------------------------------------------
 // Pre-deployment change risk
 // --------------------------------------------------------------------------
@@ -2844,6 +3583,15 @@ export interface CabRecommendation {
 }
 
 export interface ChangeAssessment {
+  artifact?: {
+    schema_version: number;
+    source: string;
+    sha256: string;
+    canonicalization: string;
+    utf8_bytes: number;
+    withheld_value_count: number;
+    interpretation: string;
+  };
   assessment_id: string;
   assessed_at: string;
   source_engine: string;
@@ -2856,6 +3604,8 @@ export interface ChangeAssessment {
   scope: Record<string, string[]>;
   scope_excluded_resource_count: number;
   confirmed_cause: boolean;
+  network_review?: NetworkFindingReview;
+  network_review_subject?: string;
 }
 
 export interface ChangeAssessmentSummary {
@@ -2980,6 +3730,23 @@ export interface DurableEvidence {
   situation_id: string;
 }
 
+/** Exact-scope operator annotations and server-computed append eligibility. */
+export interface SituationNotesState {
+  schema_version: 1;
+  situation_id: string;
+  scope: Record<string, string[]>;
+  revision: number;
+  can_append: boolean;
+  notes: Array<{
+    note_id: string;
+    revision: number;
+    evidence_run_id: string;
+    text: string;
+    actor: string;
+    created_at: string;
+  }>;
+}
+
 export interface DurableSourceStatus {
   source_family: string;
   run_id: string;
@@ -3018,6 +3785,21 @@ export interface SituationAuditEvent {
   run_id: string;
 }
 
+/** Current-time interpretation of an explicit case/run-bound response-review declaration. */
+export interface SituationResponseDeadline {
+  state: "due" | "overdue" | "unknown" | "closed";
+  reason: string;
+  evaluated_at: string;
+  policy_revision: number | null;
+  declaration: {
+    situation_id: string; evidence_run_id: string; due_at: string; reason: string;
+    actor: string; declared_at: string; revision: number;
+  } | null;
+  authority: "none";
+  interpretation: string;
+  can_write?: boolean;
+}
+
 export interface DurableSituation {
   situation_id: string;
   resource_id: string;
@@ -3041,6 +3823,7 @@ export interface DurableSituation {
   evidence?: DurableEvidence[];
   links?: DurableSituationLink[];
   source_status?: DurableSourceStatus[];
+  response_deadline?: SituationResponseDeadline;
 }
 
 export type SoftwareSourceType = InventorySourceType | "unlinked";
@@ -3089,7 +3872,7 @@ export interface SoftwareInventoryMachine {
   mapping_source_timestamp?: string;
 }
 
-export interface SoftwareInventoryCollection {
+export interface SoftwareInventoryCollection extends InventoryGroupMetadata {
   groups: SoftwareInventoryGroup[];
   source_status: Record<string, InventorySourceStatus>;
   observed_at: string;
@@ -3190,6 +3973,38 @@ export interface ResourceHealthSnapshot {
   unavailable_metrics: string[];
   cached: boolean;
   cache_ttl_seconds: number;
+}
+
+/** Eight reported utilization measurements; null is not zero or healthy. */
+export type RetainedHealthMetrics = Pick<ResourceUtilization,
+  "cpu_percent" | "network_in_bytes" | "network_out_bytes" | "disk_read_bytes" |
+  "disk_write_bytes" | "os_disk_queue_depth" | "memory_percent" | "disk_free_percent"
+>;
+
+/** Server acquisition receipt, with collection time distinct from retention time. */
+export interface RetainedHealthObservation {
+  observation_id: string;
+  captured_at: string;
+  started_at: string;
+  finished_at: string;
+  resource_observed_at: string;
+  snapshot_observed_at: string;
+  classification: ResourceHealthStatus;
+  cached: boolean;
+  cache_ttl_seconds: number;
+  warning_count: number;
+  unavailable_metric_count: number;
+  metrics: RetainedHealthMetrics;
+}
+
+/** Latest 30 explicit receipts for an exact principal/scope/resource address. */
+export interface ResourceHealthHistory {
+  schema_version: 1;
+  actor: string;
+  scope: Record<string, string[]>;
+  resource_id: string;
+  revision: number;
+  observations: RetainedHealthObservation[];
 }
 
 export type CopilotPageKind = "network" | "vulnerability" | "patch" | "incident" | "governance" | "remediation" | "resource" | "investigate";
@@ -3335,6 +4150,40 @@ export interface CanonicalCopilotToolResult {
   evidence: unknown[];
   warning: string;
 }
+/** Exact durable admission metadata; accepted is not a work-liveness claim. */
+export interface CopilotRequestReceipt {
+  request_key: string;
+  status: "accepted_outcome_unconfirmed" | "completed";
+  durability: "durable";
+  thread_id: string;
+  thread_revision: number;
+}
+
+/** Bounded authorized discovery; storage order is neither chronology nor a snapshot. */
+export interface RetainedCopilotThreads {
+  threads: Array<{ thread_id: string; thread_revision: number; durability: "durable" | "memory_only"; question: string; title_status: "visible" | "withheld_or_empty" }>;
+  page: number;
+  has_more: boolean;
+  scan_limit_reached: boolean;
+  order: "storage_listing";
+  durability: "durable" | "memory_only";
+}
+
+/** Exact owned history remains historical even if it was the latest retained turn. */
+export interface RetainedCopilotHistory {
+  thread_id: string;
+  thread_revision: number;
+  durability: "durable" | "memory_only";
+  observation_status: "historical";
+  continuation_scope_match?: boolean;
+  turns: Array<Record<string, unknown> & {
+    question?: string;
+    status?: string;
+    observation_status: "historical";
+    retained_at?: string;
+  }>;
+}
+
 export interface CanonicalCopilotResult {
   contract_version: "1";
   status: CopilotSnapshotStatusV2;

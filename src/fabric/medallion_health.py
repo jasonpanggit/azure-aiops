@@ -21,6 +21,8 @@ Zero rows never implies success or failure on its own: a dataset's
 from __future__ import annotations
 
 import json
+import math
+import os
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -28,6 +30,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from fabric.schema_registry import SCHEMA_VERSION, SCHEMAS
 
 # Safe-by-default: an unconfigured table still gets a real, dataset-scoped
 # SLO -- (default cadence * default multiplier) -- never a single hardcoded
@@ -50,10 +54,19 @@ class FreshnessSloConfig:
     default_slo_multiplier: float = _DEFAULT_SLO_MULTIPLIER
     tables: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Invalid policy must fail, not turn every source into success or failure."""
+        _positive_number(self.default_cadence_minutes)
+        _positive_number(self.default_slo_multiplier)
+        for name in self.tables:
+            if not isinstance(self.tables[name], Mapping):
+                raise TypeError("Fabric per-table freshness policy must be a mapping")
+            self.slo_seconds(name)
+
     @classmethod
     def from_config(
         cls,
-        config_path: str | Path = "fabric.config.yaml",
+        config_path: str | Path | None = None,
     ) -> FreshnessSloConfig:
         """Load `fabric.medallion_health.freshness_slo` from `config_path`.
 
@@ -61,31 +74,33 @@ class FreshnessSloConfig:
         of config never crashes the health provider, it only ever falls back
         to the default multiplier applied to the default cadence.
         """
-        path = Path(config_path)
+        path = Path(config_path or os.environ.get("AIOPS_FABRIC_CONFIG") or "fabric.config.yaml")
         if not path.is_file():
             return cls()
         try:
-            payload = yaml.safe_load(path.read_text()) or {}
-        except yaml.YAMLError:
-            return cls()
-        section = (payload.get("fabric") or {}).get("medallion_health", {})
+            payload = yaml.safe_load(path.read_text())
+        except yaml.YAMLError as exc:
+            raise ValueError("Fabric freshness configuration is invalid YAML") from exc
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("fabric", {}), Mapping):
+            raise TypeError("Fabric freshness configuration must be a mapping")
+        section = payload.get("fabric", {}).get("medallion_health", {})
         if not isinstance(section, Mapping):
-            return cls()
+            raise TypeError("Fabric medallion health configuration must be a mapping")
         slo_section = section.get("freshness_slo", {})
         if not isinstance(slo_section, Mapping):
-            return cls()
-        default_cadence = float(
-            slo_section.get("default_cadence_minutes", _DEFAULT_CADENCE_MINUTES)
-        )
-        default_multiplier = float(
-            slo_section.get("default_slo_multiplier", _DEFAULT_SLO_MULTIPLIER)
-        )
+            raise TypeError("Fabric freshness policy must be a mapping")
+        default_cadence = slo_section.get("default_cadence_minutes", _DEFAULT_CADENCE_MINUTES)
+        default_multiplier = slo_section.get("default_slo_multiplier", _DEFAULT_SLO_MULTIPLIER)
         tables_section = slo_section.get("tables", {})
         tables: dict[str, dict[str, float]] = {}
-        if isinstance(tables_section, Mapping):
-            for name, entry in tables_section.items():
-                if isinstance(entry, Mapping):
-                    tables[str(name)] = dict(entry)
+        if not isinstance(tables_section, Mapping):
+            raise TypeError("Fabric per-table freshness policies must be a mapping")
+        for name, entry in tables_section.items():
+            if not isinstance(entry, Mapping):
+                raise TypeError("Fabric per-table freshness policy must be a mapping")
+            tables[str(name)] = dict(entry)
         return cls(
             default_cadence_minutes=default_cadence,
             default_slo_multiplier=default_multiplier,
@@ -100,9 +115,21 @@ class FreshnessSloConfig:
         threshold shared by every dataset.
         """
         entry = self.tables.get(table_name) or {}
-        cadence_minutes = float(entry.get("cadence_minutes", self.default_cadence_minutes))
-        multiplier = float(entry.get("slo_multiplier", self.default_slo_multiplier))
-        return cadence_minutes * multiplier * 60.0
+        cadence_minutes = _positive_number(entry.get("cadence_minutes", self.default_cadence_minutes))
+        multiplier = _positive_number(entry.get("slo_multiplier", self.default_slo_multiplier))
+        return _positive_number(cadence_minutes * multiplier * 60.0)
+
+
+def _positive_number(value: Any) -> float:
+    if isinstance(value, bool):
+        raise TypeError("Fabric freshness cadence and multiplier must be finite positive numbers")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Fabric freshness cadence and multiplier must be finite positive numbers") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError("Fabric freshness cadence and multiplier must be finite positive numbers")
+    return number
 
 
 def _freshness_slo_seconds(
@@ -123,8 +150,8 @@ def _parse_timestamp(value: str) -> datetime | None:
         parsed = datetime.fromisoformat(str(value))
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
+    if parsed.utcoffset() is None:
+        return None
     return parsed
 
 
@@ -146,6 +173,8 @@ def _freshness_status(
         return "unknown"
     now = (clock or (lambda: datetime.now(UTC)))()
     age_seconds = (now - parsed).total_seconds()
+    if age_seconds < 0:
+        return "unknown"
     threshold = _freshness_slo_seconds(table_name, config=config)
     return "stale" if age_seconds > threshold else "fresh"
 
@@ -174,28 +203,74 @@ def _status_timestamp(row: Mapping[str, Any]) -> str:
     return str(row.get("ingested_at") or row.get("observed_at") or row.get("timestamp") or "")
 
 
+def _source_scope(row: Mapping[str, Any]) -> dict[str, list[str]]:
+    scope = _requested_scope(row)
+    if row.get("subscription_id"):
+        scope["subscription"] = [str(row["subscription_id"])]
+    connection = row.get("subscription_connection") or row.get("connection_id")
+    if connection:
+        scope["subscription_connection"] = [str(connection)]
+    return scope
+
+
 def _latest_per_scope(
     rows: Iterable[Mapping[str, Any]],
     table_name: str,
 ) -> list[dict[str, Any]]:
-    """Reduce multiple raw `metadata_source_status` rows down to the latest
-    row per requested-scope key -- the exact reduction logic lifted from
-    `VulnerabilityIntelligenceService._coverage_for_family`, generalized to
-    work for any table name rather than only `defender_*` families.
+    """Reduce status by authoritative identity and requested scope.
+
+    Unorderable clocks cannot safely be dismissed as old successes.
     """
     applicable = [
         dict(row)
         for row in rows
         if str(row.get("source_family") or row.get("table_name") or "") == table_name
     ]
-    latest: dict[tuple[tuple[str, tuple[str, ...]], ...], dict[str, Any]] = {}
+    latest: dict[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]], dict[str, Any]] = {}
     for row in applicable:
-        scope = _requested_scope(row)
-        key = tuple(sorted((name, tuple(sorted(values))) for name, values in scope.items()))
+        scope = _source_scope(row)
+        key = (
+            str(row.get("partition_key") or ""),
+            tuple(sorted((name, tuple(sorted(values))) for name, values in scope.items())),
+        )
         existing = latest.get(key)
-        if existing is None or _status_timestamp(row) > _status_timestamp(existing):
+        timestamp = _parse_timestamp(_status_timestamp(row))
+        previous = _parse_timestamp(_status_timestamp(existing)) if existing else None
+        if existing is None or timestamp is None or previous is not None and timestamp > previous:
             latest[key] = row
     return list(latest.values())
+
+
+def _freshness_budget(rows: list[dict[str, Any]], table_name: str, config: FreshnessSloConfig, now: datetime) -> dict[str, Any]:
+    threshold = config.slo_seconds(table_name)
+    policy = config.tables.get(table_name) or {}
+    sources = []
+    for row in rows:
+        timestamp = _status_timestamp(row)
+        parsed = _parse_timestamp(timestamp)
+        age = None if parsed is None else (now - parsed).total_seconds()
+        if age is not None and age < 0:
+            age = None
+        state = "unknown" if age is None else "stale" if age > threshold else "fresh"
+        sources.append({
+            "scope": _source_scope(row), "status_at": timestamp, "state": state,
+            "partition_key": str(row.get("partition_key") or ""),
+            "age_seconds": age, "remaining_seconds": None if age is None else threshold - age,
+        })
+    states = {row["state"] for row in sources}
+    state = "stale" if "stale" in states else "unknown" if not sources or "unknown" in states else "fresh"
+    known = [row["age_seconds"] for row in sources if row["age_seconds"] is not None]
+    return {
+        "evaluated_at": now.isoformat(), "clock": "metadata_status_ingested_then_observed_then_timestamp",
+        "state": state, "threshold_seconds": threshold,
+        "cadence_minutes": _positive_number(policy.get("cadence_minutes", config.default_cadence_minutes)),
+        "slo_multiplier": _positive_number(policy.get("slo_multiplier", config.default_slo_multiplier)),
+        "policy": "table_override" if policy else "defaults",
+        "source_count": len(sources), "known_clock_count": len(known),
+        "worst_known_age_seconds": max(known) if known else None,
+        "remaining_seconds": threshold - max(known) if sources and len(known) == len(sources) else None,
+        "sources": sources,
+    }
 
 
 _AVAILABILITY_VALUES = (
@@ -235,6 +310,9 @@ def dataset_status(
     - `healthy`: reachable, succeeded, fresh, quality complete, rows present.
     """
     rows = _latest_per_scope(source_status, table_name)
+    config = freshness_slo or FreshnessSloConfig.from_config()
+    now = (clock or (lambda: datetime.now(UTC)))()
+    budget = _freshness_budget(rows, table_name, config, now)
 
     if not rows:
         total_row_count = int(row_count) if row_count is not None else 0
@@ -250,7 +328,8 @@ def dataset_status(
             "freshness": "unknown",
             "quality": "unknown",
             "row_count": total_row_count,
-            "stale_after_seconds": _freshness_slo_seconds(table_name, config=freshness_slo),
+            "stale_after_seconds": budget["threshold_seconds"],
+            "freshness_budget": budget,
             "observed_at": "",
             "ingested_at": "",
             "watermark": "",
@@ -272,9 +351,7 @@ def dataset_status(
     )
 
     latest_observed_at = max(_status_timestamp(row) for row in rows)
-    freshness = _freshness_status(
-        latest_observed_at, table_name, config=freshness_slo, clock=clock
-    )
+    freshness = budget["state"]
 
     total_row_count = (
         int(row_count)
@@ -311,7 +388,7 @@ def dataset_status(
         availability = "failed"
     elif freshness == "stale":
         availability = "stale"
-    elif quality == "degraded":
+    elif quality == "degraded" or freshness == "unknown":
         availability = "degraded"
     elif total_row_count == 0:
         availability = "healthy-empty"
@@ -324,7 +401,8 @@ def dataset_status(
         "freshness": freshness,
         "quality": quality,
         "row_count": total_row_count,
-        "stale_after_seconds": _freshness_slo_seconds(table_name, config=freshness_slo),
+        "stale_after_seconds": budget["threshold_seconds"],
+        "freshness_budget": budget,
         "observed_at": max((str(row.get("observed_at") or "") for row in rows), default=""),
         "ingested_at": max((str(row.get("ingested_at") or "") for row in rows), default=""),
         "watermark": watermark,
@@ -335,7 +413,57 @@ def dataset_status(
     return result
 
 
+def dataset_contract(
+    table_name: str,
+    *,
+    source_status: Iterable[Mapping[str, Any]],
+    freshness_slo: FreshnessSloConfig | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> dict[str, Any]:
+    """Project a declared schema and recorded source diagnostics, never a live DAG."""
+    rows = _latest_per_scope(source_status, table_name)
+    status = dataset_status(table_name, source_status=rows, freshness_slo=freshness_slo, clock=clock)
+    schema = SCHEMAS.get(table_name)
+    diagnostics = []
+    for row, budget in zip(rows, status["freshness_budget"]["sources"], strict=True):
+        issues = []
+        if row.get("availability") == "unavailable":
+            issues.append("source_unavailable")
+        if row.get("status") == "failed":
+            issues.append("source_failed")
+        if budget["state"] != "fresh":
+            issues.append(f"freshness_{budget['state']}")
+        if row.get("quality") != "complete":
+            issues.append("quality_degraded" if row.get("quality") == "degraded" else "quality_unknown")
+        reference = str(row.get("lineage_ref") or "")
+        if not reference:
+            issues.append("lineage_unreported")
+        diagnostics.append({
+            "scope": budget["scope"], "partition_key": budget["partition_key"],
+            "status_at": budget["status_at"], "freshness": budget["state"],
+            "recorded_status": str(row.get("status") or "unknown"),
+            "recorded_quality": str(row.get("quality") or "unknown"),
+            "lineage_ref": reference, "issues": issues,
+        })
+    return {
+        "table_name": table_name, "evaluated_at": status["freshness_budget"]["evaluated_at"],
+        "declared_schema": {
+            "source": "fabric.schema_registry", "version": SCHEMA_VERSION,
+            "status": "available" if schema is not None else "not_registered",
+            "fields": [] if schema is None else [
+                {"name": field.name, "type": str(field.type), "nullable": field.nullable}
+                for field in schema
+            ],
+        },
+        "deployed_schema_validation": "not_collected",
+        "producer_ownership": "not_collected",
+        "dataset_dependency_graph": "not_collected",
+        "source_diagnostics": diagnostics,
+    }
+
+
 __all__ = [
     "FreshnessSloConfig",
+    "dataset_contract",
     "dataset_status",
 ]

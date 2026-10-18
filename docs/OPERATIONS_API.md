@@ -5,9 +5,1153 @@ Azure AI Operations Workbench UI.
 
 **The API owns no business logic.** Every route composes an existing service —
 `SubscriptionOnboardingService`, `SemanticEngine`, `IncidentEngine`,
-`RemediationPlanner` — and every read is served through the Semantic Knowledge
-Layer. No handler reads Fabric, ontology tables, or Azure Resource Graph
-directly.
+`RemediationPlanner` — with semantic reads served through the Semantic Knowledge
+Layer and explicitly requested telemetry through authorized domain adapters.
+No handler reads Fabric, ontology tables, or Azure Resource Graph directly.
+
+## Fabric metadata freshness budgets
+
+`GET /api/v1/fabric-medallion/datasets/{table_name}` retains its read authorization
+and registered-dataset-only 404 behavior. `freshness_budget` explains a server-side
+evaluation over the authorized source-status rows: evaluation time, selected
+metadata clock, configured cadence/multiplier/threshold, default or table-override
+policy, source/usable-clock counts, worst known age, and per-source age/headroom.
+Headroom can be negative; it is **unknown**, not a full budget, when any clock
+cannot be used. The web disclosure displays at most 20 source budgets and labels
+that limit; aggregate evaluation uses every selected source. Reading a budget does
+not start ingestion, change policy, or schedule a refresh.
+
+Latest status reduction preserves authoritative connection/subscription identity
+and compares offset-aware instants rather than ISO text. Missing, malformed,
+unzoned or future timestamps cannot establish fresh evidence; an unorderable
+status cannot be dismissed as an older success. Across selected sources, stale
+leads unknown, which leads fresh. The exact threshold is still fresh with zero
+headroom; only an age greater than the threshold is stale. Layer/dataset envelope
+freshness follows this aggregation rather than the newest sibling timestamp.
+Unknown aggregate evidence has no representative timestamp; individual clocks
+remain inspectable in the budget.
+
+The clock uses ingestion time first, then observation time, then status timestamp.
+This is **metadata-status age**, not a probe of resource-data freshness, deployed
+schema validation, upstream completeness, a publication guarantee, or next-run
+prediction. A checkpoint may be a watermark **or** the legacy fallback status time.
+`quality=complete` is a recorded classification, not proof every possible quality
+check passed. Cadence/multipliers must be finite and positive; malformed policy
+errors rather than silently receiving default success criteria. Configuration uses
+`AIOPS_FABRIC_CONFIG` when selected, otherwise `fabric.config.yaml`; absent
+file/sections retain default cadence and multiplier behavior.
+
+Source registry identity overrides stale requested-scope identity. A restricted
+read excludes aggregate status rows spanning disallowed values rather than
+assuming the first requested-scope value represents the entire aggregate.
+Page/embedded subscription selectors must preserve every global scope constraint;
+out-of-scope bookmarks are blocked before reads. Failed layer reads are unknown,
+not zero tables, and missing registration evidence is not an empty layer.
+
+`GET /api/v1/fabric-medallion/datasets/{table_name}/contract` uses the same current
+read authorization and scoped registered-table check. An unauthorized or absent
+dataset is not discoverable through the schema registry. It returns the exact
+`fabric.schema_registry` version and declared field name/type/nullability, or
+`not_registered` when a scoped dataset has no declaration. It never probes the
+live table, reads dataset records, publishes data, or confers access.
+
+The connected explicit-inspection panel lists paginated declared fields and
+source diagnostics independently. Diagnostics preserve connection, requested
+scope **and source partition** identity; a fresh partition must not hide an older
+partition in the same connection. They show selected metadata clocks, recorded
+status/quality, lineage reference and bounded diagnostic codes, not raw provider
+error payloads. A lineage reference is an opaque recorded reference, not a
+verified dataset dependency edge or safe automatically-followed URL.
+`deployed_schema_validation`, `producer_ownership` and
+`dataset_dependency_graph` remain `not_collected`. The UI does not infer edges
+from medallion prefixes, treat a reference as complete lineage, claim dependency
+health or identify an unverified root cause. Closing, pagination and diagnostic
+review perform no refresh/mutation; retry explicitly repeats only the contract
+read. A response for a different dataset or inconsistent contract is rejected.
+
+## Identity classification evidence
+
+The existing scoped identity routes remain read-only over authorized connection
+generations. Principal records now include `risk_evidence`: role-name/action
+heuristic classification (`privileged_signal`, `incomplete`, or
+`no_classified_signal`), unresolved role/action-record count, unknown change-age
+count, overdue assignment count, and server evaluation time. Missing definitions
+or empty/malformed action lists are incomplete evidence, not standard access.
+Missing, malformed, unzoned and future assignment clocks have unknown age.
+The existing whole-day review threshold remains unchanged; a recent sibling
+assignment cannot mask an older or unknown-age grant.
+
+`effective_access` is explicitly `not_evaluated`. Observed role scope-breadth
+counts are assignment counts, not distinct reachable resources or verified
+compromise radius. Group membership, deny assignments, PIM eligibility,
+assignment conditions and data-plane permission evaluation are not provided.
+Change recency establishes neither sign-in/use nor an access review. Owner
+records expose `age_state`; missing state is unknown, not current. Definitions or
+managed identities alone cannot establish role-assignment collection coverage.
+
+The Identity page waits for all six core reads and reports/retries failed
+sources rather than displaying a failed secondary source as an empty finding
+set. The least-privilege advisory read fails and retries independently.
+Warnings and freshness include every available source; HTTP success is not freshness.
+An exact scope change remounts source/filter/drawer state and fences late replies.
+Copilot receives the heuristic/effective-access boundary and unknown coverage,
+not invented negative permissions. No acquisition, grant change or execution
+is added by this evidence clarification.
+
+`GET /api/v1/governance/identity/least-privilege` returns a bounded page of
+observed assignment review candidates (`offset` >= 0, `limit` 1..100) with the
+exact scoped assignment, resolved role-definition permission patterns
+(`actions`, `notActions`, `dataActions`, `notDataActions`), wildcard counts,
+condition-field presence, change-age state, and explicit review signals. The
+response includes total assignment/candidate counts and coverage gaps so a
+truncated page cannot read as a complete review. It is an advisory queue, not
+an effective-access result or a suggested role replacement. Group membership,
+deny assignments, PIM eligibility, and condition semantics are not collected
+or evaluated. Narrow or revoke a grant only after the workload owner verifies
+required operations; this endpoint has no mutation path. Failure is shown and
+retried independently from the existing identity reads.
+
+Frozen access campaigns accept the optional strictly validated classification
+projection without reserializing or altering their retained source bytes. Older
+campaign sources without it remain readable and remain unreported, not backfilled
+from current data. Invalid counts, contradictory classifications, unknown fields
+or a claimed effective-access verdict are rejected.
+
+## FinOps currency-normalized evidence
+
+FinOps amounts remain in the currency reported by Azure; the API performs no
+foreign-exchange conversion. Reported three-letter currency codes are trimmed
+and normalized to uppercase. Summary and attribution aggregates are numeric only
+when every quantified amount in that aggregate has the same reported currency.
+For mixed or unreported currency, the aggregate is `null`; callers must not
+coerce it to zero or sum across currencies.
+
+`GET /api/v1/governance/finops/summary` exposes
+`identified_annual_savings_currency_totals` and, when Cost Management actuals
+exist, `actual_spend_currency_totals`. Each entry contains `currency`, `amount`,
+and `count`. An `unreported` entry has a `null` amount and counts source rows
+whose currency is absent or invalid; those values cannot be summed safely.
+When a single comparable currency exists, the legacy top-level amount and
+currency remain available. Mixed or unreported top-level totals are `null` and
+are named in `unavailable_metrics`.
+
+`GET /api/v1/governance/finops/attribution` applies the same rule independently
+to each group and includes its per-currency breakdown. Individual Advisor rows
+remain inspectable with their own amount and currency. The page keeps units
+separate in charts and breakdown tables and labels unreported amounts rather
+than displaying a cross-currency total. `unavailable_metrics` explicitly reports
+`realized_savings` as unavailable. `GET
+/api/v1/governance/finops/verified-remediations` lists only successful
+executions with a clean stored evidence reconciliation, filtered by the
+execution's own durable scope. `GET
+/api/v1/governance/finops/remediation-cost-comparison` accepts one such
+execution and caller-declared baseline/follow-up dates. It requires equal,
+non-overlapping windows of 1–30 days, a baseline ending before the recorded
+successful transition, and a follow-up starting after clean evidence
+reconciliation. It matches Cost Management rows to the exact immutable target resource,
+and returns a result only when every day has a finite cost row and all rows use
+one reported currency. Missing daily coverage, mixed/unreported currency, or a
+snapshot that does not reach the follow-up end returns `available: false`
+instead of treating missing rows as zero. The response includes both windows,
+daily coverage, source observation time, and limitations.
+
+The comparison is observed average-daily cost movement, not the
+`realized_savings` metric. It does not establish that remediation caused the
+movement or control for other cost drivers, so no causal or guaranteed savings
+amount is inferred. The page's review scenarios are temporary, read-only
+selections of Advisor opportunities; they sum only Azure-issued annualized
+amounts within each reported currency and do not establish approval, execution,
+or realized outcomes. Cost forecasting and anomaly detection are also
+unavailable.
+
+## Asynchronous Agents investigations
+
+`POST /agents/investigation-jobs` admits a strict `{job_id, objective,
+timeout_seconds}` request. The caller knows `job-<32 lowercase hex>` before
+submission; objective is 1..1024 characters and the wall-clock budget is 1..30
+seconds (checked at call boundaries, not a forced provider timeout). The server
+retains the authenticated subject and exact effective nine-dimensional scope.
+First admission is create-only and returns 202 before background execution.
+Identical subsequent admissions return existing metadata without dispatch; changed
+payload/scope, expired identities and admission races return 409. Never change an
+identity to work around an uncertain response.
+
+`GET /agents/investigation-jobs/{job_id}` reads exact caller/scope metadata only.
+`POST /agents/investigation-jobs/{job_id}/stop` idempotently requests that the
+worker stop **new scheduling** at its next checkpoint. It does not kill an
+in-flight call or establish that nested/timed-out remote work has stopped.
+`stop_requested=true` is separate from worker-acknowledged `status=stopped`;
+completion can win a late stop request. The older ledger action
+`stop_investigation` remains only a completed-ledger review decision.
+
+The process admits at most two local background workers; capacity exhaustion or
+missing/unavailable storage returns 503 without memory-only admission.
+Workers claim once through durable CAS and record bounded last-stage metadata
+before/after governed calls, synthesis and retention. Async legacy specialists
+are serial so no local sibling work is scheduled behind a stopped call; the
+existing synchronous endpoint preserves its parallel behavior and rollout
+authorization. Only confirmed durable ledger retention permits `completed` and
+its exact ledger ID; failures never masquerade as retained success.
+
+**This is single-dispatch execution, not a durable queue or guaranteed delivery.**
+Process loss before dispatch or during a provider call can leave accepted/running
+metadata indefinitely unconfirmed. There is no lease reclaim, automatic replay,
+restart continuation or worker-liveness claim. A checkpoint timestamp is not a
+source observation time, provider heartbeat or coverage guarantee. Status/stop
+reads never renew the 24-hour access window; expired IDs cannot be reused.
+Documents use the existing local/OneLake durable root and require administrative
+retention/cleanup; expiry does not delete an audit document.
+
+The Agents page keeps the foreground action and offers a distinct background
+action. It writes the exact recovery ID into the scoped URL before admission.
+Reopening reads metadata only; completed results load the exact retained ledger,
+never reacquire sources. New admissions poll metadata every two seconds, at most
+60 checks, with explicit pause/resume/check controls. A failed or lost response
+preserves that ID rather than resubmitting. Creating a separate request is an
+explicit action that may duplicate work whose outcome remains unknown.
+
+## Team investigation workspaces and operator hypotheses
+
+`POST /investigation-workspaces` creates private navigation using a caller-known
+`wrk-<32 lowercase hex>` identity and a strict `view` (`title`, `entry_type`,
+`subject`, `mode`). It is create-only: an existing, corrupt or partially created
+identity cannot be overwritten. The authenticated subject is the immutable owner;
+the server captures the exact effective nine-dimensional scope. No client-supplied
+owner, stored scope, provider evidence, results or execution fields are accepted.
+
+`GET /investigation-workspaces/{id}` reads the latest revision, or an exact
+`revision=1..40`. Current read authorization, exact effective scope and **current**
+membership are checked before exposing any revision. Missing/unshared/differently
+scoped or unwritten revision selections return 404 without metadata. Workspace
+membership never supplies platform RBAC grants; even a shared principal cannot
+read a broader workspace than its independently authorized effective scope.
+There is no public catalog or inferred group/directory access.
+
+`PUT /investigation-workspaces/{id}` appends a navigation revision for the owner
+or an explicit editor, with `expected_revision` and `view`.
+`PUT /investigation-workspaces/{id}/access` replaces explicit `readers` and
+`editors` (at most 20 each), only for the immutable owner and against
+`expected_revision`. Memberships must be distinct, disjoint principal subjects;
+the owner is implicit. Revocation applies to all historical revisions immediately
+at the next read/write. Historical ACLs do not restore access.
+
+The existing local/OneLake document root provides create-only/CAS persistence.
+Each document retains up to 40 contiguous server-attributed revisions within
+256 KiB. No automatic pruning, overwrite reconciliation or scope migration occurs;
+capacity requires administrative archival. Stale/racing writes return 409.
+Unavailable/corrupt storage or a lost commit reply returns 503, not empty success;
+inspect the browser-known identity and latest revision before retrying. Aborting
+a browser wait does not establish whether a submitted write committed.
+
+The Investigation disclosure supports private creation, exact-ID opening, reviewed
+revision history, explicit current-navigation saves, owner-managed memberships
+and scope/revision-bound links. Opening a navigation revision does not apply it
+or run Copilot. Applying it explicitly reacquires current authorized evidence.
+Older revisions are review-only until the latest is reopened for editing. Entry
+links are separate from team sharing, never change membership, and expose an
+explicit manual link when clipboard copying is unavailable.
+
+`PUT /investigation-workspaces/{id}/hypotheses/{hypothesis_id}` appends one
+owner/editor annotation against `expected_revision`. The browser knows the
+`hyp-<32 lowercase hex>` identity before submitting and sends `hypothesis` with
+`explanation` (1..2000 characters), `supporting` and `contradicting` references
+(at most six each), `unknowns` (at most eight, 1..512 characters each),
+`disposition` and `rationale` (at most 1000 characters). Each reference contains
+`source` (1..128), `reference` (1..512), optional `declared_version` (up to 128)
+and `note` (up to 512). These are **operator-declared, unverified plain text**,
+never fetched, resolved or promoted into provider evidence. Do not enter secrets.
+Dispositions are proposed, investigating, supported, contradicted, inconclusive
+or dismissed; anything beyond proposed requires an explicit operator rationale.
+These are operator assessments, not verified findings, execution approval or model
+reasoning. Unknowns omitted from an annotation do not establish completeness.
+
+At most 20 stable hypotheses are retained. There is no delete endpoint: dismissal
+retains prior revisions. The server records actor/time, first/last revision and
+the saved navigation subject at first proposal; changing workspace navigation
+cannot reanchor an existing hypothesis. A hypothesis write cannot change other
+entries, navigation, memberships or owner. The same CAS, current ACL/scope and
+40-revision/256-KiB workspace limits apply. Identical no-op writes return 400;
+stale writes return 409, including retry after an earlier lost reply committed.
+Inspect the known annotation in the latest workspace before retrying.
+
+Revision responses include `hypotheses`; historical reads expose the board as it
+was in that revision under **current** access. This is an additive schema-v1
+extension: previously saved navigation documents read as empty boards without
+rewriting storage. Legacy service responses without a board are displayed as
+unavailable, not inferred empty. The editor keeps a failed-write draft and its
+known identity, never retries or silently rebases it; copy unsaved text before
+reopening the workspace, changing scope or leaving the page.
+
+These revisions retain **navigation, membership, operator annotations and links
+to separately retained source projections**. Local saves/export remain separate
+browser fallbacks, not team authorization.
+
+### Retained investigation source projections
+
+`POST /investigation-workspaces/{id}/evidence` accepts only `expected_revision`
+and a browser-known `capture_id` (`cap-<32 lowercase hex>`). The owner or an explicit
+editor must have reviewed the latest saved navigation. Before calling providers,
+the server checks current ACL/scope, revision, identity and capacity. It acquires a
+fixed **read-only** governed-tool subset using the current principal and effective
+scope, never browser evidence, caller-selected tools, models or execution tools.
+It reauthorizes before retaining. The receipt is created once, then its SHA-256
+digest is linked by workspace CAS as an `evidence_captured` revision. A failed link
+can leave an immutable **unlinked receipt**; it remains inaccessible through the
+API and requires administrative orphan cleanup. An existing identity is never
+overwritten. After an unconfirmed write, inspect the known identity in the latest
+workspace before retrying. Aborting a wait does not prove a write failed.
+
+Receipts are limited to 160 KiB, each source payload/provenance to 16 KiB, and each
+workspace to five linked receipts. There is no automatic pruning or replacement.
+The workspace's independent 40-revision/256-KiB manifest/history limit still applies.
+Navigation, membership and hypothesis changes retain the active receipt reference
+without copying source payloads into every history row. Existing schema-v1
+documents read with no capture references, without writeback.
+
+`GET /investigation-workspaces/{id}/evidence/{capture_id}?revision=N` opens only
+a receipt linked by that reviewed revision. Current workspace membership, exact
+scope, receipt identity, digest and saved-view attribution are checked on every
+read. Missing/unlinked/inaccessible receipts return 404; corrupt/missing linked
+storage returns 503. Historical GET performs no provider reads, TTL changes,
+timestamp rewriting or freshness reclassification. The receipt records source
+collection intervals, original evidence/provenance, source outcome, warnings and
+reported knowledge versions; unreported source times/versions stay unknown.
+The envelope's storage metadata has unknown freshness: receipt/acquisition
+clocks are not substituted for source observation timestamps.
+
+`POST /investigation-workspaces/{id}/evidence/{capture_id}/compare` takes
+`reviewed_revision` and the reviewed latest `expected_revision`. Any current
+authorized workspace reader may explicitly acquire current projections for the
+**retained saved view**, not current unsaved navigation. The server reauthorizes
+and checks the revision again after acquisition. It returns `retained`, `current`
+and per-source `differences`, without writing history or refreshing the receipt.
+`data_changed` is null if either source is denied/unavailable; otherwise it
+compares only the paired bounded JSON payloads. Provenance/version differences
+remain separate. Unchanged projections are not proof of unchanged estate state.
+
+The contract (`investigation-tools-v1`) acquires network topology, firewall/NSG
+gaps, CVE exposure, incidents and remediation plans. Nonempty BusinessService
+and Application entries also acquire context/risk/impact; CVE entries add
+detail/attack path; Incident entries request exact incident detail. Other entry
+types have **scope-level projections only**, not exact subject context. These
+are not complete page or estate snapshots, atomic cross-source observations,
+backfilled history or packet probes. Governed tools may already bound nested
+lists to 25 rows; full coverage is unknown. Source failures are retained explicitly.
+Oversized/non-JSON source payloads are labelled unavailable, not silently truncated
+into successful evidence. No annotations or hidden model reasoning are captured.
+
+The portal separates retain, reopen and compare. Opening workspace metadata,
+changing a retained-version selection or viewing a historical navigation revision
+does not acquire providers. A receipt is opened explicitly before comparison.
+Current results are labelled not retained, shown separately from historical
+sources, and fenced on workspace/scope/revision changes. Older service responses
+without retention metadata are unavailable, never inferred empty.
+
+## Remediation decision context
+
+The portal's compact decision summary remains present across Select, Review,
+Approve, Run and Verify. It reuses the existing authorized workflow response:
+exact preview operation/target, snapshot hash, action version, all selected
+update identifiers, approval status/required roles, reported blockers and
+current actor capabilities. The separate recorded-execution disclosure preserves
+its own target and snapshot; a historical run is not silently relabelled as the
+current preview. Approval is explicitly **at last read**, not a new permission
+or a guaranteed validity period. Provider success is not refreshed estate proof.
+
+Next-step controls navigate only; none submit approval, execution or recovery.
+Existing server gates remain authoritative. Pending patch changes (including
+the debounce interval and restoration of all updates) cannot enable approval or
+execution using an older preview. Complete nine-dimensional bookmarks must
+preserve or narrow the current selector context; invalid/wider bookmarks fail
+before acquisition. Scope/URL changes discard approval drafts and responses;
+plan changes invalidate old polling/mutation results. A run preflight completing
+after navigation cannot start execution. Already submitted provider work is not
+cancelled by navigation. Foreign-plan execution responses surface an explicit
+error instead of being attached to the selected workflow.
+
+The summary also discloses immutable rollout identity, wave and terms digest
+when present. Deferred container execution remains disabled.
+
+## Copilot exact historical reads and unconfirmed outcomes
+
+`GET /copilot/threads/{thread_id}/history` requires an exact `thr-` plus 32
+lowercase hex server ID, current read authorization, original principal and
+scope containment. Missing/foreign/expired/wider selections return the same 404.
+Configured store failure returns 503 rather than empty success. It uses the
+existing thread document and retained latest 12 turns; no new history index.
+Memory-only storage is identified explicitly. Existing 1 hour idle/24 hour absolute
+retention still applies.
+
+Unlike legacy session history, this exact read does not write, renew expiry,
+narrow the stored scope, run maintenance or change logical/storage revision.
+All copied retained turns/evidence/citations are stamped historical, and turns
+outside current narrowed scope are withheld. No providers, tools or models run.
+The response reports retained thread identity/revision and storage durability;
+it is not evidence of current source state, resumed work or execution authority.
+
+The Copilot page exposes on-demand history for its latest server handle or
+`/copilot?thread_id=<exact-id>` with all nine scoped bookmark dimensions.
+Pinned history initially remains review-only: reading cannot attach itself to
+active continuity or submit new questions. Reload only rereads exact history. Malformed/wider
+bookmarks fail before acquisition; mismatched response identities fail visibly.
+Leaving historical review preserves scope. A `q` bookmark now prefills a draft
+instead of automatically submitting it, including after reload/scope changes.
+
+Stop waiting aborts only the browser request, never provider execution.
+Transport errors and interrupted waits retain the submitted question, disclose
+unknown server outcome and block further submissions until the operator
+explicitly enables a deliberate new question. They never retry automatically.
+An initial interrupted request may have no returned thread handle; no history
+or successful cancellation is fabricated. Scope changes discard local drafts
+and reject late responses. This does not implement server job cancellation or
+durable admission/progress for Agents.
+
+Typed answer findings retain their server finding IDs, confidence, freshness,
+uncertainty and citation references. Missing, duplicate or denied/unavailable
+references withhold finding navigation. Inspecting a source shows only returned
+citation metadata; a query version is not treated as a publication generation.
+Current-asset links use fixed internal inventory routes with the exact returned
+ARM identity and all scope dimensions; they are separately reauthorized reads,
+not historical evidence, execution or model-supplied destinations.
+
+Retained-evidence actions pin `thread_revision` in the Copilot URL and send
+`expected_revision` to the historical GET. After principal/scope authorization,
+a changed revision returns 409 without substituting newer evidence. This
+guards the current retained document; it does not invent immutable historical
+revisions or extend existing retention.
+
+`GET /copilot/threads?page=0..31` discovers existing retained documents in
+bounded storage-order pages (at most 64 candidate documents per page). Each
+candidate is reauthorized for principal, current scope and expiry before any
+identity, revision or title is returned. Broader historical questions remain
+withheld after scope narrowing. Reads never renew retention, sweep or write,
+and configured storage failures return 503 rather than an empty success.
+Durable discovery survives replicas/restarts; memory-only discovery explicitly
+does not. Pages are not chronological, complete-history totals or snapshots;
+concurrent changes can shift page membership. An authorized page can be empty.
+The scan limit is explicit, with exact-thread links still available beyond it.
+The on-demand conversation catalog initially reopens an exact revision for
+historical review; discovering/opening does not attach it or retry execution.
+
+After a successful durable history read with an exact original-scope match,
+**Continue from reviewed revision**
+explicitly selects that exact thread/revision for drafting on this surface.
+Selection is browser state only: it does not renew retention, rebind a legacy
+session, replay a question, or run a provider. Narrowed history review remains
+allowed with broader turns withheld, but its continuation action is withheld:
+a conversation cannot be restored into a different scope. Starter prompts prefill rather
+than submit while a selected historical conversation is active. A new question
+still requires Ask Copilot. Scope, continuity-generation and navigation changes
+discard selection; reload returns to historical review, not active execution.
+
+Explicit continuation submits paired `thread_id`/`expected_thread_revision`
+plus a durable `request_key` to `/copilot/investigate`. Missing pair/key or
+malformed values are rejected. The canonical adapter reauthorizes ownership,
+expiry and exact original scope, then checks the logical revision before planning
+or tools. Missing/foreign/expired/out-of-scope targets are generic 404 and
+stale revisions are 409; an explicit identity never takes the legacy
+session-reset path or silently creates a replacement thread. It does not
+rebind the root legacy session. A successful response must identify the
+selected thread and exactly one higher logical revision; otherwise the browser
+keeps receipt recovery and withholds the response.
+
+Revision guards are optimistic concurrency, not exclusive thread leases:
+different admitted keys may both read a revision before either completes, but
+only a matching CAS append succeeds. Conflicts are not replayed/reconciled
+against newer evidence for explicit continuations. Interrupted retries preserve
+the exact originally captured target/question/key. Historical observations stay
+historical and no provider cancellation capability is inferred.
+
+### Durable request admission and interrupted response recovery
+
+Standalone Copilot opts into `POST /copilot/investigate` with `request_key`
+`req-<13-digit Unix milliseconds>-<32 lowercase random hex>`. The server
+requires configured durable storage and canonical orchestration, and creates
+one caller-keyed admission document **before** dispatching any work. Without
+those prerequisites it returns 503 without dispatch. Existing keyless callers
+keep their previous contract; their requests do not gain this protection.
+
+Admission uses create-only storage, including cross-process/replica contention.
+An existing key returns 409 and never redispatches, including with a changed
+question or scope, after partial execution, or after losing a write response.
+A first admission requires a key at most 15 minutes old and no more than 60
+seconds in the future; an old key cannot become a new admission if a marker is
+later removed. Markers are not automatically deleted by this API. Receipt
+visibility expires 24 hours after admission without renewal. Durable store
+integrity remains a prerequisite, not a transactional guarantee across providers.
+
+The marker retains only principal/scope, payload hash, admission metadata and
+an optional completed thread/revision, not question text or provider answers.
+Completion is committed only after orchestration returns exact continuity.
+Failure/crash between admission, provider execution, thread persistence and
+completion leaves the outcome unconfirmed; the same key cannot resume or run
+again. A completion-write failure returns 503 rather than claiming success.
+Successful POST responses echo their admitted `request_key`; the standalone
+browser verifies it and the exact retained thread/revision before accepting
+the response.
+
+`GET /copilot/requests/{request_key}` requires current read authorization,
+the same principal and **exact** effective nine-dimensional scope. It returns
+only `accepted_outcome_unconfirmed` or `completed` with exact historical
+thread/revision metadata. Missing/foreign/expired/differently scoped receipts
+return generic 404; storage failures return 503. Neither proves no work ran.
+Accepted does not mean running, successful, cancelled or safely restartable.
+Completed historical references are independently reauthorized and may expire
+or conflict if the retained thread has advanced. No answer is replayed as
+current evidence, and no provider, tool, cancellation or expiry renewal runs.
+
+The browser keeps only the request identity and scoped bookmark in its URL
+while waiting. Reload does not restore or submit the question or poll; it
+offers explicit receipt inspection. Interrupted local drafts may explicitly
+retry the **captured original question/key**, never an edited draft or a new
+key automatically. Duplicate retries receive 409 without dispatch. Choosing
+a deliberate new question clears the old recovery bookmark; it is a new
+admission and is not deduplicated against differently keyed questions. Browser
+Stop waiting still does not cancel provider execution; no server cancellation
+capability is advertised.
+
+## Agents retained investigation links
+
+`/agents?ledger_id=<exact-id>` reads the existing principal-owned retained ledger
+under all nine scoped bookmark dimensions. Wider/invalid bookmarks are rejected
+before acquisition; the API independently reauthorizes the entire stored scope.
+The continuation link retains the effective page scope without changing global
+context. Reopening/reloading uses the existing ledger GET and never starts a new
+investigation, reruns tools or implies provider execution resumed.
+An unavailable or mismatched ledger is an explicit error, not a replacement run.
+URL/scope changes discard old responses and review drafts.
+
+Pinned investigations expose explicit reload and a scoped link to start a
+different investigation; the Run control cannot silently overwrite the pin.
+The objective stays read-only while pinned. Existing owner/finding review
+actions still target that exact retained ledger under current authorization.
+The existing Stop action records a review decision; it is not cancellation of
+an in-flight provider call. Asynchronous run admission, durable progress and
+actual provider cancellation are separate unfinished contracts.
+
+## Agents runtime observations
+
+`GET /agents/runtime-readiness` requires ordinary read authorization and
+preserves all nine effective scope dimensions in its envelope. It only reads
+`ProviderRuntime.health(refresh=False)`: no loader, source refresh, Foundry/MCP
+invocation, APIM probe or operational mutation. Missing managed runtime is503;
+absent individual providers are explicit null observations, never ready.
+Only the fixed investigation-provider roster and allowlisted public state
+fields are returned. This is process-local cached state, not estate coverage.
+
+The on-demand Agents disclosure shows the existing catalog's activation source,
+active version/pinning declaration and separately identified inactive candidate,
+independent of provider observations/errors. The report assembly time is not
+provider observation time: last attempt, last successful load and source
+freshness remain distinct, and absent times/versions are explicitly unreported.
+Reload only rereads cached state; it does not initiate a provider refresh.
+Neither configuration, a loaded SDK adapter nor a catalog candidate proves live
+agent/tool execution or end-to-end MCP/APIM connectivity.
+
+## Governed remediation rollouts
+
+The on-demand Remediation rollout planner declares exact existing patch or
+supported Defender-configuration plans. It is not a scheduler or batch executor.
+Each target still requires its own current role approvals and explicit Run.
+
+`GET /api/v1/remediation/rollouts` reads retained terms and execution progress
+without generating plans or acquiring Azure providers. All nine requested scope
+dimensions apply to every member; partial rollouts are never disclosed.
+`can_manage` independently reflects the narrowed operate grant.
+`POST /api/v1/remediation/rollouts` takes the reviewed collection revision,
+title, aware `window_start`/`window_end`, `require_reconciled_evidence` and
+1-20 targets (`plan_id`, `preview_snapshot_hash`, `selected_patch_ids`, `wave`).
+The server rebuilds and validates every current snapshot, derives scope metadata,
+and retains exact selected updates, action versions and base snapshot hashes.
+Waves must be contiguous from 1, at most 5; targets and plans cannot repeat.
+The positive submission window is at most 24 hours, start-inclusive/end-exclusive.
+
+Each approved snapshot incorporates `{rollout_id, terms_hash, wave}`; the terms
+digest covers every member and immutable setting. Pre-rollout approvals become
+stale for every required role. Reopening a subset target uses retained update IDs
+only as inputs to fresh source validation, never as substitute evidence.
+Legacy snapshots without rollouts retain their original hashes.
+
+`POST /api/v1/remediation/rollouts/{id}/admission` takes the exact record revision
+and `action: open|pause|resume|retire`. Only `open` takes a positive `wave`; it can open
+only the next wave. All prior-wave targets must have recorded provider success
+and, by default, `reconciled_clean` refreshed evidence. A failed/cancelled target
+stops new submissions until explicit bounded recovery succeeds. Retry retains
+the original execution identity and still requires an open window/wave and
+unpaused admission. Reapproval cannot create a second rollout execution.
+Claim/retry admission is checked under the shared durable execution-document
+lock/CAS, and checked again immediately before provider dispatch.
+
+Pause or window expiry prevents new submission, not cancellation of operations
+already sent to a provider. Opening a wave never submits targets automatically.
+Admission races detected after claim are recorded failures, not success.
+The durable document schema is 2.6.0, with legacy `rollouts: []`, a maximum of
+100 declarations and 1 MiB of serialized rollout terms; bounds reject without
+eviction. Storage corruption/failure is surfaced, never an empty successful read.
+
+V1 terms cannot be edited, deleted or extended. `retire` irreversibly closes
+an unstarted or provider-succeeded rollout, under the same claim lock, only when
+every existing member execution has recorded provider success. Active, failed,
+cancelled or unknown history cannot be retired/reassigned. Retired terms and
+execution evidence stay retained and old approvals remain blocked,
+including pre-rollout approvals. Fresh source previews can declare replacement
+terms for those same deterministic plan IDs; new approvals must bind the new
+rollout identity. Retirement cannot race a claim into duplicate authority.
+Only successful execution history from explicitly retired terms can enter a new
+rollout; legacy unbound history remains excluded. Failed/cancelled targets cannot
+have their submission window renewed in V1; after expiry they require operator escalation,
+not a fabricated new plan ID or silent bypass. These declarations are shared within authorized
+scope, not personal bookmarks, and are not an immutable operator-event ledger.
+
+The SRE write-skill output version remains 1.0 for historical execution
+verification compatibility. The expanded optional rollout input has a new
+exact source SHA-256 and matching trigger manifest; release must publish these
+matching artifacts before treating new dispatch as live-ready. Source checks
+do not attest publication, production execution or rollback readiness.
+
+## Shared advisory access-review campaigns
+
+`GET /api/v1/governance/access-campaigns` reads a shared workspace keyed by the
+complete effective nine-dimensional read scope, with current subject, manager
+capability, collection revision and server-evaluated deadline status. Unlike
+personal audit exports, authorized readers of that exact scope share campaigns.
+Current grants are reapplied on every request. A global reader plus scoped admin
+cannot manage a broader workspace; write authority must cover its entire scope.
+
+`POST` requires `{title, audience, reviewer_subject, due_at, expected_revision}`.
+Only managers may create campaigns. The existing service-owner/security/auditor
+builder composes a **new current source pack**; clients cannot upload evidence.
+The explicit reviewer is an exact authentication subject declaration, not
+directory validation or an access grant. A future timezone-aware deadline within
+365 days is required. No default reviewer, cadence, email or delivered reminder
+is inferred. Overdue status changes only when records are explicitly reloaded.
+
+`GET /access-campaigns/{campaign_id}` recovers canonical standard-key-redacted
+frozen source JSON, original provenance/warnings and immutable recommendations
+without acquiring current identity providers. Source SHA-256 covers its exact
+UTF-8 bytes; the portal verifies byte count, digest, identity and collection
+revision before allowing review. This proves integrity, not authenticity or
+freshness. Observed aggregated principal risk is **not complete effective access
+or individual-role recertification**. Key redaction is not comprehensive DLP.
+
+`POST /access-campaigns/decisions` requires `{campaign_id, principal_id,
+recommendation, reason, expected_revision}`. Only the actual assigned subject
+with current read authority may record `retain_recommended`,
+`revoke_recommended` or `investigate`, against a principal present in the frozen
+pack. Server actor/time are authoritative; recommendations cannot be replaced.
+An administrator cannot impersonate the reviewer. No Azure RBAC mutation,
+remediation approval or execution occurs.
+
+Managers explicitly `POST /access-campaigns/complete` or `/cancel` with
+`{campaign_id, reason, expected_revision}`. Completion requires every captured
+principal to have a recommendation, including unresolved investigation advice;
+it is not approval or certification. Cancellation preserves the captured source
+and recommendations. `POST /access-campaigns/remove` with `{campaign_id,
+expected_revision}` removes only a terminal stored copy, not downloaded records
+or source access. This mutable workspace is not an immutable legal archive.
+
+`state/access-campaigns/<scope-hash>.json` uses existing `AIOPS_HOME` documents,
+revision/ETag CAS and create-only initial writes, bounded to 10 campaigns,
+1-100 principals per campaign, 512-KiB source and 6-MiB serialized collection.
+No truncation, eviction, automatic expiry or infrastructure jobs are introduced.
+Stale/full work is rejected before live acquisition; CAS is rechecked after it.
+Corrupt/unavailable storage fails closed. The portal requires a fresh action
+review, locks uncertain mutations until reload with no replay, and discards
+late results on scope/tab/close/unmount changes. Acknowledged writes followed
+by recovery failure are distinguished from wholly unconfirmed requests.
+Point-in-time review downloads preserve the frozen source digest and recorded
+revision; they are not a checksum/certification of an entire audit history.
+Campaign drafts and records are not added to the source-only Governance Copilot.
+
+## Personal retained audit evidence
+
+`GET /api/v1/governance/exports/retained` recovers metadata for the authenticated
+subject's **exact effective nine-dimensional read scope**. `POST` explicitly
+generates current server evidence with `{kind, expected_revision}` and retains
+its standard-redacted JSON. It never accepts client-supplied packs or silently
+captures a prior preview. The seven existing export kinds are supported.
+Source failures and partial-evidence warnings retain their existing meaning;
+capture is not an atomic cross-source snapshot or certification.
+
+`GET /exports/retained/{export_id}` returns its immutable content string and
+manifest independently of live evidence providers. SHA-256 and byte count cover
+the **exact downloaded UTF-8 content**, including the final newline, not a
+reserialized preview or collection wrapper. The portal verifies both before
+enabling download. Integrity is not cryptographic authenticity or freshness.
+Generated/captured/observed times are distinct; unknown observations stay unknown.
+Recovery remains available even if current export-kind metadata is unavailable.
+Retained content is not added to the source-only Governance Copilot.
+
+Readers may capture and remove their own copies; this grants no administration
+or execution authority. Standard recursive secret-key redaction is **not
+comprehensive DLP**; recognized secret-reference pointers may remain, and access
+and resource details can be sensitive. Existing `AIOPS_HOME` local/OneLake storage
+uses `state/governance-exports/<subject-and-scope-hash>.json`, with strict
+512-KiB content, 10-capture and 6-MiB serialized collection limits. Oversized/full
+requests are rejected without truncation or eviction. No jobs, scheduler,
+automatic expiry, legal hold or shared campaign are introduced.
+
+`POST /exports/retained/remove` requires `{export_id, expected_revision}` and
+removes only the reviewed stored copy; it cannot revoke downloaded files.
+Capture/removal use paired ETag/revision CAS and create-only initial writes.
+Stale writes return 409; corrupt/unavailable storage returns safe 503, never an
+empty success. Unconfirmed UI writes lock mutations until explicit reload and a
+new action, with no automatic replay. Scope/tab/close/unmount changes abort and
+discard late UI results; abort does not prove a server write was cancelled.
+
+## Reviewed enterprise-wide settings
+
+`GET /api/v1/governance/settings` retains the existing effective policy sections
+and adds `revision`, `persistent`, `can_write` and nullable `last_change`
+(server-attributed actor, reason and time). These are **enterprise-wide**
+declarations; inventory scope filters do not narrow their effect. Only a real
+unrestricted administrator write grant permits mutation. An unrestricted reader
+plus a subscription-scoped administrator cannot change global policy.
+The role/template document is not itself an authentication grant.
+
+`PATCH` now requires `{expected_revision, reason, changes}`. `changes` is a
+partial settings object; `reason` must be nonblank and at most 1200 characters.
+Legacy revision-free requests are rejected rather than silently overwriting.
+The merged policy is validated, including existing interdependent agent
+approval switches. Positive integer/boolean policy fields are type-checked;
+nonfinite JSON, corrupt saved settings, and unsafe revision values are rejected.
+The portal shows an explicit before/proposed comparison and reason, followed
+by a separate enterprise-wide confirmation. It sends only changed keys.
+
+`state/enterprise_settings.json` uses the existing `AIOPS_HOME` local/OneLake
+document root in both runtime modes. Missing documents start at revision zero
+with conservative defaults. Valid legacy partial documents retain their revision
+and are merged over current defaults, with no invented historical attribution.
+Corrupt/unavailable documents fail closed with 503, never editable defaults.
+The complete indented/sorted ASCII-escaped JSON plus newline is bounded to
+512 KiB, with safe-JavaScript integer revisions. Memory-only embedded/test
+stores are explicitly non-durable; the portal disables their editing.
+
+Writes compare the reviewed revision and the ETag read with that document;
+initial writes are create-only. Concurrent/stale writes return 409 without
+replay. Other unconfirmed writes return safe 503; the portal locks further
+attempts until an explicit reload and new review. Scope/tab/unmount changes
+abort and discard in-flight UI work, but aborting a request cannot prove that
+the server did not commit it. Reopening reads a fresh revision.
+Last change attribution is not a complete immutable audit history, access review
+campaign, rollout gate, or proof that all policy consumers applied a setting.
+The source-only Governance Copilot does not ingest local drafts or this review.
+
+## Declared component request objectives
+
+`GET /api/v1/service-reliability/components?q=...&offset=0&limit=25`
+projects currently published Application Insights components from Inventory.
+All nine effective scope dimensions are checked against allowlisted declared
+tag aliases, with native subscription identity taking precedence over tags.
+Missing constrained metadata is excluded, duplicate/malformed identities fail
+closed, and untagged business services remain unmapped. Raw tags/provider
+payloads are not returned. A component mapping is not full-service coverage.
+
+`GET /api/v1/service-reliability/objectives` recovers shared declarations for
+the **exact effective scope**, independently of Inventory or Azure availability.
+`PUT` accepts only `expected_revision`, `resource_id`,
+`success_target_basis_points` (integer 1–10000), and `window_hours` (1, 24, 168).
+Administrators must select an authorized current component with a declared
+business-service tag. There is no seeded/inherited target. The server binds
+the objective to the current mapping, not a caller-supplied service label.
+`POST /objectives/remove` requires an explicit resource ID and reviewed revision;
+it does not query/mutate the source, so retired declarations remain removable.
+Reader authority permits recovery and measured reads, not target changes.
+
+The existing `AIOPS_HOME` local/OneLake document root stores
+`state/service-objectives/<sha256(effective_scope)>.json`: at most 20 unique
+component objectives and 128 KiB of complete serialized policy. Revision plus
+ETag/create-only CAS prevents stale overwrites. No automatic eviction,
+personal isolation, full edit history, expiry, schedule or new Azure resource
+is implied. Last editor/time are retained. Corrupt/unavailable storage returns
+503, not an empty or default policy; stale writes return 409.
+
+`GET /api/v1/service-reliability/metrics?resource_id=...` rechecks current
+Inventory membership and the exact saved objective before any credential or
+telemetry access. Changed service mapping requires explicit replacement (409);
+missing/foreign components or objectives return 404. Runtime requires one
+unambiguous enabled same-subscription connection, additionally matching a
+declared connection tag when present; it never chooses the first credential.
+Existing per-connection credential resolution is reused. No grants, cloud
+resources or instrumentation are created.
+
+The fixed resource-context Azure Monitor Logs endpoint queries only aggregate
+`AppRequests` for that exact component and server-generated rolling window.
+No arbitrary KQL, workspace, raw requests, URLs or cross-resource queries are
+accepted. Only complete 200 responses with one validated aggregate row are used;
+partial queries, invalid identity/schema/window or provider errors fail closed.
+Measured reads return the policy revision, query boundaries, first/last source
+observation, observed/represented/failed counts and quality counters.
+Sample-weighted counts and budgets may be estimates; p95 is approximate and
+unweighted across observed records. Unknown success/invalid weights withhold
+success and budget; invalid durations withhold p95. No records mean unknown,
+not zero latency or 100% success. A 100% target has zero allowed failures and
+undefined consumed-budget percentage; negative remaining budget is preserved.
+
+The on-demand Services panel separates declarations, current component search
+and explicit measured reads. Target fields have no new-objective default.
+Writes require reviewed revision and removal confirmation; an uncertain write
+requires reload, never automatic replay. Scope/selection/target changes discard
+the displayed measurement, and in-flight work is aborted on close/scope change.
+The catalog-only Copilot and existing service brief do not ingest this panel.
+None of these facts establishes whole-service uptime, complete traffic coverage,
+contractual certification, continuous monitoring or execution approval.
+
+## Declared Situation response reviews
+
+`GET /api/v1/situations/{situation_id}/response-deadline` reauthorizes current
+case membership and returns the exact-scope declaration, evaluation time,
+collection revision and effective write capability. `PUT` requires administrator
+rights across the **complete effective read scope**, reviewed `expected_revision`,
+current `evidence_run_id`, explicit aware ISO `due_at` and a nonempty reason.
+There is no inferred/default severity-based target. A null `due_at` explicitly
+removes the declaration; the portal requires confirmation and a reason.
+Server-normalized UTC timestamps can be past commitments. Run drift and CAS
+conflicts return 409; foreign/absent cases return 404. Reads do not confer write
+authority, including when an unrestricted reader also has a narrower admin grant.
+Service objective mutations enforce this same complete-scope boundary.
+
+Existing `AIOPS_HOME` local/OneLake documents store
+`state/situation-deadlines/<sha256(effective_scope)>.json`, shared only within
+that exact effective scope. Create-only/ETag CAS, a strict schema, 200 unique
+declarations and a **512 KiB actual serialized** document bound apply. No
+silent eviction, full edit history, timed purge, inheritance, backfill, schedule,
+notification or Azure resource creation is implied. Last declaration actor/time
+and collection editor/time are retained; a removal reason is required but no
+immutable removal event history is claimed. Corruption/unavailable configured
+storage is 503, never an empty policy or successful write.
+
+Queue/detail and read-only handoff responses carry `response_deadline`.
+`response_deadline=due|overdue|unknown|closed` is a server-side queue filter
+applied **before pagination** and restored by URLs/personal saved views.
+Old saved-view documents without this field recover to an empty filter; saved
+views contain preferences, not declarations. Each queue/handoff projects one
+consistent collection revision and evaluation time for all authorized cases.
+Unconfigured storage produces explicit unknown timing, not a default deadline.
+
+Due/overdue compare the evaluation time with an administrator-declared
+response-review deadline only for the matching evidence run and a recognized
+active published lifecycle. Equality is overdue. A different run, unrecognized
+lifecycle or absent declaration is unknown. Closed/resolved means only the
+published source state: neither actual response time nor historical attainment
+is verified. Source freshness is not upgraded by this clock comparison.
+
+The on-demand detail editor uses explicit UTC input, server capability, current
+run and reviewed revision; it never automatically acknowledges a case. Failed
+or uncertain writes discard the editable revision and require reload without
+replay. Close/scope/case/run changes abort and discard in-flight results.
+Queue/detail observations and handoff exports are independently evaluated;
+reload after declaration changes. Source-only Copilot deliberately excludes
+these administrator annotations. Nothing here certifies a contractual SLA,
+response completion, live source status or execution approval.
+
+## Read-only remediation verification inbox
+
+`GET /api/v1/remediation/verification-inbox?kind=attention&offset=0&limit=25`
+projects the **latest stored outcome per authorized execution**, not an event
+delivery system. Optional `kind` is `attention`, `complete` or `cancelled`.
+Authorization uses the execution's own durable attributes across all nine
+requested dimensions, with the existing subscription-only immutable-target
+fallback for legacy records. Filtering precedes counts, sorting and pagination;
+missing constrained metadata fails closed. At most 50 outcomes are returned
+per page, newest aware stored update first, missing update times last.
+
+The runtime reader accesses only the existing durable execution store. It does
+not construct the execution provider (whose factory can regenerate plans),
+require the original plan to still exist, contact Azure, poll verification,
+reconcile evidence, acknowledge or mutate a record. Missing reader, invalid
+authorized records or unavailable storage return safe503, not empty success.
+The existing execution store's retention/capacity applies; this endpoint adds
+no new persistence, scheduler, delivery history or cloud infrastructure.
+
+Only bounded execution/plan/target identifiers, record revision, fixed
+interpretation, source status, reconciliation status and recorded update time
+are returned. Provider messages, errors, job URLs, desired properties, requests,
+credentials and raw evidence are excluded. Notification identity is a stable
+digest of execution identity and stored revision; it does not invent an event
+time or claim an immutable transition history. Unknown reconciliation remains
+unknown. In-progress records are not completion notices; ambiguous submission,
+failed execution and absent/incomplete reconciliation require review.
+Only succeeded records with recorded `reconciled_clean` get the complete
+classification, never a claim of current vulnerability clearance or successful
+whole rollout. Cancellation is distinct from rollback or proven no provider
+effect.
+
+The on-demand Remediation inbox supports explicit refresh, server outcome
+filters/paging and recorded-identifier inspection. Scope/close/filter/page
+changes discard old observations and abort late results. No automatic polling,
+personal unread/read receipts, email/webhook/browser-notification delivery,
+execution action or Copilot ingestion is implied. The inbox does not replace
+governed rollout, provider verification or evidence reconciliation.
+
+## Portal scoped bookmarks
+
+The shared shell restores all nine repeated scope dimensions from each page URL
+before mounting page data providers or contextual Copilot. The bookmark may
+narrow an unconstrained dimension or select a subset of the current global
+operating context. It cannot replace a selected value with an outside value,
+clear an existing constraint through omission, or treat blank/control-bearing
+values as an unscoped request. Invalid bookmarks withhold the page and expose
+a recovery link preserving non-scope query fields and the global selection.
+Bookmarks are not authorization; every backend read retains its own access and
+provider-capability checks.
+
+The global selector remains memory-only and unchanged by page bookmarks.
+A page-level notice distinguishes the effective bookmarked scope from that
+selector. Effective-scope changes remount page contents immediately, discarding
+loaded data and local drafts; ordinary non-scope filters do not remount the
+whole page. Copilot continuity observes this effective scope and retains its
+existing server-revalidation requirement on scope changes. No conversation or
+new authority is restored from a URL.
+Global selector/account controls and continuity sign-out handling remain active
+while an invalid bookmark withholds page data.
+
+## Retained Resource Health observations
+
+`GET /api/v1/resource-health/resource/history?resource_id=...` reads personal
+receipts for the exact principal, effective scope and case-insensitive resource
+address. Current Inventory membership and supported compute type are checked
+before storage access. Reads do not need Monitor to be available, but cannot
+recover a resource outside current Inventory authorization.
+
+`POST` to the same route accepts only `{"expected_revision": 0}`, using the
+reviewed revision. After a revision precheck, the server acquires the existing
+authorized **per-resource** live detail/cache projection, never a subscription
+bulk snapshot or browser measurements. Exactly one matching resource must have
+no provider-reported error. Membership is checked again before CAS append.
+Conflicts return 409; failed/invalid collections do not advance the revision.
+Personal capture requires read authority, not permission to execute changes.
+
+The existing `AIOPS_HOME` local/OneLake document root stores
+`state/resource-health-history/<sha256([principal,effective_scope,resource_address])>.json`.
+Latest 30 captures and a 256 KiB complete-document bound apply; capture 31
+replaces the oldest. Strict schema, identity, duplicate, aware-time, chronology
+and revision checks reject corruption instead of substituting empty history.
+Retention is explicit, with no schedule, time-based purge or historical backfill.
+
+Only eight finite nonnegative metric values/nulls, reported CPU classification,
+collection/request/capture times, cache flag/TTL and diagnostic counts are
+retained. Raw provider errors, warning text, credentials, arbitrary properties
+and CPU series are not stored. Absent metrics stay null, not zero/healthy.
+Collection time is not original metric sample time; aggregation windows, rate
+semantics and threshold configuration are unreported. Cached receipts are not
+independent telemetry samples. Comparisons are arithmetic only, not continuous
+trends, availability, SLOs, verified improvement or causation. A deleted/recreated
+resource at the same address is not proven to be the same incarnation.
+
+The portal opens history on demand for a selected Inventory resource, independently
+of live cards. The existing six-request **card** scheduler is unchanged; explicit
+retention capture performs one separate server acquisition. This is not a
+cross-tab/server-wide Monitor concurrency limit. Scope/resource changes discard
+the prior panel and ignore late responses. A failed/unconfirmed capture withholds
+the revision until explicit reload; aborting/closing cannot undo a capture
+already received by the server. History is not mixed into current-health Copilot.
+
+## Overview interpretation
+
+The Overview reads Situations and Connections at offset 0 / limit 100,
+plus the existing Network and vulnerability summaries. Its v1 posture
+heuristic is `max(0, 100 - 18*loaded_P1 - 7*internet_exposed_count - 4*gap_count)`.
+The explanation shows each count/weight, the unclamped deduction, saturation,
+classification thresholds, and links preserving all selected scope dimensions.
+An unavailable/invalid input withholds the score instead of counting as zero.
+This formula is not an SLA, compliance result, complete-estate measure, or
+learned probability. Reads are not atomic; findings can overlap across sources.
+Situation rows can include closed lifecycle states; no active-only claim is
+made for an unfiltered page. Vulnerability `internet_exposed_count` and the
+legacy `reachable_server_count` are counts of findings in the current service,
+**not distinct CVEs or servers**. The UI labels those units accordingly.
+
+Source coverage shows loaded/reported page counts, partial-page indicators,
+reported evidence freshness, warnings, and a scoped next-check link for each
+source, including failed reads. Missing totals/evidence remain unreported.
+Connection reviews prioritize explicit non-healthy, disabled, incomplete-sync,
+missing successful-sync timestamp, and unmapped service/owner/environment rows.
+Only explicit healthy, active, succeeded, timestamped, mapped registry rows
+are ready in this local readiness view. This does not establish publication
+freshness, resource health, or estate completeness. Review links select only
+active connections; disabled rows link to the registry without an invalid
+readiness bookmark. A scope change remounts the workspace immediately so old
+observations are not scored or passed to Copilot under a new scope.
+### Retained Overview observations
+
+`GET /api/v1/overview/history` recovers only the current principal's exact
+effective-scope history. `POST` to the same route accepts only
+`{"expected_revision": 0}` (using the revision returned by the prior read);
+it performs fresh server-side Situation (first 100 priority-ranked rows),
+Network summary, and vulnerability summary reads through the same authorized
+composers used by the current cards. It never accepts submitted counts.
+Every source must succeed and validate before an atomic append. This is
+sequential collection, **not an atomic cross-source or generation-pinned
+snapshot**. Capture receipt time and each collection's start/end are separate
+from the underlying reported source observation times. Missing source times
+and knowledge versions remain unreported, not inferred.
+
+Storage uses the existing `AIOPS_HOME` local/OneLake root at
+`state/overview-history/<sha256([principal,effective_scope])>.json`.
+The strict versioned document retains the latest **30** explicit observations,
+at most **256 KiB including serialization**. Appending observation 31 removes
+observation 1; there is no time-based expiry, scheduled capture, historical
+backfill, or continuous monitoring guarantee. Only the three aggregate
+formula inputs and bounded provenance/extents/warning counts are retained,
+not raw resources, credentials, or customer-entered claims. Revision/ETag
+conflicts return 409 without overwriting another capture. Reads reauthorize
+but do not require the live providers; failed acquisitions leave the stored
+history unchanged. Missing durable composition returns 503 and corrupt
+retained state fails explicitly rather than returning an empty history.
+The caller must retain permission to exactly the same scope to read it;
+broader/narrower scope selections do not implicitly include other histories.
+
+The portal requires two chronologically ordered retained observations for
+arithmetic count/heuristic-score comparisons and exposes both source extents,
+collection/source times, query versions, and provenance. It does not label a
+delta as new/resolved resources, cause, verified improvement, complete-estate
+growth, or same-population comparison. A captured observation and the live
+cards are separate reads; capture does not silently replace the current cards.
+Scope changes immediately discard the prior comparison and late responses.
+No raw history is cached in browser storage.
+
+## Independent change observations
+
+`GET /api/v1/changes/observations` reads the existing governed ChangeIntelligence
+projection independently of incidents. Missing providers return 503, not empty
+success. Scope authorization/resource membership precedes facets, counts,
+filtering and paging. Selected connection membership must be authorized before
+provider resolution; a missing/inaccessible selection returns 404. Connection
+selection narrows subscriptions, **not event connection provenance**. Missing
+resource context cannot satisfy a constrained dimension. The route does not
+invoke the incident API/provider or start collection, mutation or deployment.
+Existing change-provider composition can read related snapshot tables/semantic
+context and can itself be unavailable; source independence is not a claim of
+zero underlying provider dependencies.
+
+Optional `q` searches change identity/summary, resource, application and service.
+`category` and `source` match exact projected labels; `since`/`until` are inclusive,
+timezone-explicit ISO instants; reversed/naive/invalid ranges fail with 400.
+`order=newest|oldest` uses time, normalized identity and source position for
+deterministic ties. Standard offset pagination allows at most **100 rows**;
+the portal requests 25. `pagination.total` counts matching authorized projection
+rows, `authorized_count` counts all authorized rows before filters. Neither is
+an estate or distinct-change count. Facets precede query filters and expose
+first **100 labels** plus exact returned/total/truncation metadata; an exact
+typed source beyond the suggestion cap still filters the full projection.
+Serialized response data is bounded at **1 MiB**; oversized pages fail
+explicitly instead of dropping rows. The source engine already bounds input
+acquisition. Offset pages are separate reads, not generation-pinned history.
+
+Observation IDs hash the resource join key, normalized source identity, time
+and original position in the loaded projection. This avoids normalized/redacted
+ID collisions and remains stable across filters/pages of that ordered
+projection; it is **not** a globally durable Azure change identity. Internal
+resource keys/IDs and raw states are not returned. Configuration comparison
+exposes only `publicNetworkAccess`, `encryption`, `minimumTlsVersion`,
+`httpsOnly`, `allowBlobPublicAccess`, `enableSoftDelete`, `sku`, and `vmSize`.
+The finite allowlist also admits their exact `properties.` paths, except VM
+size uses `properties.hardwareProfile.vmSize` and SKU uses `sku.name`.
+Different paths remain separate, never silently merged. Values must match
+finite named enums, booleans, or bounded conventional Azure
+VM-size syntax; other values are withheld. Arbitrary/nested property paths and
+values are withheld, with only a count of other names. Before/after absence
+means **unreported**, not null, zero, addition or deletion. Arithmetic equality
+is reported only when both typed values are known; this compares change
+states, not expected baseline versus current configuration.
+
+The portal restores scoped `change_q`, `change_category`, `change_source`,
+`change_since`, `change_until`, `change_order` and `change_page` URL bookmarks
+and browser Back/Forward. Invalid/duplicate continuations fail explicitly;
+applying filters resets paging. All nine bookmarked scope dimensions are
+restored before either provider is read, retaining/narrowing the in-memory
+operating context. An invalid/broader bookmark fails with a recovery link,
+never an unscoped fallback. The effective route scope is explicitly displayed;
+this route-local behavior does not silently replace the global selector.
+Scope/query changes discard prior observations
+and late responses immediately. Explicit reload permits recovery without
+changing filters. The read-only observation Copilot includes only loaded safe
+fields/comparisons and reported freshness, never execution authority. Long
+summary/resource/service/source text is excerpted with an explicit truncation
+marker to preserve the contextual row byte bound; full projected text remains
+visible in the portal.
+
+Legacy incident timeline associations remain a separate independently failing
+source: first 100 report rows, at most 50 rendered change-type events, reported
+extents, and their own scoped review links/Copilot. They are not the durable
+Situation queue and do not filter the independent feed. No HTTP success alone
+establishes freshness, complete estate history, causal contribution, resolved
+incident, confirmed outcome, baseline compliance or operational approval.
+
+## Service catalog and detail interpretation
+
+The catalog joins the complete accessible connection registry with the existing
+incident report, **not** the durable Situation queue. Its mapping denominator is
+loaded authorized connection rows, including disabled connections; it is not
+an inventory/resource denominator or authoritative service registry. A row
+requires service, owner, support team and environment to count as mapped in
+this view. Missing mappings link to Connections; an unmapped label is not
+treated as a real service detail identity. Incident associations can overlap
+between services. Failed/loading incident reads withhold counts, chart and
+clean-state claims in both the UI and contextual Copilot. Even an available
+empty report means no associations in that report, never healthy availability.
+
+Service detail projects known subject ownership, criticality, environment and
+source-defined heuristic risk facts. Missing/ambiguous fields stay unreported;
+risk is not SLO attainment. Object-based applications/infrastructure/dependencies
+and top-level impact arrays retain relation, type and identity. Explicit
+resource IDs navigate to the authorized asset explorer; supported named domain
+references navigate to reauthorized lookups, and unsupported/untyped names
+remain unlinked. Filters work across all loaded relationship observations,
+with a visible 50-row render cap and loaded counts, not an asserted complete
+dependency graph. Original source payloads remain behind disclosures.
+
+Operational review prerequisites distinguish missing ownership/escalation,
+unavailable/partial/stale/fresh source evidence and corresponding scoped
+review links. HTTP success is not freshness: missing evidence stays partial,
+explicit stale evidence stays stale. A reported owner is not tested on-call
+coverage; no execution, rollback, failover or production-readiness approval is
+inferred. These source contracts do not supply service availability, latency,
+SLO windows/targets or error budgets. Those remain unreported rather than
+being synthesized from incident counts. Scope changes remount both workspaces
+immediately; all generated review and dependency links preserve selected scope.
+The explicit component reliability panel described above is a separate source;
+an interpretation layer or retained mapping count does not supply availability
+measurements or whole-service uptime.
+
+### Retained service portfolios
+
+`GET/POST /api/v1/service-portfolio/history` reauthorizes the exact principal and
+effective scope on every read/capture. The POST body is only
+`{"expected_revision": 0}`; service metrics cannot be submitted. The server
+composes existing authorized Connections (up to 10,000, including disabled)
+and incident report (first 100 rows, reported total retained) handlers. A
+partial connection registry, failed provider, invalid aggregate, changed
+revision/ETag or exceeded bound leaves the previous history unchanged.
+Collection is sequential, not an atomic or generation-pinned estate snapshot.
+
+Only up to **250 service labels** and their mapping/incident-association counts,
+plus bounded source extents, collection/source times, query versions, reported
+freshness and warning counts are retained. An incident counts once per distinct
+trimmed service label in that report row; associations can overlap between
+services. No raw connection/resource identities, owner names or credentials
+are stored. Unmapped labels have a separate identity from a real service named
+"Unmapped service". Counts refer to loaded source observations, not unique
+resources, service requests or resolved incidents.
+
+Storage uses existing `AIOPS_HOME` local/OneLake documents at
+`state/service-portfolio/<sha256([principal,effective_scope])>.json`, with CAS
+and a strict versioned, identity/chronology/count-validated schema. Retain latest
+**20 explicit observations**, **2 MiB including serialization**; observation 21
+evicts the oldest. Limits are conjunctive: 250 labels does not waive the byte
+bound. No automatic cadence, timed expiry/physical purge or historical backfill
+is claimed. Reads need no current provider, but retained access still requires
+authorization to the identical scope. Missing storage is explicit 503;
+corruption is explicit failure, never an empty-history fallback.
+
+The portal selects two chronologically ordered receipts, filters their loaded
+label union and renders at most 50 comparisons. Arithmetic is shown only for
+labels represented in both collections. Absence is not zero, newly
+created/deleted service, new/resolved incident, verified improvement or cause.
+Reported source extents/freshness remain inspectable; capture receipt time
+does not assert fresh source data. Scope changes immediately discard prior
+comparisons and late responses. Capturing does not overwrite the live catalog.
 
 ## Running
 
@@ -44,6 +1188,88 @@ the Network page does. They do not require selecting a subscription first.
 Semantic-only searches still report deferred semantic providers explicitly;
 this does not enable full semantic hydration or optional Data Agent grounding.
 
+Twin composition enforces all nine scope dimensions on semantic and Network
+entities and on incident/remediation contribution metadata. Operational rows
+with missing constrained attributes or conflicting nested/root attributes are
+omitted, never assumed to belong to the requested estate. Relationships with
+absent endpoints are omitted. Missing incident scope coverage suppresses the
+heuristic index rather than manufacturing a zero.
+
+`/twin/graph`, `/timeline`, `/compare` and `/export` do not invent historical
+revisions: prior versions/counts are `null`, change history/differences are empty,
+and `/compare` reports `comparison_available: false`; selected historical
+comparisons instead use `/snapshots/compare`. Timeline observations are not detected changes.
+`observed_at` on the graph is the legacy request composition timestamp;
+`observation_kind: request_time_composition` and envelope `composed_at` make
+that boundary explicit. Envelope `live_observed_at` is empty: composition time
+does not prove upstream freshness. Entity temporal metadata separately records
+known provider observations, event start times and generation times.
+
+`POST /twin/scenarios` is a read-only **bounded topology review**, not a causal
+simulation. It requires a supported scenario name and exact visible resource ID
+(native or `resource:` prefixed); unsupported scenarios return 400 and absent,
+substring/name-only or foreign targets return 404. Related entities follow
+observed links in either direction, deterministically, at most three hops and
+500 entities, with at most 25 returned. `impacted_total` is the number discovered
+within those bounds, not an estate-wide blast radius; `truncated` discloses
+traversal or display limits. `risk_delta` is `null`, `authority` is `none`, and
+assumptions explain missing causal, exploitability, reachability, compatibility
+and execution evidence. The current index, when both required inputs exist, is
+explicitly heuristic: `min(100, critical_count * 20 + visible_incidents * 12)`.
+It is not measured risk, probability, reliability or a historical trend.
+
+The portal's Twin entity explorer searches only the already-loaded scoped
+snapshot, across entity name, ID and kind, with type filtering and a disclosed
+30-result list. Focusing a node draws up to 12 directly linked neighbors and
+32 incident relationships, preserving source/target arrows and disclosing the
+full loaded-neighborhood counts. Keyboard node navigation and textual
+relationship details use the same loaded evidence. It neither fetches a wider
+estate nor infers missing dependencies. Focusing/searching does not run a
+scenario: **Use focused resource for review** is the separate explicit action.
+
+Personal retained Twin snapshots use the existing durable document root at
+`state/twin-history/<sha256(actor,effective-scope)>.json`. `GET /twin/snapshots`
+is reader-authorized, exact-scope and provider-free. `POST /twin/snapshots`
+requires an admin and only accepts `expected_revision`: it acquires a **fresh**
+server composition, not a client graph or the previously displayed graph.
+`POST /twin/snapshots/remove` requires admin, `snapshot_id` and the reviewed
+revision. Revision plus create-only/ETag CAS prevents silent overwrite; conflicts
+return 409, unknown/foreign captures 404 and invalid stored evidence 503, never
+an empty success. An unconfirmed write must be recovered by an explicit read
+before retrying; aborting the UI does not prove a server write was cancelled.
+
+Captures contain only safe entity/link declarations, allowlisted scope metadata
+and status/severity/type, source labels/confidence and coverage warnings. Raw
+tags, semantic attributes, arbitrary properties, incident narrative and entity
+timestamps are excluded. Aware composition/retention times, unique identities,
+retained endpoints, exact collection scope and canonical projection SHA-256
+are validated on recovery. The digest is consistency evidence, not a signature
+or source-authenticity proof. Limits are 10 captures, 5000 entities/20000 links,
+2 MiB per serialized capture and 12 MiB per serialized collection, measured
+using the document store's actual JSON format. Rejection is explicit; there is
+no truncation, automatic eviction or historical reconstruction.
+
+`GET /twin/snapshots/compare?baseline_id=...&candidate_id=...` requires two
+different owned captures in the exact effective scope. It compares actual safe
+entity/link declarations with added/removed and before/after changed fields,
+ignoring composition-time-only changes. Missing-provider coverage is retained:
+differences are not proof of applied changes, revision lineage or causal impact.
+`GET /twin/snapshots/{id}/scenarios?left=...&right=...&target=...` applies two
+different supported review questions to one exact retained resource and graph,
+without any current provider acquisition. Both reviews carry the same capture
+digest/time, bounded undirected neighborhood, `risk_delta: null` and
+`authority: none`. Scenario names change review questions, not simulated
+outcomes; identical related sets are expected.
+
+The portal opens this panel only on demand, has explicit capture/deletion,
+distinct snapshot selections, paginated safe before/after differences and a
+same-evidence scenario pair. Scope replacement/closure aborts in-flight UI work
+and suppresses late responses; no write/scenario is automatically replayed.
+Uncertain mutations clear usable history until explicit reload. Historical
+panel results are separate from current-state Copilot context.
+Refresh/scope replacement clears graph focus; graph fingerprints are not
+ordered durable revisions.
+
 Fabric capacity health probes the configured platform subscription even when
 the page filters customer inventory to another subscription. Managed-identity
 deployments use the Terraform-configured Fabric identity for this read-only
@@ -63,6 +1289,127 @@ units. Inventory's `query_version` is a query contract version, not proof of a
 publication generation. Missing/stale stages remain explicit; sync success does
 not establish Fabric publication or portal-wide readiness.
 
+`POST /api/v1/subscription-connections/preflight` accepts the proposed create
+payload with a one-time SPN secret and authorizes registry-write access over
+its complete proposed subscription/business scope before probing anything.
+It runs the seven incumbent fixed read-only access checks with a request-local
+credential resolver. It does not write Key Vault, registry or health documents,
+grant permissions, create a connection, start a sync or publish data. Stored
+secret references and non-SPN credential kinds are not accepted on this path.
+Missing runtime wiring returns 503, not an optimistic readiness result.
+
+The response marks `advisory_only=true`, `persisted=false` and
+`sync_started=false`; required failures and optional degradation stay distinct.
+Failed probe details never echo SDK exception text or submitted credentials.
+Preview is explicitly advisory in the onboarding form, is discarded on edits
+or scope changes, and does not replace the fresh validation performed by
+**Add subscription**. Closing the form clears the entered secret.
+
+`GET /api/v1/inventory/resources` supports optional `q` (name, identity or type),
+`family`, `resource_type`, and `resource_group` filters. Scope is enforced before
+facets, filtering, totals and pagination. Type/group/query matching is
+case-insensitive; family is an exact canonical value. Facets and
+`represented_count` describe the entire authorized published resource
+projection before these filters, not the current page or complete estate.
+`family_availability.row_count` uses that same authorized observation grain,
+not installed-software counts. Source state remains acquisition metadata.
+Internal resource reads no longer silently stop at 10,000 rows.
+
+`GET /api/v1/inventory/asset?resource_id=...` resolves an exact case-insensitive
+identity within the effective scope. Missing and invisible identities return
+the same 404. Only normalized fields and observed containment are returned;
+raw provider properties, tags and inferred management-group ancestry are not
+exposed. The resource-list API uses the same field allowlist, while trusted
+internal adapters retain their lossless payloads. `generation_id` is the
+reported publication generation (empty means unreported); `query_version`
+remains a query contract. These are published observations, not live health.
+
+The Inventory **Explore assets** view (`/inventory/assets`) restores validated
+filters, page and exact resource bookmarks from its URL. Navigation preserves
+current scope but never grants access; asset reads reauthorize independently.
+Scope/query transitions immediately discard old facts. Resolved Situation
+Resource links use this same destination. Historical asset snapshots and
+queued export workers remain separate work; the retained export capture
+below supplies bounded resume/cancellation without pretending to be a worker.
+This navigation drilldown is explicitly excluded from model-bound Copilot
+snapshots until a selected-asset evidence/tool contract is reviewed; the
+existing governed Inventory Copilot is unchanged on `/inventory`. It never
+substitutes a group snapshot for the selected asset.
+
+The grouped `GET /api/v1/inventory/os`, `/inventory/software` and
+`/inventory/paas` endpoints now apply `q` and exact case-insensitive group
+filters before selecting the requested page. OS supports `os_name`,
+`os_version`, `source_type` and `lifecycle` (`expired`, `expiring`,
+`supported`, `review`). Software supports `software_name`, `publisher`
+and `source_type`. Azure supports the raw provider namespace, `resource_type`
+and the displayed `sku_tier` pair. Source/publisher filters select groups
+containing that value; they do not repartition installations or machines.
+
+`facets` count complete authorized groups before query filters, not
+distinct assets. `represented_group_count` and matched `pagination.total`
+remain distinct. `summary` covers all matching groups before pagination
+and preserves machine, installation and Azure-resource grains separately.
+An empty page retains those facets and totals. Source status counts remain
+scope-limited acquisition observations, independent of table filters.
+Internal full-group readers no longer silently stop at 10,000 groups.
+
+The grouped portal queries these contracts rather than filtering only the
+visible page. **Save view in URL** explicitly records all three tabs'
+filters and page settings for bookmarks/history; invalid bookmarks are
+reported, never silently converted to an unrelated view. Scope transitions
+discard previous rows and in-flight detail responses. Charts and detail CSV
+exports are explicitly visible-page evidence; source group memberships can
+overlap and are not installation counts. The scope narrative remains
+independent of table filters, and missing aggregate metadata is not presented
+as complete-estate coverage.
+
+**Retained resource exports** replace the old multi-request live scan.
+`POST /api/v1/inventory/exports` accepts `expected_generation_id`, which must
+match the real publication generation on one resolved InventoryService
+instance. An empty or changed generation returns 409; a query contract is
+never substituted for the pin. The server captures all authorized normalized
+OS/platform observations from that instance exactly once, independently of
+table filters. Only nine string columns are retained: family, resource_name,
+resource_type, resource_id, subscription_id, resource_group, environment,
+location, observed_at. Raw properties, tags and credentials are excluded.
+This is published-observation evidence, not complete-estate or live-health
+certification. No capture truncates silently: 1–50,000 rows and 16 MiB maximum
+complete serialized document size; over-limit/empty requests return 400.
+
+`GET /api/v1/inventory/exports/current` recovers the exact principal/effective
+scope's manifest (or `null`). Each principal/scope has at most one ready
+capture; replacement requires cancellation or expiry and otherwise returns
+409. `GET /api/v1/inventory/exports/{export_id}/batches?offset=0` reads up to
+500 retained rows. Offsets must be existing multiples of 500. The response
+includes immutable manifest, offset, next_offset, and resources. Reloading,
+retrying, or changing the active provider cannot mix capture generations.
+Each request reauthenticates and reauthorizes current read scope; an ID is
+not a bearer capability. Other authorized identities/scopes and replaced
+IDs return 404; requests outside the caller's grants remain forbidden.
+Recovery/batches/cancellation do not need the active inventory provider.
+
+`POST /api/v1/inventory/exports/{export_id}/cancel` requires the manifest's
+`expected_revision`. ETag compare-and-swap clears retained rows and revokes
+future reads; conflicts return 409 and require review. It cannot revoke an
+in-flight response or a downloaded file. Access expires at 24 hours, including
+the exact expiry instant; the next access/create lazily clears the row body.
+There is **no scheduled physical-purge guarantee** for idle documents.
+Manifest metadata remains. Documents live in the existing
+`AIOPS_HOME/state/inventory-exports/` store, keyed by hashed actor/exact scope.
+Unreadable/corrupt storage fails explicitly, never resets to empty;
+unconfigured storage returns 503.
+
+The portal offers explicit separately downloaded CSV batches, a batch selector,
+current-capture recovery, and a validated identity/offset resume URL.
+It carries no resource payload in URLs or browser storage. The SHA-256 covers
+the generation ID and complete sorted allowlisted rows, not a query version.
+The client compares manifest identity, revision, scope and whole-capture
+checksum, and checks row shape, count and offsets before emitting a batch;
+it does not independently recompute the whole-capture digest per batch.
+It neutralizes spreadsheet
+formulas. An offered browser download is not a saved-file receipt. Pending
+old-scope/unmounted/cancelled callbacks cannot emit a later download.
+
 `GET /api/v1/compliance/design-policy` returns a revisioned architecture
 assessment policy, exception decisions, and audit for the **exact effective
 scope**. There is no inheritance between scope combinations. A missing document
@@ -80,11 +1427,47 @@ Exception decisions require both write and approve authorization. The server
 records the authenticated principal, not the owner text, as the approver.
 Conflicting revisions return HTTP 409; reload and review before retrying.
 Expired, revoked, or prior-policy exceptions do not reduce the assessment score.
+New policy saves record exact `policy_diff` field/before/after values,
+`previous_policy_revision`, and the IDs of currently active exceptions
+invalidated by that save. Metadata-only changes also invalidate exceptions.
+Old audit entries are not backfilled with invented differences or counts.
+The first explicit default-policy application may have an empty diff;
+subsequent no-op replacements return 400 without incrementing revisions,
+invalidating decisions, or appending an audit entry.
 These are operator-declared architecture-assessment findings, not provider-side
 policy exemptions or remediation approvals. Browser-local policy/exception
 preferences are deliberately not imported as governed decisions. The audit is
 append-only through this API and stops further writes at 10,000 entries until
 administratively archived; no history is silently discarded.
+
+The Compliance policy editor explains each draft field's actual evaluator
+boundary and previews added/removed/reclassified findings against the **same
+loaded observations**. It does not infer a historical cause or pretend to
+compare retained evidence generations. Declared hub-routing/environment
+intents have no connected local evaluator; server Network design gaps remain
+independent. The projected heuristic score invalidates prior exceptions just
+as a save would, but is neither an approval nor benchmark coverage.
+Late reloads cannot replace a newer saved policy/decision revision.
+
+The framework view pins its advisory catalog to
+[Microsoft cloud security benchmark v1](https://learn.microsoft.com/en-us/security/benchmark/azure/overview-mcsb-v1),
+not the separately published v2 preview. Known local finding types associate
+with broad NS/AM/LT domains; exact provider `DOMAIN-number` control-ID formats
+are candidate domain associations only. Ambiguous/custom/CIS/ISO labels
+remain explicitly unmapped; no cross-framework equivalence is guessed.
+All 12 v1 domains remain visible. No mapped evidence means **not assessed**,
+never passed. Counts are distinct loaded observations (including pagination
+limits), not evaluated-control denominators or complete-estate totals.
+Risk acceptance remains evidence, never successful compliance coverage.
+Mapped rows link to local findings or provider references and the official
+domain guidance; missing/loading/error sources withhold conformance claims.
+Unavailable governed/drift sources no longer render healthy empty states.
+
+Public-access findings require an explicitly enabled observed
+`public_network_access`/`publicNetworkAccess` setting; the word "public" in
+serialized metadata, disabled/missing settings, or contradictory values do
+not establish exposure. This setting does not itself prove reachability.
+Unjoined CVE observations are labeled scope-level context, not resource links.
 
 Agent finding accept/reject actions require an explicit finding in the current
 ledger and a reason (1–1000 characters). Twin traversal and scenario analysis
@@ -97,6 +1480,612 @@ running on port 8080 and the web app's `AIOPS_DEV_TOKEN` must
 match one of the keys in `AIOPS_API_TOKENS`; otherwise requests will be
 rejected with `401`. CORS preflight requests from the default Next.js origins
 are enabled by default.
+
+### Predeploy artifact intake
+
+`POST /api/v1/changes/assess` retains its existing admin write authorization and
+authorized read scope. Intake now rejects malformed present source arrays,
+more than 500 entries per source change/file array, more than 24 nested levels
+(root level 0), more than 50,000 JSON values, object keys over 256 Unicode scalar
+characters, invalid Unicode, nonfinite numbers, and non-JavaScript-safe integers.
+Submitted JSON values serialized as compact UTF-8 must not exceed 2 MiB. The
+wire envelope is separately limited to 2 MiB + 16 KiB before JSON/model parsing;
+deeply nested and duplicate-key JSON is rejected before model validation.
+Missing
+source arrays and unfamiliar action/resource fragments still produce defensive
+ingestion unknowns; acceptance is not source-schema certification.
+
+Known credential-like keys, named environment values and Terraform
+`before_sensitive`/`after_sensitive` masks block assessment while detected
+values are present. The portal supports bounded local UTF-8 JSON file intake or
+paste, explicit local redaction to `[REDACTED]`, and a separate review checkbox.
+Editing the artifact, changing its source, starting a file read or changing
+scope invalidates that review. Late file reads cannot replace newer input.
+No inspection or redaction operation makes a network write. Detection is
+heuristic, not comprehensive DLP: users must remove secrets embedded in prose,
+patches or arbitrary values themselves. Nothing is automatically submitted.
+
+The server independently revalidates intake before acquiring source evidence.
+An `artifact` receipt on the assessment contains source, compact UTF-8 size,
+withheld-value count and SHA-256 of ASCII JSON with sorted keys, no whitespace
+and envelope `{"schema_version":1,"source":SOURCE,"payload":PAYLOAD}`.
+Its `canonicalization` is `python-json-ascii-sorted-v1`; this identifies the
+submitted JSON values and source, not original file bytes, source authenticity,
+or a release approval. Raw artifacts/before/after values are not retained in
+assessment history. Withheld values become declared unknowns, suppress
+confidence to low/unknown, and require advisory human review even when two
+redacted markers compare equal. History remains bounded process-local state;
+durable revision comparisons and CI review contracts are not established by
+this intake receipt.
+
+### Retained predeploy review receipts and declared comparisons
+
+`GET /api/v1/changes/retained-assessments` recovers personal receipts from the
+existing local/OneLake root at `state/predeploy-history/`, keyed by authenticated
+subject and exact effective nine-dimension scope. Recovery does not acquire
+current inventory or analysis providers. Normal read authorization is required;
+unconfigured/corrupt/unavailable storage fails explicitly, never as an empty
+fallback. A valid scope with no document yet returns an empty revision-zero
+collection.
+
+Admin `POST` to that route requires only `assessment_id`, reviewed
+`artifact_sha256` and `expected_revision`. The server retrieves its current
+assessment and rechecks submission ownership, exact scope and exact artifact
+digest. Unavailable/evicted/foreign source assessments return 404; changed digests
+or stale/concurrent revisions return 409. Receipt validation/size failures
+return 400; unconfirmed storage writes return 503 and require explicit reload.
+No caller-supplied observations, actors, scopes, full analysis or artifact
+payloads are accepted. Receipt contents cannot be replaced.
+
+Receipts retain independent aware assessment/retention times, normalized
+declared identity/action/property-name rows, risk/verdict/confidence/unknowns,
+represented impact identities, traversal limits, and an optional Network review
+digest. They exclude raw artifacts, before/after property bags, complete
+simulation/evidence reports and execution authority. Up to 20 receipts,
+256 KiB per receipt and 4 MiB per collection are supported, measured against the
+serialized document, without silent truncation or automatic eviction.
+Admin `POST /changes/retained-assessments/remove` takes `assessment_id` and
+`expected_revision` for explicit deletion; source assessments/artifacts remain
+unchanged. Create-only/ETag CAS protects both first capture and later mutations.
+
+`GET /changes/retained-assessments/compare?baseline_id=...&candidate_id=...`
+requires two explicitly selected different receipts of the same source format
+in the same personal scope. It returns both receipts, digest equality,
+declared-row additions/removals, represented impacted-identity differences and
+a signed risk-score difference. Row comparison preserves duplicate multiplicity
+but ignores source-array positions and property-name ordering. It neither
+reacquires current providers nor proves revision lineage, actual configuration
+changes, applied fixes or runtime reliability. Identical input may produce
+different analysis at different observation times or engine versions.
+
+The portal exposes on-demand recovery, explicit retention/deletion and unselected
+comparison selectors. Scope changes abort pending work and remount the panel;
+failed/uncertain mutations clear reviewed collection state and require reload
+before explicit retry, with no automatic replay. Recent assessment history
+remains separately labeled process-local; only explicit receipts survive process
+restart.
+
+### Advisory predeploy CI review
+
+Reader `GET /changes/retained-assessments/{assessment_id}/review-contract`
+requires the exact reviewed `artifact_sha256` and effective scope. It exports
+only the authenticated subject's own retained receipt, independently of current
+inventory or process-local assessment availability. Missing/foreign scope is
+404, artifact mismatch 409, invalid digest 400 and unavailable storage 503.
+It neither retains nor changes anything.
+
+Version-one contracts include the retained receipt, exact scope, canonical
+receipt SHA-256 and whole-contract SHA-256. Canonical JSON uses sorted keys,
+ASCII escaping and compact separators, excluding only the digest field being
+calculated. `review_required` applies whenever the receipt has unknowns,
+non-high confidence, a non-approve verdict, non-Low risk, truncated traversal,
+business-service dependencies or destructive rows. Otherwise `advisory_clear`
+means only that these summary rules do not escalate: omitted approvals or
+conditions are not evaluated or satisfied. `deployment_authority` is always
+`none`. These are integrity hashes, **not signatures or deployment approvals**.
+The portal offers explicit per-receipt JSON export and reports download errors.
+
+The read-only CI client independently verifies a local inspected JSON artifact
+against that live authorized contract:
+
+```bash
+python scripts/predeploy-review.py \
+  --artifact reviewed-plan.json --source terraform_plan \
+  --assessment-id <retained-32-hex-id> \
+  --review-sha256 <reviewed-export-64-hex-review-sha256> \
+  --scope-json '{"subscription":["subscription-a","subscription-b"]}' \
+  --repository owner/repository > predeploy-review.json
+```
+
+Install the existing project `api` dependencies first. The runner must already
+have approved `AIOPS_PREDEPLOY_API_URL` (HTTPS origin, no path/userinfo/query)
+and `AIOPS_PREDEPLOY_REVIEW_TOKEN` configuration. The token needs reader access
+and **the same subject that owns the receipt**; a different pipeline identity
+does not inherit a human's personal history. No credentials or grants are
+created by this feature. Locally inspect/redact and explicitly retain the
+artifact analysis under the intended identity before running the check.
+
+Before contacting the API, the client checks a real clean tracked Git checkout,
+the GitHub/Azure DevOps commit environment when present, regular file, 2 MiB
+UTF-8 input, duplicate keys, structural/numeric/Unicode bounds and detected
+credentials. Only the canonical artifact digest and scope are sent in one GET,
+never raw input, artifact uploads or assessment writes. HTTPS verification stays
+on; redirects/proxies are disabled; network read timeout is 30 seconds and the
+uncompressed response is bounded at 512 KiB. The returned identity, source,
+scope and both evidence hashes must match, including the explicitly pinned
+`--review-sha256` from the reviewed export. A coherently re-created receipt
+with the same ID/artifact but changed evidence therefore still fails, requiring
+an explicit new review and pin. Errors identify the failed stage
+without echoing raw artifacts, tokens or provider error bodies; no retry occurs.
+
+Exit 0 is advisory-clear, 2 means human review is required, and 1 is an
+unconfirmed/invalid review. JSON reports bind the exact returned contract to the
+local Git commit and asserted repository label with a separate binding digest.
+This does **not** prove that the artifact was generated from that commit, verify
+remote repository identity or constitute an authenticated CI attestation.
+When `GITHUB_STEP_SUMMARY` is set, a fixed-format Markdown summary contains
+only disposition, validated identities and digests, not user-authored prose.
+Do not use any exit code as an infrastructure deployment permission.
+
+`.github/workflows/predeploy-review.yml` is manual and main-only, and remains
+disabled unless `AIOPS_PREDEPLOY_REVIEW_ENABLED=true`. It runs trusted main
+code, checks out the immutable event commit without persisted Git credentials,
+has contents-read permission, passes inputs as quoted environment values,
+and uploads only the report for seven days even when review is required.
+Configure the approved API origin variable and existing protected reader-token
+secret before enabling it; no hosted execution/configuration is claimed by
+source tests. There is no PR-target trigger, deployment, merge, PR comment,
+cloud credential or infrastructure permission in this workflow.
+
+Azure DevOps can call the same command on a trusted clean checkout, pass an
+explicit `organization/project/repository` label, and inject the same approved
+API configuration through its protected secret mechanism. `BUILD_SOURCEVERSION`
+must match HEAD. Preserve exit 2 as review-required, publish the JSON report on
+failure as well as success, and keep deployment approvals separate. The portal's
+downloaded contract is review material; the client re-fetches live authorized
+evidence rather than trusting an arbitrary offline JSON file.
+
+### Search exploration and durable queue bookmarks
+
+`GET /api/v1/search/capabilities` requires the normal read authorization and
+reports configured live, semantic, and exact-identity search prerequisites.
+It inspects provider health without loading deferred semantic providers.
+Configuration readiness is not a successful upstream probe.
+
+`GET /api/v1/search` retains its unpaged shape when no exploration options are
+supplied. Optional `offset` (0-100000), `limit` (1-100), `entity_type` (128
+characters), and `source` (256 characters) enable exploration; a filter or
+offset without a limit uses 25. Authorization precedes facets, filtering,
+counts, and paging. `represented_count` and `aggregate_basis` describe the
+authorized results represented by that provider response, **not estate-wide
+totals**. Source truncation remains explicit; paging cannot recover omitted
+provider results. Search URLs retain query, facets, offset, and current scope
+as navigation context, never as an authorization grant.
+
+`GET /api/v1/saved-views` and `PUT` to the same route retain **personal
+navigation preferences**, not Search results or Situation evidence. Normal
+read authorization is required on both operations; preferences are keyed by
+the authenticated subject and exact effective nine-dimension scope, on the
+existing local/OneLake root at `state/saved-views/`. Neither operation acquires
+Search, Situation, inventory, or Azure providers. Missing/corrupt/unavailable
+storage fails explicitly rather than returning an empty collection.
+
+PUT requires `expected_revision` and the complete `views` list. Create-only
+and ETag CAS prevent concurrent/stale replacement; conflicts return409.
+An empty list explicitly removes all views in this personal scope.
+Up to20 views combined and64KiB serialized state are supported. Each view
+has a distinct lowercase slug `view_id` (max64), nonblank `name` (max80),
+and a discriminating `kind`. Search views use `kind: "search"`, nonblank
+`query` (max512), `entity_type` (max128), and `source` (max256).
+Situation views use `kind: "situations"`, optional `query` (max256),
+`priority` (`all`/`P1`/`P2`/`P3`), `assigned_owner` (max256),
+`lifecycle_state` (max64), integer `older_than_hours` (24/168/720 or null),
+and `sort` (`default`/`oldest`/`newest`). Unknown fields, arbitrary URLs,
+submitted actors/scopes, results, handoff selections and execution fields
+are rejected. The server issues revision and aware update time.
+
+Both pages expose an on-demand named-view panel with explicit save,
+replace-current-filters, delete and reload. It preserves other view kinds
+when replacing the reviewed collection. Restoring constructs only an
+allowlisted first-page URL with every current scope dimension, then reacquires
+current authorized evidence. Source/permission changes may yield different
+results or unavailability. Restoring an already-current first-page view
+explicitly reacquires evidence even when no URL change occurs; restoring from
+a later page navigates back to the first. Queue reload also invalidates reviewed
+handoff selections. Scope changes remount the panel; aborted/late
+responses cannot restore the old collection. An uncertain update invalidates
+the collection and requires explicit reload/retry; it is never automatically
+replayed. Preferences provide no access grant, schedule, evidence retention,
+SLA, approval or execution authority. Do not place secrets in query text.
+Search result navigation also preserves every selected scope dimension,
+including repeated subscriptions, alongside its existing detail selector.
+
+`GET /api/v1/situations` additionally accepts `assigned_owner` and
+`lifecycle_state` (case-insensitive exact matches), `older_than_hours`
+(0-87600), and `sort` (`default`, `oldest`, or `newest`). These operate on
+the complete authorized Situation collection before pagination. Default
+ordering is priority, then newest observed start; unknown or timezone-less
+starts sort last and do not satisfy an age filter. `assigned_owner` is
+deliberately distinct from the global `owner` scope dimension. Observed
+age is not overdue status: no SLA deadline is inferred.
+
+`POST /api/v1/situations/handoff` is a **read-only** authenticated export,
+not approval, execution, or a durable export job. Supply `selections`, one
+to 25 unique `{situation_id, run_id}` objects from the reviewed queue.
+Every Situation is reauthorized and its run must still match: invisible
+or missing selections fail the entire request with 404; changed runs
+return 409. Unknown fields, duplicate IDs, missing runs, more than 25
+selections, or a canonical artifact larger than 2 MiB are rejected.
+The response contains the selected brief fields, only visible linked
+evidence IDs, effective scope, export time, and a SHA-256 integrity digest.
+The digest covers the artifact serialized as Python
+`json.dumps(artifact, sort_keys=True, separators=(",", ":"), ensure_ascii=True)`
+then UTF-8 encoded; `canonicalization` states that contract. It is an
+integrity checksum, not a signed attestation or complete evidence bundle.
+
+Situation triage URLs restore search, priority, `assigned_owner`, lifecycle
+state, supported observed-age presets, sort, and page; history navigation
+reruns the authorized read. Filter, page, or scope changes clear selected
+handoff rows and invalidate in-flight downloads.
+
+Connections URLs restore `tab` and `connection` without starting another
+sync. A bookmarked connection is usable only after it is present in the
+current authorized active list; unavailable selections do not silently
+fall back to a different connection. Existing server sync-run recovery
+continues independently of URL navigation.
+
+The legacy `/vulnerabilities` route translates historical parameter names
+through the shared Exposure allowlist; canonical names win regardless
+of input order. Cursors, unrecognized keys, external origins, and invalid
+values do not cross the redirect. Migration logs contain only a count,
+allowlisted translated parameter names, and the number of discarded keys,
+never query values, connection IDs, or unknown raw parameter names.
+
+Exposure Overview restores all nine repeated scope dimensions and an optional
+exact generation before reading its single bounded aggregate response. Malformed
+generation values, repeated generation selections, invalid scope values, or
+bookmarks outside a constrained global selector fail before reads. Overview
+links to child collections and CVE/KB details preserve the selected scope and
+loaded generation. An unconstrained browser selector still allows a bookmark to
+narrow a collection; the Operations API remains the RBAC authority.
+
+The Overview SLA rate divides only recorded `overdue` findings by the sum of
+`overdue` and `within_sla` findings. Other states are reported separately and
+excluded, not counted as compliant. Without a classified denominator, the rate
+is unavailable rather than zero. This is a represented-partition classification
+rate, not an estate-wide SLA measure. An omitted facet vocabulary is unknown,
+not evidence of zero findings.
+Shared Exposure partial-state copy does not label generic represented-finding
+counts as connection coverage.
+
+### Explicit Exposure observations
+
+`GET /api/v1/vulnerabilities/exposure/history` reads private retained observations
+for the current principal and exact effective nine-dimensional scope. It does
+not acquire live providers. `POST` to the same path accepts only
+`expected_revision` and optional exact `generation`; browser-supplied counts,
+actors, evidence and execution fields are rejected. The server reacquires the
+authorized unfiltered facet response, validates generation/scope/count coherence,
+and persists an allowlisted aggregate receipt with an immutable `exo-` identity.
+The UI pins capture to its loaded generation; this is a new server read, not a
+copy of the displayed browser response.
+
+The existing local/OneLake document root holds at most 30 receipts and 256 KiB per
+principal/scope, with create-only/ETag compare-and-swap. Capacity conflicts never
+evict old evidence. Conflicting revisions return 409; missing storage, corrupt
+history, unusable source responses or failed persistence cannot return capture
+success. After an ambiguous POST reply, reload history and review its revision
+before explicitly trying another capture; there is no automatic retry.
+
+Receipts retain only finding totals, six bounded facet vocabularies (at most 40
+classifications each), source generation/table, completeness/freshness states,
+explicit connection counts if supplied, exclusions and source observation time.
+Raw findings, resource identifiers and provider payloads are not retained.
+Capture time is separate from source observation time. Comparisons are
+arithmetic aggregate differences, not new/resolved finding counts, verified
+remediation, continuous history or causal attribution. The UI exposes both
+generations and source extents; omitted facet groups remain unavailable.
+
+### Exposure evidence recovery review
+
+Patch priorities also reads a separate generation-pinned filtered facet response
+for whole-query counts, independent of cursor-page charts. Cursor samples are
+never accumulated into global totals; unavailable vocabularies remain unknown.
+Counts refer to matching findings, not distinct targets or weaknesses. The queue
+explains selected sorting and the ascending exposure-ID tie-breaker; target views
+are not priority ranks. Row explanations expose reported severity, SLA, source
+completeness and generation, without inventing score components or business-risk
+weighting not supplied by the source.
+
+`GET /api/v1/vulnerabilities/exposure/patch-reviews` reads exact-principal/scope
+immutable personal review batches without querying current sources. `POST`
+accepts a reviewed history revision, exact generation, cursor/page size/sort,
+allowlisted filters, one to 25 unique finding IDs, owner and nonblank review
+note. The server reauthorizes the query and reacquires that page before selecting
+the requested IDs; browser rows, counts, actors or execution payloads are
+rejected. Changed generation/selection or revision cannot produce a successful
+snapshot. Saved projections retain finding/target/weakness identities, severity,
+SLA/completeness, source observation time and separate server capture time.
+They do not execute patches or create approvals, schedules or delivered owner
+assignments. New page/filter/generation workspaces clear unsaved selections;
+refreshing/retained rows cannot be submitted.
+
+`state/patch-review` uses the existing document root and exact principal/scope
+hash, create-only/ETag concurrency, at most 20 batches and 256 KiB without
+eviction. Corrupt storage is unavailable rather than empty. A lost save reply
+requires an explicit retained reload before another deliberate save; no POST is
+automatically replayed. Old batches remain historical evidence, not current
+finding or remediation status.
+
+The landing page orders advisory review by evidence quality, reported critical
+severity, exact overdue SLA classification and high severity. It exposes the
+source generation/state and preserves all nine scope dimensions and generation
+on filtered collection links. It does not invent a combined score or infer
+exploitability, impact, fix readiness, scheduling or verified remediation.
+
+`GET /api/v1/vulnerabilities/exposure/recovery` derives up to five gap reasons per
+retained receipt: incomplete/excluded source evidence, absent or unequal
+connection coverage, unconfirmed freshness, missing/incomplete facet groups and
+unclassified SLA findings. A missing history has no candidates, not healthy
+provider status. Reads and reviews never acquire providers. Candidates remain
+bound to their immutable receipt, generation and capture time, even after later
+observations. Old candidates do not disappear when a new source looks healthier.
+
+`POST` to the same path accepts `expected_revision`, `observation_id`, one
+server-derived `reason`, `disposition` (`queued`, `in_review`, `review_closed`),
+`owner` (up to 160 characters), optional `target_date` (empty or YYYY-MM-DD), and
+a nonblank `note` (up to 1000 characters). A receipt/reason must exist under the
+current principal and exact effective scope. The first declaration must be
+`queued`; subsequent events may record review or closure, including reopening.
+Owner/date/note are operator declarations: no notification, cross-user
+assignment, source freshness, provider SLA or execution authorization follows.
+Closing review does not remove the gap or repair/verify provider data.
+
+The private document root `state/exposure-recovery` uses the same exact
+principal/scope hash and existing local/OneLake storage as observation history.
+At most 100 immutable server-attributed events and 256 KiB are stored, without
+eviction. Create-only/ETag writes and reviewed revisions prevent lost updates.
+409 requires explicit reload; malformed input is 400; absent candidates are
+404; missing/corrupt storage or failed persistence cannot return success.
+The UI checks scope, event continuity, immutable prefixes and the exact submitted
+declaration. Ambiguous writes disable submission until explicit retained reload;
+there is no automatic POST replay. This is personal workflow state, not shared
+team ownership or audited provider repair evidence.
+
+### Defender image units, mapping evidence and owner review
+
+Exposure list/overview/facet responses can include `distinct_counts` with
+`targets`, `weaknesses` and `recorded_digests`. These are separate
+`COUNT_BIG(DISTINCT NULLIF(LOWER(identifier), ''))` aggregates in the existing
+authorized, generation-pinned, filtered SQL count query. They are not derived
+from loaded cursor rows. Missing aggregate fields remain unknown for older
+sources; an explicit zero recorded digest count means no nonblank digest strings
+in this query, not that no images are deployed. Empty identifiers are excluded;
+case is normalized. Counts are not distinct running-workload counts.
+
+Defender severity acquisition waits for the findings generation, validates both
+envelope/contract scope and generation, and rejects invalid/duplicate/over-total
+facet counts. Missing vocabulary never becomes a page-derived global critical
+headline. Partial classification charts state their classified-only denominator
+and expose the unclassified remainder. Independent errors offer explicit retry.
+Links to priorities preserve the effective scope, generation and filters.
+
+Per-finding image mapping inspection displays the recorded digest,
+deployment-state vocabulary and represented/total/unknown workload counts.
+Missing mapping fields remain unknown. Repeated image-finding rows must not
+be summed into unique workloads; recorded identifiers alone do not prove
+current deployment, reachability, ownership or remediation.
+
+Image owner review uses the same exact-principal/scope immutable review-batch
+API described above, with `target_kind=container_image` and the source selectors
+included in server reacquisition. Prior server batches remain explicitly
+identified in the shared personal history. Ownership is a personal declaration,
+not a notification, delivered assignment, execution plan or verification.
+
+### CVE fix evidence matrix
+
+The CVE portal matrix joins no external identifiers to inventory by inference.
+It separates durable MSRC KB associations and recorded `product_ids` from
+the authorized loaded finding rows that explicitly name a `missing_kb`.
+NVD KB associations without a durable MSRC record retain unknown provider status.
+Missing row mappings are unknown, not evidence that no update is required.
+Product/OS versions, prerequisites, supersedence, reboot requirements and verified
+fixed versions are outside the current catalog projection and remain unreported.
+Catalog identifiers are not an applicability or installation recommendation;
+the UI no longer chooses an update by alphabetical order.
+
+Both source envelopes must match the requested CVE/effective scope and query
+generation before the matrix is rendered. Catalog generation is a query binding,
+not proof that independently timestamped provider records were observed together.
+The matrix is page-local, with its loaded/matching denominator explicit.
+Source status, staleness, last-known-good presence and provider observation time
+remain visible. KB navigation pins the actual loaded finding generation.
+URL/scope/CVE changes remount local filters, dialogs and acquisition state so
+previous local filtering and asynchronous evidence cannot survive that boundary.
+Retained CVE revision comparisons and immutable evidence bundles are delivered
+separately from this current-source matrix.
+
+### Retained CVE evidence and comparison
+
+`GET /api/v1/cves/{cve_id}/evidence` reads private retained evidence for the
+current principal, exact nine-dimensional effective scope and canonical CVE.
+`POST` to the same route explicitly reacquires the authorized finding page and
+sanitized external catalog. The browser submits only the reviewed revision,
+generation, cursor, page size, allowlisted filters and sort. The exact CVE filter
+is required; actor, capture clock, hashes and source rows are server-owned.
+Scope/CVE/generation contradictions fail rather than becoming retained evidence.
+Acquisition is not an atomic snapshot of independent provider clocks.
+
+The existing durable document store applies create-only/ETag compare-and-swap.
+The revision equals the append-only receipt count: at most 20 receipts or 512 KiB
+per identity, with explicit conflicts/capacity failures and no silent eviction.
+Storage absence, corruption and unconfirmed writes remain errors. A lost POST
+response requires an explicit retained reload, never automatic POST replay.
+Receipt/history reads and exports reauthorize current permissions and never
+reacquire providers or restamp retained source observation times.
+
+Each receipt retains at most 100 allowlisted finding identities with target,
+weakness, kind, severity, completeness and SLA state, the whole-query count,
+generation/filters/sort/page-size bindings, a cursor-page indicator, and at most
+40 public source projections. Sources retain provider state, staleness,
+last-known-good presence, observation time, safe error code, CVSS/EPSS/KEV signals,
+KB/product identifiers as available. Failed or stale KEV does not become a
+current listing assertion. Arbitrary provider descriptions/payloads, opaque
+cursors, secrets, attack paths and full inventory are not retained.
+
+Comparisons require distinct receipts with identical query fingerprints.
+Generation and cursor are excluded from that fingerprint deliberately: changed
+page positions or independently refreshed generations can alter membership.
+Totals are query observations; page membership/field/source differences do not
+establish new/resolved findings, installed patches or remediation. Selection
+order is not chronology. This is explicit, bounded retention, not continuous
+change history or synchronized provider historical replay.
+
+`GET /api/v1/cves/{cve_id}/evidence/{receipt_id}` exports only a retained receipt
+visible within that exact identity, returning canonical JSON `content` plus a
+manifest. The receipt's `sha256` covers its canonical payload excluding that hash
+field. The manifest's independent `sha256` and `size_bytes` cover the exact full
+UTF-8 JSON content including the receipt hash; `receipt_sha256` binds it to the
+selected receipt. Browser SHA-256 verification checks exact bytes before passing
+those same bytes to download, without reserialization. Hashes provide integrity,
+not signatures, trusted provider attestations, applicability or execution approval.
+Exports contain private asset identifiers; sharing is an operator decision.
+
+### KB latest-snapshot installation evidence
+
+`GET /api/v1/kbs/{kb_id}` resolves the latest authorized Silver KB snapshot,
+independently of the filtered finding page and its generation. Within the
+existing tenant/scope/snapshot/KB SQL predicates, rows are deduplicated per
+subscription/target first; `COUNT_BIG` window aggregates then report distinct
+`observed_targets`, `missing`, `installation_failed`, `installed`, and `other`.
+Only after those whole-snapshot aggregates are computed is the target sample
+bounded to 100 rows. Categories must sum to the observed population, agree
+across result rows, agree with the missing/failed count, and contain all sampled
+statuses. Contradictory, negative, noninteger or unsafe counts fail explicitly.
+An absent legacy aggregate projection remains unknown, never a sample-derived
+distribution.
+
+`target_status_observations` retains the bounded source target/status/timestamp
+projection in the response, with an explicit truncation indicator (unknown if
+the full extent is unreported). These are current source observations, not
+retained history. Recorded `installed` means the source's latest status: it
+does not prove portal execution, remediation verification or post-deploy health.
+Missing/failed snapshot targets are not filtered finding counts; KB-wide
+membership is not proof of per-CVE target applicability.
+
+`update_guidance` exposes recorded MSRC `product_ids`, not inferred product
+names from update titles. The current durable catalog does not collect
+prerequisites, servicing-stack dependencies, supersedence graphs, reboot or
+OS/build requirements. `dependency_capability=not_collected` keeps these
+unknown; it does not mean no dependencies/reboot. Provider status/staleness,
+last-known-good presence and source observation clocks remain independent from
+the Silver snapshot. Fixed Microsoft reference links are navigation only;
+the portal does not fetch or attest their content.
+
+The KB page validates exact returned KB/scope/count bindings before accepting
+metadata and remounts local filters, drawers and asynchronous source state at
+URL/KB/effective-scope boundaries. Contextual Copilot uses the narrowed page
+scope. The underlying SQL authorization currently supports subscription and
+subscription-connection selectors; unsupported dimensions remain errors, never
+silently dropped or widened. Maintenance-review declarations and retained
+verification observations are separate, not implemented by this current-source
+projection.
+
+### KB maintenance-review declarations
+
+`GET /api/v1/kbs/{kb_id}/reviews` reads a private append-only declaration history
+under current caller authorization. Identity includes principal, every exact
+effective scope selector and canonical uppercase KB identifier; reads do not
+acquire providers. `POST` accepts only an expected revision (0–20), the displayed
+Silver generation, a declared owner, an offset-aware proposed start/end window,
+up to 20 unique other KB references, a `needs_review`, `deferred` or `reviewed`
+disposition and a required explanation. Actor, record ID, recording clock and
+source evidence cannot be supplied by the browser.
+
+Before each append the server reauthorizes and reacquires current KB metadata
+using the existing SQL detail path. The requested Silver generation must still
+match. Only its generation and snapshot clock/coverage/freshness are retained
+beside the declaration; arbitrary assets, provider payloads and execution plans
+are excluded. Independent catalog and snapshot clocks are not synchronized.
+`state/kb-review/<identity-hash>.json` uses create-only/ETag compare-and-swap,
+at most 20 records and 256 KiB, with no eviction or overwrite of earlier reviews.
+Corrupt documents fail instead of becoming empty history; revision/capacity or
+changed-generation conflicts return 409. Unconfirmed storage outcomes return an
+explicit error. The UI disables saves until an explicit retained reload following
+an ambiguous write and never retries POST automatically.
+
+These are personal operator declarations, not delivered owner assignments,
+maintenance reservations, verified prerequisites, approval transitions,
+remediation execution or proof of a fix. A `reviewed` disposition asserts only
+that the operator recorded that disposition. Retained reads remain possible when
+current KB metadata is unavailable; new reviews require its generation.
+
+### Retained KB source observations
+
+`GET /api/v1/kbs/{kb_id}/observations` reauthorizes the current principal and
+exact scope, then reads retained observations only. `POST` explicitly reacquires
+current authorized KB metadata through the existing SQL detail path and requires
+the displayed Silver generation and expected revision (0–20). Browsers cannot
+submit counts, targets, clocks, actors or provider evidence. A changed generation
+or stale revision returns 409; a stale revision/capacity preflight does not query
+sources. Reads do not refresh sources, create observations or replay writes.
+
+The allowlisted projection contains server ID/capture time, Silver generation
+and independent snapshot clock/coverage/freshness, whole-snapshot status counts
+(unknown for legacy sources), at most 100 target/status/source-time rows with
+explicit sample extent, and independent MSRC availability/staleness/clock.
+It excludes arbitrary provider payloads, execution declarations and asset metadata.
+Counts/categories and sample identities/statuses must agree. Corruption or invalid
+acquisition fails explicitly, never as an empty/successful history.
+`state/kb-observations/<identity-hash>.json` isolates exact principal/scope/KB
+and atomically appends using create-only/ETag CAS; 20 records/512 KiB are retained
+without automatic eviction. Unconfirmed writes require explicit retained reload,
+never automatic POST retry.
+
+The page can reopen these observations without available current metadata and
+compare two explicit captures without querying providers. Common sampled-target
+status differences are separate from sample membership differences; both snapshot
+population and independent catalog clocks/coverage may change. An inventory
+`installed` status is not portal execution or verified remediation. No complete
+estate movement, fixed cohort, causal maintenance linkage or post-deploy health
+is asserted; post-deploy health is not collected by this source.
+
+### Situation handover annotations and observed comparisons
+
+`GET /api/v1/situations/{situation_id}/notes` reauthorizes the live Situation
+and reads the exact effective-scope annotation history. Different scope
+combinations do not inherit notes. The response includes `can_append` only
+when the caller has operate rights over that **entire** scope.
+
+`POST` to the same route requires operator authorization and accepts
+`expected_revision`, `evidence_run_id`, and `text` (1-2000 nonblank
+characters). The run must match the current authorized Situation at
+request-time validation. The service records the authenticated actor,
+UTC timestamp, unique note ID, and next revision. Client-supplied actors,
+execution fields, and other unknown keys are rejected. Changed source runs
+or history revisions return 409, with no automatic replay. Reload and review
+the history before explicitly retrying; the UI retains unsent drafts.
+
+Histories use the existing local/OneLake document store under
+`AIOPS_HOME/state/situation-notes/`, with a SHA-256 name derived from the exact
+Situation identity and effective scope. Create-only/ETag replacement prevents
+lost concurrent appends. Missing storage and corrupt documents fail explicitly;
+only a genuinely absent document starts at revision zero. Histories are
+append-only through this API and capped at 200 notes; additional writes require
+administrative archival, not silent deletion. These annotations are not
+provider facts, source audit events, remediation approval, or execution
+authority. Do not enter secrets.
+
+Situation detail preserves unresolved link quality and enables navigation
+only for resolved identities with supported destinations. Links carry current
+scope as context; the destination still enforces authorization. Timeline source,
+quality, and observed-time filters operate only on returned authorized evidence.
+Two explicitly selected observations can be compared by assertion, trust facts,
+and resource-reference differences. References appearing in only one observation
+do **not** prove resources were created or deleted. Unknown/timezone-less times
+cannot establish chronology; equal instants are explicitly coincident. Sequence
+does not establish causation. Scope, Situation, or source-run changes reset
+local timeline state and handover drafts.
 
 For local testing, start the web app and API from `web/` in separate terminals:
 
@@ -365,6 +2354,102 @@ Served by `NetworkIntelligenceService` over the ontology snapshot.
 | `/api/v1/network/gaps` | Intended-design and structural gaps |
 | `/api/v1/network/rule-findings` | Firewall and NSG tightening analysis |
 | `/api/v1/network/summary` | Dashboard card payload |
+| `/api/v1/network/intents` | GET personal saved connectivity expectations/receipts; PUT replace reviewed declarations |
+| `/api/v1/network/intents/run` | POST explicitly analyze the saved reviewed suite against current scoped configuration |
+| `/api/v1/network/topology/history` | GET personal exact-scope retained projections; POST explicitly capture reviewed history revision |
+| `/api/v1/network/topology/history/compare` | GET paginated fixed-field differences between two retained captures |
+| `/api/v1/network/review` | GET reauthorized exact gap/rule evidence for a separate advisory proposed-change review |
+
+**Saved connectivity tests** are personal reader state, not global design policy,
+deployment approvals or infrastructure execution. The server keys documents by
+exact authenticated principal and effective nine-dimension scope, on the existing
+local/OneLake root at `state/network-intents/`. GET and PUT do not acquire Network
+providers. PUT requires `expected_revision` and the complete `tests` list (empty
+explicitly removes declarations). Each test requires stable lowercase slug
+`test_id` (max64), name (max80), source/destination (max512 each), port1–65535,
+`Tcp`/`Udp`, and an `allowed`/`denied` expectation. Up to20 tests are supported.
+Declarations are not proof of endpoint membership.
+
+POST accepts **only** `expected_revision`, resolves one currently authorized
+Network service, and batch-evaluates only the saved declarations. Any unresolved
+verdict, unknown or missing enforcement point yields `indeterminate`, never
+`match`; otherwise a configuration verdict either matches or mismatches the
+declared expectation. There are no packet probes, traffic observations,
+schedules, auto-fixes or execution grants. Foreign or unresolved endpoints cannot
+recover configuration outside the current scope. Receipts retain exact tested
+declarations, reviewed revision, aware acquisition times, reported snapshot
+observation time (empty means unreported), verdicts and evidence-gap counts;
+raw rules, provider errors and arbitrary property bags are not retained.
+
+Every successful save/run advances the revision under create-only/ETag CAS;
+stale/concurrent writes return409. Empty suites cannot run. Failed acquisitions
+or invalid provider results never append a success receipt. Corrupt/unavailable
+storage fails explicitly, not as empty history. The latest10 run receipts remain
+under a512KiB serialized-document bound. Editing/removing declarations does not
+rewrite receipts. Source generation and complete topology coverage are unreported;
+repeated snapshot observation times do not prove independent acquisitions.
+No time-based expiry, historical backfill, continuous coverage, compliance or
+observed-reachability claim is made. Personal suite contents are not added to
+the current Network Copilot snapshot.
+
+**Topology history** retains the latest five explicit server-acquired summary
+projections on the existing document root at `state/network-history/`, keyed by
+exact principal and effective nine-dimension scope. GET does not acquire current
+Network data. POST accepts only `expected_revision`, resolves one currently
+authorized Network service and captures its untruncated summary. Truncation,
+invalid projection, provider or storage failures do not append. Concurrent/stale
+writes return409 under create-only/ETag CAS. Each capture has aware acquisition
+start/finish times and reported source observation time (empty means unreported).
+Schema one retains fixed node metadata, directed typed relationships and peering
+configuration flags. It excludes raw rules, tags, arbitrary properties and
+boundary peering identities; withheld boundary peerings and source-dropped
+relationships have explicit counts. The bounds are1500 nodes/6000 edges per
+capture and2MiB for the serialized five-capture document. Exceeding a bound fails
+explicitly without truncation; narrow the scope instead.
+
+Comparison requires two distinct retained `baseline_id`/`target_id` UUIDs in
+capture order. It reads no new provider, compares exact fixed fields, and uses
+standard `offset`/`limit` pagination with overall added/no-longer-observed/changed
+counts. Expired, foreign-principal or different-scope IDs return404; same/reversed
+captures return400. "No longer observed" means absent from a later projection,
+not deletion. Source generation, complete estate coverage, lifecycle and causation
+are unreported. Repeated source timestamps do not prove independent observations;
+zero differences do not establish unchanged infrastructure. No background
+collection, historical backfill, time expiry, packet probing, execution approval
+or infrastructure mutation occurs. Personal retained contents are not added to
+the Network Copilot context.
+
+**Finding-to-predeploy handoff** adds `reviewed_digest` to current gap and rule
+rows. The digest binds the full source finding, current policy digest, reported
+source observation time, safe fixed context and exact effective scope. Network
+links carry only kind (`gap`/`rule`), finding identity, digest and repeated scope
+query parameters; raw evidence, rules and finding text are not carried in URLs.
+GET `/network/review` requires `kind`, `finding_id` and `reviewed_digest`. It
+acquires one currently scoped Network service, finds that exact current result
+and rejects missing/foreign results404 or evidence drift409. Provider failure
+remains503. Safe context is bounded to64KiB; full source properties are hash-bound
+only, not forwarded. Repeated source times and missing generations do not prove
+independent source refreshes.
+
+The predeploy page requires explicit attachment to a separately entered artifact.
+Malformed/incomplete references or failed evidence reads block linked submission;
+removing context is a separate visible action. POST `/changes/assess` accepts
+optional `network_review: {kind, finding_id, reviewed_digest}` only, reauthorizes
+the current requested `ReadScope` (including all nine dimensions) and rechecks
+the digest before assessment. Existing admin-level `WritePrincipal` authorization
+is preserved, not broadened to readers/operators. Stored assessment context is
+server-acquired and attributed to the submitting subject. Linked list/detail/
+explain reads require that same subject and exact effective scope; they cannot
+leak through a broader/narrower query or a direct ID. The assessment list wire
+data remains an array, now consumed as such by the portal.
+
+Assessment storage still follows the existing bounded **process-local** service;
+this handoff does not claim a durable cross-replica audit trail. A separately
+prepared artifact is never auto-generated from a finding. Neither attachment,
+simulation nor CAB recommendation verifies that the artifact addresses the
+finding, certifies a fix, approves deployment or grants execution. Failed/
+unconfirmed submissions require explicit evidence reload/reattachment; there
+is no automatic assessment retry or infrastructure mutation.
 
 Three properties are load-bearing:
 
@@ -374,6 +2459,15 @@ Three properties are load-bearing:
 - **Scope filters the snapshot, not just the classifications.** Counts,
   connection IDs and derived summaries are narrowed with the resources, so a
   scoped caller cannot infer the size of the estate beyond their grant.
+  Network REST reads, agent tools, Twin network projections and Governance
+  network packs share the same nine-dimension projection: connection,
+  subscription, environment, business service, application, owner, support
+  team, region and criticality. Missing metadata does not match a selected
+  dimension. Canonical `region` takes precedence over the native `location`
+  fallback without overwriting that location; support-team and criticality
+  metadata accept their canonical columns and tag aliases. Derived shared
+  services retain these attributes. Filtering is configuration analysis, not
+  a packet probe or a claim of observed reachability.
 - **`intended_design_declared: false` is reported, not silently passed.** With
   no design policy only structural gaps can be found, never conformance gaps.
 

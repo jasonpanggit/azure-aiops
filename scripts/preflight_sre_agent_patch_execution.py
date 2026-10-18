@@ -21,8 +21,11 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+for import_root in (REPO_ROOT, REPO_ROOT / "src"):
+    import_path = str(import_root)
+    if import_path in sys.path:
+        sys.path.remove(import_path)
+    sys.path.insert(0, import_path)
 
 from src.operations.patching.models import OPERATION_INSTALL_PATCHES
 from src.operations.patching.sre_agent_adapter import (
@@ -105,7 +108,7 @@ PATCH_READ_OUTPUT_SCHEMA_VERSION = "1.0"
 PATCH_WRITE_SKILL_NAME = "aiops-install-selected-patches-v1"
 PATCH_WRITE_SKILL_VERSION = "1.0"
 PATCH_WRITE_SKILL_SHA256 = (
-    "2a4fec5c3959046670a5ea326b728e7ab8b840a654b9d5f040ea4af64dd1ce75"
+    "3f2327e2b27fc76627dbd4f99f55c7f3fe453e79cdb049c0ec54d5784b5a4ec6"
 )
 PATCH_WRITE_SKILL_TOOLS = ("RunAzCliWriteCommands",)
 PATCH_WRITE_SKILL_OPERATION = "install_selected_patches"

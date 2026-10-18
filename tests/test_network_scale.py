@@ -195,8 +195,8 @@ def test_summary_budgets_match_the_measured_contract() -> None:
     assert SUMMARY_BYTE_CEILING == G2_BYTE_CEILING
 
 
-def test_g4_default_detail_is_byte_identical_to_the_pre_change_contract() -> None:
-    """Gate G-4 runs before the summary gates and locks the additive default."""
+def test_g4_default_detail_matches_the_frozen_contract() -> None:
+    """Gate G-4 locks the reviewed full-detail payload before summary gates."""
     topology = build_topology(g4_baseline_estate())
     default_payload = topology.to_dict()
     explicit_full_payload = topology.to_dict(detail="full")
@@ -207,9 +207,9 @@ def test_g4_default_detail_is_byte_identical_to_the_pre_change_contract() -> Non
     ).encode()
 
     assert default_payload == explicit_full_payload
-    assert len(canonical) == 111_155
+    assert len(canonical) == 114_057
     assert hashlib.sha256(canonical).hexdigest() == (
-        "86d8d899a856e64b9aca1974471e6cf8eee4d4abc2dbad02b26930a6a0091440"
+        "bb141f5b09526a893fd55b9db794807326df8f75efe6064dafe3d750cb4598d9"
     )
 
 

@@ -244,7 +244,7 @@ def test_reported_page_routes_use_exact_ordered_safe_sets() -> None:
         (
             "changes_predeploy",
             "Which impacted services carry vulnerability exposure for this change?",
-            ("change",),
+            ("vulnerability", "change"),
         ),
         (
             "identity",

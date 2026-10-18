@@ -473,6 +473,7 @@ class ExposureQueryPage:
     completeness: dict[str, Any] = field(default_factory=dict)
     freshness: dict[str, Any] = field(default_factory=dict)
     next_cursor: str | None = None
+    distinct_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1113,6 +1114,13 @@ class ExposureQueryService:
             else 0
         )
         count_row = count_rows[0] if count_rows else {}
+        distinct_counts = {}
+        for name in ("targets", "weaknesses", "recorded_digests"):
+            value = count_row.get(f"distinct_{name}")
+            if value is not None:
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > total_count:
+                    raise ValueError("Exposure distinct counts are inconsistent")
+                distinct_counts[name] = value
         self._metrics.record_query(
             operation="count",
             duration_ms=(self._clock() - count_started) * 1000.0,
@@ -1218,6 +1226,7 @@ class ExposureQueryService:
             completeness=completeness,
             freshness=freshness,
             next_cursor=next_cursor,
+            distinct_counts=distinct_counts,
         )
 
     def catalog_item(
@@ -1489,12 +1498,20 @@ class ExposureQueryService:
             "), [latest_targets] AS ("
             "SELECT [update_name], [severity], [published_at], "
             "[target_resource_id], [status], [timestamp], "
-            "SUM(CASE WHEN LOWER([status]) IN ('missing', 'installation_failed') "
-            "THEN 1 ELSE 0 END) OVER () AS [affected_server_count] "
+            "COUNT_BIG(CASE WHEN LOWER([status]) IN ('missing', 'installation_failed') "
+            "THEN 1 END) OVER () AS [affected_server_count], "
+            "COUNT_BIG(*) OVER () AS [observed_target_count], "
+            "COUNT_BIG(CASE WHEN LOWER([status]) = 'missing' THEN 1 END) OVER () AS [missing_target_count], "
+            "COUNT_BIG(CASE WHEN LOWER([status]) = 'installation_failed' THEN 1 END) OVER () AS [failed_target_count], "
+            "COUNT_BIG(CASE WHEN LOWER([status]) = 'installed' THEN 1 END) OVER () AS [installed_target_count], "
+            "COUNT_BIG(CASE WHEN LOWER(COALESCE([status], '')) NOT IN "
+            "('missing', 'installation_failed', 'installed') THEN 1 END) OVER () AS [other_target_count] "
             "FROM [ranked_targets] WHERE [target_rank] = 1"
             ") "
             f"SELECT TOP ({limit}) [update_name], [severity], [published_at], "
-            "[target_resource_id], [status], [timestamp], [affected_server_count] "
+            "[target_resource_id], [status], [timestamp], [affected_server_count], "
+            "[observed_target_count], [missing_target_count], [failed_target_count], "
+            "[installed_target_count], [other_target_count] "
             "FROM [latest_targets] "
             "ORDER BY CASE WHEN LOWER([status]) IN ('missing', 'installation_failed') "
             "THEN 0 ELSE 1 END, [timestamp] DESC, [target_resource_id] ASC",
@@ -1569,10 +1586,21 @@ class ExposureQueryService:
                 in {"missing", "installation_failed"}
             }
         )
-        affected_server_count = max(
-            (int(row.get("affected_server_count") or 0) for row in rows),
-            default=0,
-        )
+        status_counts = _kb_installation_status_counts(rows)
+        if status_counts is not None:
+            affected_server_count = status_counts["missing"] + status_counts["installation_failed"]
+            if any(type(row.get("affected_server_count")) is not int or row["affected_server_count"] != affected_server_count for row in rows):
+                raise ExposureQueryUnavailableError("KB installation counts are inconsistent")
+        else:
+            affected_server_count = max(
+                (int(row.get("affected_server_count") or 0) for row in rows),
+                default=0,
+            )
+        products = (msrc_payload or {}).get("product_ids")
+        if products is None:
+            products = []
+        if not isinstance(products, list) or any(not isinstance(value, str) or not value.strip() or len(value) > 256 for value in products):
+            raise ExposureQueryUnavailableError("KB product identifiers are invalid")
         return {
             "generation": snapshot.generation,
             "snapshot_freshness_at": snapshot.freshness_at,
@@ -1611,6 +1639,21 @@ class ExposureQueryService:
             "affected_server_count": affected_server_count,
             "affected_servers_truncated": affected_server_count
             > len(affected_servers),
+            "installation_status_counts": status_counts,
+            "target_status_observations": [
+                {"target_id": str(row.get("target_resource_id") or ""),
+                 "status": str(row.get("status") or "unknown").casefold(),
+                 "observed_at": str(row.get("timestamp") or "")}
+                for row in rows
+            ],
+            "target_status_observations_truncated": (
+                status_counts["observed_targets"] > len(rows) if status_counts is not None else None
+            ),
+            "update_guidance": {
+                "source": "msrc",
+                "product_ids": sorted(set(products)),
+                "dependency_capability": "not_collected",
+            },
             "affected_business_services": [],
             "findings": [],
             "enrichment": {
@@ -1628,6 +1671,33 @@ class ExposureQueryService:
                 "sources": source_states,
             },
         }
+
+
+def _kb_installation_status_counts(rows: list[dict[str, Any]]) -> dict[str, int] | None:
+    """Validate whole-snapshot counts; absent legacy projections remain unknown."""
+    aliases = {
+        "observed_targets": "observed_target_count", "missing": "missing_target_count",
+        "installation_failed": "failed_target_count", "installed": "installed_target_count", "other": "other_target_count",
+    }
+    if not any(alias in row for row in rows for alias in aliases.values()):
+        return None
+    counts = {key: rows[0].get(alias) for key, alias in aliases.items()}
+    if any(type(value) is not int or not 0 <= value <= 9_007_199_254_740_991 for value in counts.values()):
+        raise ExposureQueryUnavailableError("KB installation counts are invalid")
+    if any(row.get(alias) != counts[key] or type(row.get(alias)) is not int for row in rows for key, alias in aliases.items()):
+        raise ExposureQueryUnavailableError("KB installation count rows disagree")
+    if sum(value for key, value in counts.items() if key != "observed_targets") != counts["observed_targets"] or counts["observed_targets"] < len(rows):
+        raise ExposureQueryUnavailableError("KB installation counts are inconsistent")
+    identities = [row.get("target_resource_id") for row in rows]
+    if any(not isinstance(value, str) or not value.strip() for value in identities) or len(set(identities)) != len(identities):
+        raise ExposureQueryUnavailableError("KB target observation identities are inconsistent")
+    sample = {key: 0 for key in counts if key != "observed_targets"}
+    for row in rows:
+        status = str(row.get("status") or "").casefold()
+        sample[status if status in sample else "other"] += 1
+    if any(value > counts[key] for key, value in sample.items()):
+        raise ExposureQueryUnavailableError("KB sample statuses exceed aggregate counts")
+    return counts
 
 
 def _catalog_payload(source: str, value: Any) -> dict[str, Any] | None:
@@ -1882,6 +1952,9 @@ def _compile_queries(
     count_sql = (
         f"{scoped_cte} "
         "SELECT COUNT_BIG(DISTINCT [exposure_id]) AS [total_count], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([target_id]), '')) AS [distinct_targets], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([weakness_id]), '')) AS [distinct_weaknesses], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([image_digest]), '')) AS [distinct_recorded_digests], "
         "MAX([timestamp]) AS [freshest_at], "
         "MIN(CASE WHEN [completeness] = 'complete' THEN 1 ELSE 0 END) "
         "AS [all_complete] "
@@ -2205,6 +2278,9 @@ def _compile_silver_patch_queries(
     all_parameters = (*parameters, *filter_parameters)
     count_sql = (
         f"{scoped_cte} SELECT COUNT_BIG(DISTINCT [exposure_id]) AS [total_count], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([target_id]), '')) AS [distinct_targets], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([weakness_id]), '')) AS [distinct_weaknesses], "
+        "COUNT_BIG(DISTINCT NULLIF(LOWER([image_digest]), '')) AS [distinct_recorded_digests], "
         "MAX([timestamp]) AS [freshest_at], "
         "MIN(CASE WHEN [completeness] = 'complete' THEN 1 ELSE 0 END) AS [all_complete] "
         "FROM [scoped]"

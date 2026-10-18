@@ -100,6 +100,7 @@ CONSUMER_INVENTORY: tuple[ConsumerInventoryEntry, ...] = (
     _entry("fabric-sync-reader", "fabric", "src/fabric/sync_service.py", "semantic_snapshot and ontology_query", "Fabric runtime", "compatibility alias over selected generation", "compatibility-alias"),
     _entry("fabric-schema-registry", "fabric", "src/fabric/schema_registry.py", "ontology table schemas", "Fabric schema", "logical schema only", "indirect"),
     _entry("fabric-telemetry", "fabric", "src/fabric/telemetry.py", "ontology metrics", "Fabric telemetry", "post-read aggregate only", "indirect"),
+    _entry("fabric-runtime-config", "fabric", "src/fabric/config.py", "ONTOLOGY_TABLES", "Fabric runtime configuration", "logical ontology table declarations consumed by Fabric readers", "indirect"),
     _entry("operations-tools", "agent", "src/operations/tools.py", "_semantic_result and network tools", "Operations agent", "request provider and evidence alias", "indirect"),
     _entry("twin-export", "export", "src/api/routers/twin.py", "_composer and export", "Operational twin", "one request-selected semantic generation", "resolver"),
     _entry("semantic-registry", "semantic", "src/semantic/semantic_registry.py", "SemanticRegistry.default", "Semantic knowledge layer", "versioned logical source aliases", "compatibility-alias"),

@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
+from datetime import UTC, datetime
 from time import perf_counter_ns
 from typing import Annotated, Any, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Body, Query, Request, Response
 from fastapi.routing import APIRoute
@@ -25,6 +27,26 @@ from network.design import (
 )
 from network.flow import FlowQuery
 from network.gaps import NetworkGapAnalyzer
+from network.history import (
+    UUID_PATTERN,
+    CaptureRequest,
+    TopologyCapture,
+    compare_captures,
+    topology_capture,
+)
+from network.intents import (
+    IntentResult,
+    IntentRun,
+    IntentTest,
+    SuiteRevision,
+    SuiteUpdate,
+)
+from network.review import (
+    DIGEST_PATTERN,
+    NetworkReviewReference,
+    ReviewKind,
+    finding_review,
+)
 from network.rule_engine import (
     SUPPORTED_OPERATORS,
     SUPPORTED_TARGET_NAMES,
@@ -33,9 +55,11 @@ from network.rule_engine import (
 )
 from network.service import NetworkIntelligenceService, NetworkScope
 from network.topology import TopologyDetail
+from storage.onelake_documents import DocumentConflictError
 
 from ..dependencies import (
     Context,
+    CurrentPrincipal,
     Page,
     ReadScope,
     WritePrincipal,
@@ -87,6 +111,105 @@ SOURCE_ENGINE = "network.NetworkIntelligenceService"
 SOURCE_TABLE = "ontology_entities"
 
 
+def _intent_store(context: Context):
+    if context.network_intent_store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable connectivity suites are unavailable")
+    return context.network_intent_store
+
+
+def _intent_response(data: dict, scope: ReadScope) -> dict:
+    return envelope(
+        data, scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="network.saved_configuration_intents",
+            source_table="state/network-intents",
+            timestamp=data["runs"][-1]["finished_at"] if data["runs"] else "",
+            confidence="unknown",
+        ),
+        warnings=[
+            "Personal declared expectations and explicit configuration-analysis receipts, not packet probes, live traffic, continuous monitoring or execution authorization.",
+            "Source generation and complete topology coverage are unreported. Repeated source observation times are not independent observations.",
+        ],
+    )
+
+
+@router.get("/intents")
+def connectivity_intents(context: Context, principal: CurrentPrincipal, scope: ReadScope) -> dict:
+    """Read the exact personal/effective-scope suite without a provider acquisition."""
+    return _intent_response(_intent_store(context).read(principal.subject, scope.to_dict()), scope)
+
+
+@router.put("/intents")
+def save_connectivity_intents(
+    payload: SuiteUpdate, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict:
+    """Save declarations only; personal reader state does not alter infrastructure or policy."""
+    try:
+        data = _intent_store(context).update(
+            principal.subject, scope.to_dict(), payload.expected_revision, tests=payload.tests,
+        )
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    return _intent_response(data, scope)
+
+
+@router.post("/intents/run", status_code=201)
+def run_connectivity_intents(
+    payload: SuiteRevision, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict:
+    """Evaluate only the server-saved reviewed tests on one currently scoped configuration."""
+    store = _intent_store(context)
+    state = store.read(principal.subject, scope.to_dict())
+    if state["revision"] != payload.expected_revision:
+        raise ApiError(ErrorCode.CONFLICT, "Connectivity suite changed; reload before running")
+    tests = [IntentTest.model_validate(test) for test in state["tests"]]
+    if not tests:
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Save at least one connectivity test before running")
+    started = datetime.now(UTC).isoformat()
+    service = _service(context, scope)
+    queries = [
+        FlowQuery(source=test.source, destination=test.destination, port=test.port, protocol=test.protocol)
+        for test in tests
+    ]
+    try:
+        flows = service.validate_flows(queries)
+        results = []
+        for test, query, flow in zip(tests, queries, flows, strict=True):
+            if flow.query != query or flow.verdict not in {"allowed", "denied", "indeterminate"}:
+                raise ValueError("Network provider returned a different connectivity query or verdict")
+            if flow.verdict != "indeterminate" and not (
+                flow.source_endpoint.resolved and flow.destination_endpoint.resolved
+            ):
+                raise ValueError("Network provider returned a decisive verdict for unresolved endpoints")
+            outcome = (
+                "indeterminate" if flow.verdict == "indeterminate" or flow.unknowns or flow.missing_enforcement_points
+                else "match" if flow.verdict == test.expected_verdict else "mismatch"
+            )
+            results.append(IntentResult(
+                test=test, verdict=flow.verdict, unknown_count=len(flow.unknowns),
+                missing_enforcement_count=len(flow.missing_enforcement_points), outcome=outcome,
+            ))
+        run = IntentRun(
+            run_id=str(uuid4()), reviewed_revision=payload.expected_revision,
+            started_at=started, finished_at=datetime.now(UTC).isoformat(),
+            source_observed_at=service.snapshot.observed_at, results=results,
+        )
+    except (ValueError, TypeError) as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Configuration analysis could not be retained; no run was saved",
+        ) from exc
+    try:
+        data = store.update(principal.subject, scope.to_dict(), payload.expected_revision, run=run)
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    return _intent_response(data, scope)
+
+
 def _service(context: Context, scope: Scope) -> NetworkIntelligenceService:
     subscription_ids = live_subscription_ids(context, scope, default_all=True)
     network_scope = _network_scope(scope)
@@ -123,14 +246,94 @@ def _network_scope(scope: Scope) -> NetworkScope:
     The API scope is the authorization boundary; this keeps the two aligned so
     a caller can never widen their view by choosing a network route.
     """
-    return NetworkScope(
-        connection_ids=tuple(scope.dimensions.get("subscription_connection", ())),
-        subscription_ids=tuple(scope.dimensions.get("subscription", ())),
-        environments=tuple(scope.dimensions.get("environment", ())),
-        business_services=tuple(scope.dimensions.get("business_service", ())),
-        applications=tuple(scope.dimensions.get("application", ())),
-        owners=tuple(scope.dimensions.get("owner", ())),
+    return NetworkScope.from_dimensions(scope.dimensions)
+
+
+def _history_store(context: Context):
+    if context.network_history_store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable topology history is unavailable")
+    return context.network_history_store
+
+
+def _history_response(data: dict, scope: ReadScope) -> dict:
+    return envelope(
+        data, scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="network.retained_topology",
+            source_table="state/network-history", confidence="unknown",
+        ),
+        warnings=[
+            "Retained summary projections, not continuous topology, resource lifecycle or live connectivity evidence.",
+            "Rules, tags, arbitrary properties and boundary peering identities are not retained. Source generation and complete estate coverage are unreported.",
+            "Repeated source observation times do not prove independent observations; differences do not establish cause.",
+        ],
     )
+
+
+@router.get("/topology/history")
+def retained_topology(context: Context, principal: CurrentPrincipal, scope: ReadScope) -> dict:
+    """Read the personal exact-effective-scope retained history without provider acquisition."""
+    return _history_response(_history_store(context).read(principal.subject, scope.to_dict()), scope)
+
+
+@router.post("/topology/history", status_code=201)
+def capture_topology(
+    payload: CaptureRequest, context: Context, principal: CurrentPrincipal, scope: ReadScope,
+) -> dict:
+    """Explicitly retain one bounded currently authorized topology projection."""
+    store = _history_store(context)
+    if store.read(principal.subject, scope.to_dict())["revision"] != payload.expected_revision:
+        raise ApiError(ErrorCode.CONFLICT, "Topology history changed; reload before capturing")
+    started = datetime.now(UTC).isoformat()
+    service = _service(context, scope)
+    try:
+        topology = service.analyze().topology.to_dict(detail="summary")
+        capture = topology_capture(
+            topology, service.snapshot.observed_at, started, datetime.now(UTC).isoformat(),
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Topology projection could not be retained; check provider coverage or narrow the scope. No capture was saved.",
+        ) from exc
+    try:
+        data = store.append(principal.subject, scope.to_dict(), payload.expected_revision, capture)
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    return _history_response(data, scope)
+
+
+@router.get("/topology/history/compare")
+def compare_topology(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope, page: Page,
+    baseline_id: Annotated[str, Query(pattern=UUID_PATTERN)],
+    target_id: Annotated[str, Query(pattern=UUID_PATTERN)],
+) -> dict:
+    """Compare two retained projections without acquiring or trusting browser topology."""
+    history = _history_store(context).read(principal.subject, scope.to_dict())
+    by_id = {row["capture_id"]: (index, row) for index, row in enumerate(history["captures"])}
+    if baseline_id not in by_id or target_id not in by_id:
+        raise ApiError(ErrorCode.NOT_FOUND, "Topology capture is not retained in this personal scope")
+    previous_index, previous = by_id[baseline_id]
+    current_index, current = by_id[target_id]
+    if previous_index >= current_index:
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Select two distinct captures in capture order")
+    changes = compare_captures(
+        TopologyCapture.model_validate(previous), TopologyCapture.model_validate(current),
+    )
+    response = _history_response({
+        "baseline_id": baseline_id, "target_id": target_id,
+        "changes": changes[page.offset:page.offset + page.limit],
+        "total": len(changes),
+        "counts": {
+            state: sum(row["change"] == state for row in changes)
+            for state in ("added", "no_longer_observed", "changed")
+        },
+    }, scope)
+    response["pagination"] = page.to_dict(len(changes))
+    return response
 
 
 def _evidence(
@@ -153,6 +356,49 @@ def _evidence(
         confidence=confidence,
         timestamp=service.snapshot.observed_at,
     )
+
+
+def _review_projection(finding, kind: ReviewKind, service: NetworkIntelligenceService, scope: Scope) -> dict:
+    try:
+        return finding_review(finding, kind, service, scope.to_dict())
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Exact Network review evidence is unavailable") from exc
+
+
+def resolve_finding_review(context: Context, scope: Scope, reference: NetworkReviewReference) -> dict:
+    """Reacquire a currently authorized finding and require its exact reviewed evidence."""
+    service = _service(context, scope)
+    analysis = service.analyze()
+    candidates = analysis.gaps if reference.kind == "gap" else analysis.rule_findings
+    for finding in candidates:
+        identity = finding.gap_id if reference.kind == "gap" else finding.finding_id
+        if identity != reference.finding_id:
+            continue
+        result = _review_projection(finding, reference.kind, service, scope)
+        if result["reviewed_digest"] != reference.reviewed_digest:
+            raise ApiError(ErrorCode.CONFLICT, "Network finding evidence changed; review the current Network finding again")
+        return result
+    raise ApiError(ErrorCode.NOT_FOUND, "Network finding was not found in the current authorized scope")
+
+
+@router.get("/review")
+def network_review(
+    context: Context, scope: ReadScope,
+    kind: Annotated[ReviewKind, Query()],
+    finding_id: Annotated[str, Query(min_length=1, max_length=256)],
+    reviewed_digest: Annotated[str, Query(pattern=DIGEST_PATTERN)],
+) -> dict:
+    """Resolve exact evidence for a separate proposed-change review without a mutation."""
+    data = resolve_finding_review(context, scope, NetworkReviewReference(
+        kind=kind, finding_id=finding_id, reviewed_digest=reviewed_digest,
+    ))
+    return envelope(data, scope=scope.to_dict(), evidence=Evidence(
+        source_engine="network.review_handoff", source_table="ontology_entities",
+        timestamp=data["source_observed_at"], confidence="unknown",
+    ), warnings=[
+        "Finding context is advisory, not a generated fix, artifact validation, approval or execution authority.",
+        "The relationship between this finding and a separately submitted change artifact must be reviewed by the operator.",
+    ])
 
 
 @router.get("/topology", summary="Hub-spoke network topology")
@@ -404,7 +650,10 @@ def network_gaps(
     }
     return envelope(
         {
-            "gaps": [gap.to_dict() for gap in visible],
+            "gaps": [
+                {**gap.to_dict(), "reviewed_digest": _review_projection(gap, "gap", service, scope)["reviewed_digest"]}
+                for gap in visible
+            ],
             # An absent design policy is a reportable state, not an error: it
             # means conformance gaps cannot be assessed, only structural ones.
             "intended_design_declared": analysis.policy.is_declared,
@@ -457,7 +706,10 @@ def rule_findings(
     )
     return envelope(
         {
-            "findings": [finding.to_dict() for finding in visible],
+            "findings": [
+                {**finding.to_dict(), "reviewed_digest": _review_projection(finding, "rule", service, scope)["reviewed_digest"]}
+                for finding in visible
+            ],
             "summary": analysis.summary(),
             "coverage": coverage,
         },

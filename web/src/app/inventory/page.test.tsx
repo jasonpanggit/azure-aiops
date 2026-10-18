@@ -1,7 +1,13 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 import { ApiError } from "@/lib/types";
+
+const navigation = vi.hoisted(() => ({ query: "" }));
+const exportApi = vi.hoisted(() => ({ current: vi.fn(), create: vi.fn(), batch: vi.fn(), cancel: vi.fn() }));
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(navigation.query),
+}));
 
 const { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping, investigate } = vi.hoisted(() => ({
   os: vi.fn(),
@@ -21,6 +27,7 @@ const { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrat
 }));
 
 vi.mock("@/lib/services", () => ({
+  inventoryExportApi: exportApi,
   inventoryApi: { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping },
   copilotApi: { investigate },
 }));
@@ -73,7 +80,73 @@ const collection = {
 };
 
 describe("Inventory OS tracer", () => {
+  it("restores all bookmarked filters and nonzero pages without resetting on mount", async () => {
+    navigation.query = "tab=software&softwareNameFilter=Widget&softwareSourceFilter=arc&softwarePage=2&softwarePageSize=50&osPage=1";
+    const view = render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+    expect(screen.getByRole("tab", { name: "Installed Software" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(software).toHaveBeenLastCalledWith({}, 100, 50, expect.objectContaining({ software_name: "Widget", source_type: "arc" })));
+    expect(os).toHaveBeenLastCalledWith({}, 20, 20, expect.any(Object));
+
+    navigation.query = "tab=azure&azurePage=1&azureTypeFilter=microsoft.web%2Fsites";
+    view.rerender(<ScopeProvider><InventoryPage /></ScopeProvider>);
+    expect(screen.getByRole("tab", { name: "Azure Inventory" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(paas).toHaveBeenLastCalledWith({}, 20, 20, expect.objectContaining({ resource_type: "microsoft.web/sites" })));
+    expect(screen.getByRole("link", { name: "Save view in URL" })).toHaveAttribute("href", "/inventory?tab=azure&azureTypeFilter=microsoft.web%2Fsites&azurePage=1");
+  });
+
+  it("uses complete server facets and aggregate counts rather than current-page rows", async () => {
+    const ubuntu = { ...collection.groups[0], key: "Ubuntu|24.04", os_name: "Ubuntu", os_version: "24.04" };
+    os.mockImplementation((_scope, _offset, _limit, filters) => Promise.resolve({
+      ...envelope({
+        ...collection, groups: filters.os_name === "Ubuntu" ? [ubuntu] : [collection.groups[0]],
+        facets: { os_name: [{ value: "Windows Server", count: 1 }, { value: "Ubuntu", count: 120 }] },
+        represented_group_count: 121, summary: { machine_count: 999 },
+      }),
+      pagination: { offset: 0, limit: 20, total: 121, next_offset: 20 },
+    }));
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+    await screen.findByText("999");
+    expect(screen.getByRole("option", { name: "Ubuntu" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by OS column" }), { target: { value: "Ubuntu" } });
+    expect(await screen.findByRole("button", { name: /View machines for Ubuntu 24.04/ })).toBeInTheDocument();
+    expect(os).toHaveBeenLastCalledWith({}, 0, 20, expect.objectContaining({ os_name: "Ubuntu" }));
+    expect(screen.getByRole("link", { name: "Save view in URL" })).toHaveAttribute("href", "/inventory?osNameFilter=Ubuntu");
+    expect(screen.getByText("All matching authorized machines")).toBeInTheDocument();
+  });
+
+  it.each(["tab=private", "subscriptionFilter=sub-b"])("withholds reads for invalid or out-of-selected-scope bookmarks: %s", (query) => {
+    os.mockClear();
+    navigation.query = query;
+    render(<ScopeProvider initialScope={{ subscription: ["sub-a"] }}><InventoryPage /></ScopeProvider>);
+    expect(screen.getByText("Inventory bookmark unavailable")).toBeInTheDocument();
+    expect(os).not.toHaveBeenCalled();
+  });
+
+  it("does not let a late group detail overwrite a reopened group in a new subscription", async () => {
+    let finish: (value: unknown) => void = () => { throw new Error("detail not started"); };
+    const pending = new Promise(resolve => { finish = resolve; });
+    const machine = {
+      resource_id: "scope-b-resource", machine_name: "scope-b-vm", source_type: "arc",
+      os_name: "Windows Server", os_version: "2019", subscription_id: "sub-b",
+      resource_group: "rg", environment: "prod", observed_at: collection.observed_at,
+      source_status: "ready", lifecycle_status: "Supported", support_end: null,
+      days_remaining: null, review_required: false, evidence: [],
+    };
+    os.mockImplementation((requestedScope) => Promise.resolve(envelope({ ...collection, requested_scope: requestedScope })));
+    osGroup.mockReturnValueOnce(pending).mockResolvedValueOnce(envelope({ group: collection.groups[0], machines: [machine] }));
+    render(<ScopeProvider initialScope={{ subscription: ["sub-a", "sub-b"] }}><InventoryPage /></ScopeProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: /View machines for Windows Server 2019/ }));
+    fireEvent.change(screen.getByLabelText("Subscription"), { target: { value: "sub-b" } });
+    fireEvent.click(await screen.findByRole("button", { name: /View machines for Windows Server 2019/ }));
+    await screen.findByText("scope-b-vm");
+    await act(async () => { finish(envelope({ group: collection.groups[0], machines: [{ ...machine, machine_name: "private-old-scope-vm" }] })); });
+    expect(screen.queryByText("private-old-scope-vm")).not.toBeInTheDocument();
+    expect(screen.getByText("scope-b-vm")).toBeInTheDocument();
+  });
+
   beforeEach(() => {
+    navigation.query = "";
+    exportApi.current.mockResolvedValue(envelope({ export: null }));
     investigate.mockResolvedValue({
       data: {
         contract_version: "1",
@@ -346,7 +419,7 @@ describe("Inventory OS tracer", () => {
     fireEvent.change(await screen.findByPlaceholderText("Name or version"), {
       target: { value: "2099" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Ask Copilot about inventory" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Ask Copilot about inventory" }));
     fireEvent.click(await screen.findByRole("button", { name: /Review visible inventory health/ }));
 
     await waitFor(() => expect(investigate).toHaveBeenCalled());
@@ -451,7 +524,10 @@ describe("Inventory OS tracer", () => {
     expect(approveMapping).toHaveBeenCalledWith("software-map://review-1", 0, {});
   });
 
-  it("renders deterministic facts and filters OS groups without changing the API scope", async () => {
+  it("renders deterministic facts and sends OS filtering to the server without changing API scope", async () => {
+    os.mockImplementation((_scope, _offset, _limit, filters) => Promise.resolve(envelope({
+      ...collection, groups: filters.q ? [collection.groups[1]] : collection.groups,
+    })));
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
     expect(await screen.findByText("Inventory risk narrative")).toBeInTheDocument();
@@ -459,7 +535,8 @@ describe("Inventory OS tracer", () => {
     expect(screen.getAllByText(/Arc · partial/).length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByPlaceholderText("Name or version"), { target: { value: "2099" } });
-    expect(screen.getByRole("button", { name: /View machines for Windows Server 2099-preview/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /View machines for Windows Server 2099-preview/ })).toBeInTheDocument();
+    expect(os).toHaveBeenLastCalledWith({}, 0, 20, expect.objectContaining({ q: "2099" }));
     expect(screen.queryByRole("button", { name: /View machines for Windows Server 2019/ })).not.toBeInTheDocument();
   });
 
@@ -579,11 +656,11 @@ describe("Inventory OS tracer", () => {
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
     expect(await screen.findByText(/of 120 OS groups/)).toBeInTheDocument();
-    expect(os).toHaveBeenCalledWith(expect.anything(), 0, 20);
+    expect(os).toHaveBeenCalledWith(expect.anything(), 0, 20, expect.any(Object));
 
     fireEvent.click(screen.getByRole("button", { name: "Next page" }));
 
-    await waitFor(() => expect(os).toHaveBeenCalledWith(expect.anything(), 20, 20));
+    await waitFor(() => expect(os).toHaveBeenCalledWith(expect.anything(), 20, 20, expect.any(Object)));
   });
 
   it("refetches from the first offset when the operator picks a larger page size", async () => {
@@ -600,7 +677,7 @@ describe("Inventory OS tracer", () => {
       target: { value: "100" },
     });
 
-    await waitFor(() => expect(os).toHaveBeenCalledWith(expect.anything(), 0, 100));
+    await waitFor(() => expect(os).toHaveBeenCalledWith(expect.anything(), 0, 100, expect.any(Object)));
   });
 
   it("lists Azure resources by type and drills into a group", async () => {
@@ -671,58 +748,17 @@ describe("Inventory OS tracer", () => {
     expect(screen.getByRole("button", { name: /View resources for Container Apps/ })).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("exports every in-scope resource, following API pagination across pages", async () => {
-    // The API caps `limit` at 500, so the export must keep requesting until
-    // next_offset is null rather than shipping only the first page.
-    resources
-      .mockResolvedValueOnce({
-        ...envelope({
-          resources: [{
-            family: "paas",
-            resource_id: "/subscriptions/sub-a/app-1",
-            resource_name: "app-1",
-            resource_type: "microsoft.app/containerapps",
-            subscription_id: "sub-a",
-            resource_group: "rg-1",
-            environment: "prod",
-          }],
-          family_availability: {},
-          requested_scope: {},
-          query_version: "inventory-resources-v1",
-        }),
-        pagination: { offset: 0, limit: 500, total: 2, next_offset: 500 },
-      })
-      .mockResolvedValueOnce({
-        ...envelope({
-          resources: [{
-            family: "os",
-            resource_id: "/subscriptions/sub-a/vm1",
-            resource_name: "vm1",
-            resource_type: "microsoft.compute/virtualmachines",
-            subscription_id: "sub-a",
-            resource_group: "rg-2",
-            environment: "dev",
-          }],
-          family_availability: {},
-          requested_scope: {},
-          query_version: "inventory-resources-v1",
-        }),
-        pagination: { offset: 500, limit: 500, total: 2, next_offset: null },
-      });
-
+  it("captures the reviewed Azure generation instead of live-paginating an export", async () => {
+    exportApi.create.mockRejectedValue(new Error("Synthetic capture stopped before persistence"));
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
     fireEvent.click(screen.getByRole("tab", { name: "Azure Inventory" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Export all resources/ }));
-
-    await waitFor(() => expect(downloadCsv).toHaveBeenCalled());
-    expect(resources).toHaveBeenCalledTimes(2);
-    expect(resources).toHaveBeenLastCalledWith(expect.anything(), 500, 500);
-
-    const [csv, filename] = downloadCsv.mock.calls[0];
-    expect(filename).toBe("azure-inventory-all-resources.csv");
-    // Both pages must survive into the export, not just the first.
-    expect(csv).toContain("app-1");
-    expect(csv).toContain("vm1");
+    const button = await screen.findByRole("button", { name: "Capture resource export" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await screen.findByText("Synthetic capture stopped before persistence");
+    expect(exportApi.create).toHaveBeenCalledWith({}, "gen-1");
+    expect(resources).not.toHaveBeenCalled();
+    expect(downloadCsv).not.toHaveBeenCalled();
   });
 
   it("explains how to load inventory when the API provider has no snapshot", async () => {

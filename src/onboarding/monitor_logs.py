@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -204,10 +207,57 @@ class AzureMonitorLogsClient:
             "ContainerImageInventory",
         )
 
+    def query_request_telemetry(self, resource_id: str, window_hours: int) -> dict[str, Any]:
+        """Read only fixed aggregate AppRequests for one server-authorized component.
+
+        Resource authorization belongs to the API's current Inventory projection;
+        this adapter additionally rejects unsafe addresses before credential access.
+        No KQL, workspace selection, raw requests or cross-resource inputs are accepted.
+        """
+        from operations.service_reliability import component_id
+
+        identity = component_id(resource_id)
+        if type(window_hours) is not int or window_hours not in {1, 24, 168}:
+            raise ValueError("Select a supported request telemetry window")
+        end = datetime.now(UTC)
+        start = end - timedelta(hours=window_hours)
+        started_at, finished_at = start.isoformat(), end.isoformat()
+        start_literal = started_at.replace("+00:00", "Z")
+        end_literal = finished_at.replace("+00:00", "Z")
+        query = f"""
+AppRequests
+| where TimeGenerated >= datetime({start_literal}) and TimeGenerated < datetime({end_literal})
+| where _ResourceId =~ {json.dumps(identity)}
+| summarize record_count=count(),
+    represented_count=sumif(ItemCount, ItemCount > 0),
+    failed_count=sumif(ItemCount, Success == false and ItemCount > 0),
+    unknown_success_records=countif(isnull(Success)),
+    invalid_weight_records=countif(isnull(ItemCount) or ItemCount < 1),
+    sampled_records=countif(ItemCount > 1),
+    invalid_duration_records=countif(isnull(DurationMs) or DurationMs < 0),
+    p95_duration_ms=percentile(iff(DurationMs >= 0, DurationMs, real(null)), 95),
+    first_observed_at=min(TimeGenerated), last_observed_at=max(TimeGenerated)
+""".strip()
+        rows = self._request(
+            f"https://api.loganalytics.azure.com/v1{quote(identity, safe='/')}/query",
+            query, "component request telemetry", require_complete=True,
+        )
+        if len(rows) != 1:
+            raise ValueError("Request telemetry must contain exactly one aggregate")
+        return {
+            "resource_id": identity, "window_started_at": started_at,
+            "window_finished_at": finished_at, "aggregate": rows[0],
+        }
+
     def _execute(
         self, workspace_id: str, query: str, label: str
     ) -> list[dict[str, Any]]:
         workspace = _validated_workspace_id(workspace_id)
+        return self._request(self.endpoint_template.format(workspace_id=workspace), query, label)
+
+    def _request(
+        self, endpoint: str, query: str, label: str, *, require_complete: bool = False,
+    ) -> list[dict[str, Any]]:
         token = self.credential.get_token(LOGS_QUERY_SCOPE)
         access_token = getattr(token, "token", "")
         if not access_token:
@@ -215,7 +265,7 @@ class AzureMonitorLogsClient:
 
         response = self.requester(
             "POST",
-            self.endpoint_template.format(workspace_id=workspace),
+            endpoint,
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
@@ -223,6 +273,8 @@ class AzureMonitorLogsClient:
             json={"query": query},
             timeout=self.limits.timeout_seconds,
         )
+        if require_complete and response.status_code != 200:
+            raise RuntimeError("Request telemetry query was incomplete or unavailable")
         if response.status_code >= 400:
             detail = response.text.strip()[:512] or f"HTTP {response.status_code}"
             raise RuntimeError(f"Logs {label} query failed: {detail}")
@@ -233,6 +285,8 @@ class AzureMonitorLogsClient:
             payload = response.json()
         except ValueError as exc:
             raise RuntimeError(f"Logs {label} response was not valid JSON") from exc
+        if require_complete and (not isinstance(payload, dict) or "error" in payload):
+            raise RuntimeError("Request telemetry query was incomplete or unavailable")
         return parse_logs_tables(payload, max_rows=self.limits.max_rows)
 
 

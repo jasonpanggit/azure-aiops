@@ -63,6 +63,8 @@ export interface UseExposureSectionOptions<T> {
     queryKey: string;
   }) => Promise<Envelope<T, ExposureCursorPagination>>;
   refreshKey?: string | number;
+  /** Defers acquisition and hides retained evidence until prerequisites are ready. */
+  enabled?: boolean;
   isEmpty?: (data: T) => boolean;
 }
 
@@ -250,6 +252,7 @@ export function useExposureSection<T>({
   retentionKey = queryKey,
   load,
   refreshKey = 0,
+  enabled = true,
   isEmpty = defaultIsEmpty,
 }: UseExposureSectionOptions<T>): ExposureSectionResult<T> {
   const [requestState, setRequestState] = useState<RequestState<T>>({
@@ -272,6 +275,7 @@ export function useExposureSection<T>({
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     const controller = new AbortController();
@@ -318,14 +322,14 @@ export function useExposureSection<T>({
     return () => {
       controller.abort();
     };
-  }, [queryKey, retentionKey, refreshKey, retryNonce]);
+  }, [queryKey, retentionKey, refreshKey, retryNonce, enabled]);
 
   const activeEnvelope =
-    requestState.retentionKey === retentionKey ? requestState.envelope : null;
+    enabled && requestState.retentionKey === retentionKey ? requestState.envelope : null;
   const activeError =
-    requestState.queryKey === queryKey ? requestState.error : null;
+    enabled && requestState.queryKey === queryKey ? requestState.error : null;
   const loading =
-    requestState.queryKey !== queryKey || requestState.loading;
+    !enabled || requestState.queryKey !== queryKey || requestState.loading;
   const retained = Boolean(activeEnvelope && activeError);
   const status: ExposureSectionStatus = (() => {
     if (activeError) return activeEnvelope ? "stale" : "unavailable";

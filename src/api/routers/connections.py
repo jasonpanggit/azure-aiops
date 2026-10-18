@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Query, Response
 
 from ..dependencies import Context, OperatePrincipal, Page, ReadScope, WritePrincipal
-from ..errors import not_found
+from ..errors import ApiError, ErrorCode, not_found
 from ..evidence import CONFIDENCE_HIGH, Evidence, envelope
 from ..models import (
     ConnectionCreateRequest,
@@ -145,6 +145,33 @@ def create_connection(
     return envelope(
         lifecycle,
         evidence=_evidence(payload.connection_id),
+        scope=scope.to_dict(),
+    )
+
+
+@router.post("/preflight", summary="Preview proposed connection permissions without persistence")
+def preflight_connection(
+    payload: ConnectionCreateRequest,
+    context: Context,
+    principal: WritePrincipal,
+) -> dict[str, Any]:
+    """Run read-only SPN checks after authorizing the complete proposed scope."""
+    scope = _authorize_action(context, principal, ACTION_WRITE, {
+        "connection_id": payload.connection_id, "subscription_id": payload.subscription_id,
+        **payload.metadata.model_dump(),
+    })
+    if payload.credential.secret_ref or payload.credential.kind != "service_principal":
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Preflight requires a one-time service principal secret, not a stored reference")
+    if context.onboarding.preflight_validator_factory is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Read-only connection preflight is not configured")
+    report = context.onboarding.preflight(
+        connection_id=payload.connection_id, tenant_id=payload.tenant_id,
+        subscription_id=payload.subscription_id, client_id=payload.credential.client_id,
+        client_secret=payload.credential.client_secret,
+    )
+    return envelope(
+        report,
+        evidence=Evidence(source_engine="onboarding.ConnectionValidator", source_table="connection_access_preflight", timestamp=report["checked_at"], confidence=CONFIDENCE_HIGH),
         scope=scope.to_dict(),
     )
 

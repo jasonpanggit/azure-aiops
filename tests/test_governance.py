@@ -158,6 +158,27 @@ def test_advisor_opportunities_for_different_resources_are_not_merged():
     assert {item.resource_id for item in opportunities} == {"/subscriptions/sub-a", "/subscriptions/sub-b"}
 
 
+def test_identical_advisor_opportunities_in_different_currencies_are_not_merged():
+    usd = _advisor_row("/vm/a", savings=500.0)
+    eur = {
+        **usd,
+        "properties": {
+            "extendedProperties": {
+                "annualSavingsAmount": 600.0,
+                "savingsCurrency": "eur",
+            }
+        },
+    }
+
+    opportunities = FinOpsEngine(advisor_recommendations=[usd, eur]).savings_opportunities()
+
+    assert len(opportunities) == 2
+    assert {(item.annual_savings, item.currency) for item in opportunities} == {
+        (500.0, "USD"),
+        (600.0, "EUR"),
+    }
+
+
 def test_non_cost_advisor_recommendations_are_ignored():
     engine = FinOpsEngine(
         advisor_recommendations=[
@@ -177,8 +198,18 @@ def test_summary_never_invents_spend_and_names_what_is_unavailable():
     assert summary["currency"] == "USD"
     unavailable = {item["metric"] for item in summary["unavailable_metrics"]}
     # The whole point: actual spend is absent, and said to be absent.
-    assert unavailable == {"actual_spend", "cost_forecast", "cost_anomaly"}
+    assert unavailable == {
+        "actual_spend",
+        "realized_savings",
+        "cost_forecast",
+        "cost_anomaly",
+    }
     assert all(item["reason"] for item in summary["unavailable_metrics"])
+    realized = next(
+        item for item in summary["unavailable_metrics"]
+        if item["metric"] == "realized_savings"
+    )
+    assert "does not establish causality" in realized["reason"]
 
 
 def test_summary_uses_cost_management_actuals_when_available():
@@ -197,7 +228,7 @@ def test_summary_uses_cost_management_actuals_when_available():
     assert summary["actual_spend_period_end"] == "2026-01-15"
     unavailable = {item["metric"] for item in summary["unavailable_metrics"]}
     assert "actual_spend" not in unavailable
-    assert unavailable == {"cost_forecast", "cost_anomaly"}
+    assert unavailable == {"realized_savings", "cost_forecast", "cost_anomaly"}
 
 
 def test_mixed_currency_totals_are_labelled_rather_than_summed_silently():
@@ -215,7 +246,39 @@ def test_mixed_currency_totals_are_labelled_rather_than_summed_silently():
             },
         ]
     )
-    assert engine.summary()["currency"] == "mixed"
+    summary = engine.summary()
+    assert summary["currency"] == "mixed"
+    assert summary["identified_annual_savings"] is None
+    assert summary["identified_annual_savings_currency_totals"] == [
+        {"currency": "EUR", "amount": 200.0, "count": 1},
+        {"currency": "USD", "amount": 100.0, "count": 1},
+    ]
+    assert any(
+        item["metric"] == "identified_annual_savings"
+        for item in summary["unavailable_metrics"]
+    )
+
+
+def test_mixed_or_unreported_cost_currencies_are_not_combined():
+    summary = FinOpsEngine(
+        cost_actuals=[
+            _cost_row("/vm/a", cost=12.25, usage_date="2026-01-14", currency="usd"),
+            _cost_row("/vm/b", cost=17.75, usage_date="2026-01-15", currency="EUR"),
+            _cost_row("/vm/c", cost=4.0, usage_date="2026-01-16", currency=""),
+        ]
+    ).summary()
+
+    assert summary["actual_spend"] is None
+    assert summary["actual_spend_currency"] == "mixed"
+    assert summary["actual_spend_currency_totals"] == [
+        {"currency": "EUR", "amount": 17.75, "count": 1},
+        {"currency": "USD", "amount": 12.25, "count": 1},
+        {"currency": "unreported", "amount": None, "count": 1},
+    ]
+    assert any(
+        item["metric"] == "actual_spend"
+        for item in summary["unavailable_metrics"]
+    )
 
 
 def test_waste_detects_unattached_disks_and_deallocated_vms():
@@ -299,7 +362,11 @@ def test_unattributed_savings_are_labelled_not_dropped():
     )
     groups = engine.by_dimension("application")
     assert groups[0]["application"] == "unattributed"
-    assert groups[0]["identified_annual_savings"] == 50.0
+    assert groups[0]["identified_annual_savings"] is None
+    assert groups[0]["currency"] == "unreported"
+    assert groups[0]["identified_annual_savings_currency_totals"] == [
+        {"currency": "unreported", "amount": None, "count": 1},
+    ]
 
 
 def test_unsupported_finops_dimension_is_rejected():
@@ -317,7 +384,7 @@ def test_malformed_savings_values_do_not_become_fake_numbers():
         ]
     )
     assert engine.savings_opportunities()[0].annual_savings is None
-    assert engine.summary()["identified_annual_savings"] == 0.0
+    assert engine.summary()["identified_annual_savings"] is None
     assert engine.summary()["quantified_opportunity_count"] == 0
 
 
@@ -447,6 +514,182 @@ def test_assignment_without_timestamp_is_not_assumed_stale():
     )
     assert engine.stale_access() == []
     assert engine.principals()[0].stale is False
+
+
+@pytest.mark.parametrize("timestamp", ["", "not-a-clock", "2026-01-14T00:00:00", "2026-01-16T00:00:00Z"])
+def test_identity_unknown_age_is_explicit_not_current_or_stale(timestamp):
+    assignment = {**_assignment("a1", principal="p1", role="/roles/owner"), "updatedOn": timestamp, "createdOn": ""}
+    engine = _identity_engine(role_assignments=[assignment])
+    evidence = engine.principals()[0].to_dict()["risk_evidence"]
+    assert evidence["unknown_age_assignments"] == 1
+    assert evidence["stale_assignments"] == 0
+    assert evidence["age_evaluated_at"] == NOW.isoformat()
+    assert engine.stale_access() == []
+    assert engine.subscription_owners() == []  # Resource-group owner, not a subscription owner.
+
+
+def test_identity_unresolved_role_and_unknown_age_cannot_be_masked_by_recent_sibling():
+    assignments = [
+        _assignment("recent", principal="p1"),
+        {**_assignment("unknown", principal="p1", role="/roles/missing"), "updatedOn": ""},
+        _assignment("old", principal="p1", changed=NOW - timedelta(days=200)),
+    ]
+    evidence = _identity_engine(role_assignments=assignments).principals()[0].to_dict()["risk_evidence"]
+    assert evidence == {
+        "classification": "incomplete", "unresolved_role_assignments": 1,
+        "unknown_age_assignments": 1, "stale_assignments": 1,
+        "age_evaluated_at": NOW.isoformat(), "effective_access": "not_evaluated",
+    }
+
+
+@pytest.mark.parametrize("actions", [None, [], "*/read", [None], [""]])
+def test_identity_unusable_action_evidence_is_not_standard_access(actions):
+    engine = _identity_engine(
+        role_assignments=[_assignment("a1", principal="p1")],
+        role_definitions=[{**_definition("/roles/reader", "Reader"), "actions": actions}],
+    )
+    evidence = engine.principals()[0].to_dict()["risk_evidence"]
+    assert evidence["classification"] == "incomplete"
+    assert evidence["unresolved_role_assignments"] == 1
+
+
+def test_identity_privileged_heuristic_remains_qualified_with_unknown_sibling():
+    engine = _identity_engine(role_assignments=[
+        _assignment("owner", principal="p1", role="/roles/owner", scope="/subscriptions/sub-a"),
+        _assignment("missing", principal="p1", role="/roles/missing"),
+    ])
+    evidence = engine.principals()[0].to_dict()["risk_evidence"]
+    assert evidence["classification"] == "privileged_signal"
+    assert evidence["unresolved_role_assignments"] == 1
+    assert evidence["effective_access"] == "not_evaluated"
+    assert engine.subscription_owners()[0]["age_state"] == "within_review_window"
+
+
+def test_identity_known_role_has_no_classified_signal_not_effective_access_assurance():
+    evidence = _identity_engine(role_assignments=[_assignment("a1", principal="p1")]).principals()[0].risk_evidence
+    assert evidence["classification"] == "no_classified_signal"
+    assert evidence["unresolved_role_assignments"] == 0
+    assert evidence["effective_access"] == "not_evaluated"
+
+
+def test_least_privilege_review_explains_broad_and_elevated_grants():
+    engine = _identity_engine(
+        role_assignments=[
+            _assignment(
+                "owner-grant",
+                principal="p-owner",
+                role="/roles/owner",
+                scope="/subscriptions/sub-a",
+            ),
+            _assignment(
+                "reader-grant",
+                principal="p-reader",
+                scope="/subscriptions/sub-a/resourceGroups/rg1",
+            ),
+        ]
+    )
+
+    review = engine.least_privilege_review()
+
+    assert review["effective_access"] == "not_evaluated"
+    assert review["assignment_count"] == 2
+    assert review["candidate_count"] == 2
+    owner = review["candidates"][0]
+    assert owner["assignment_id"] == "owner-grant"
+    assert owner["scope_breadth"] == "subscription"
+    assert "broad_subscription_scope" in owner["review_reasons"]
+    assert "elevated_role_or_action_heuristic" in owner["review_reasons"]
+    assert "Do not change access from this advisory alone." in owner["recommendation"]
+    assert review["coverage"]["group_membership"] == "not_collected"
+    assert review["coverage"]["deny_assignments"] == "not_collected"
+    assert review["coverage"]["role_conditions"] == "presence_only_not_evaluated"
+
+
+def test_least_privilege_review_includes_all_permission_blocks_and_condition_state():
+    assignment = {
+        **_assignment("conditional", principal="p1", scope="/subscriptions/sub-a/resourceGroups/rg1"),
+        "properties": {"condition": "@Resource[name] StringEquals 'prod'"},
+    }
+    definition = {
+        "id": "/roles/custom",
+        "roleName": "Custom Data Operator",
+        "properties": {
+            "permissions": [
+                {"actions": ["Microsoft.Storage/storageAccounts/read"], "notActions": ["Microsoft.Storage/*/delete"]},
+                {"dataActions": ["Microsoft.Storage/storageAccounts/blobServices/containers/blobs/*"]},
+            ]
+        },
+    }
+    review = _identity_engine(
+        role_assignments=[{**assignment, "roleDefinitionId": "/roles/custom"}],
+        role_definitions=[definition],
+    ).least_privilege_review()
+
+    candidate = review["candidates"][0]
+    profile = candidate["permission_profile"]
+    assert profile["actions"]["patterns"] == ["Microsoft.Storage/storageAccounts/read"]
+    assert profile["not_actions"]["patterns"] == ["Microsoft.Storage/*/delete"]
+    assert profile["data_actions"]["patterns"] == [
+        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/*"
+    ]
+    assert profile["wildcard_pattern_count"] == 2
+    assert candidate["condition_state"] == "present"
+    assert review["coverage"]["conditional_assignments_observed"] == 1
+    assert review["coverage"]["effective_access"] == "not_evaluated"
+
+
+def test_least_privilege_review_marks_unresolved_role_and_unknown_age():
+    assignment = {
+        **_assignment(
+            "missing",
+            principal="p1",
+            role="/roles/missing",
+            scope="/subscriptions/sub-a",
+        ),
+        "updatedOn": "",
+    }
+    review = _identity_engine(role_assignments=[assignment]).least_privilege_review()
+
+    assert review["candidate_count"] == 1
+    assert review["coverage"]["role_definitions_resolved"] == 0
+    assert review["coverage"]["assignment_age_unknown"] == 1
+    assert set(review["candidates"][0]["review_reasons"]) == {
+        "broad_subscription_scope",
+        "assignment_change_age_unknown",
+        "role_definition_or_permissions_unresolved",
+    }
+
+
+def test_least_privilege_review_marks_missing_scope_without_inventing_breadth():
+    assignment = {
+        **_assignment("scope-missing", principal="p1", scope=""),
+        "updatedOn": NOW.isoformat(),
+    }
+    review = _identity_engine(role_assignments=[assignment]).least_privilege_review()
+
+    assert review["candidate_count"] == 1
+    assert review["candidates"][0]["scope_breadth"] == "unknown"
+    assert set(review["candidates"][0]["review_reasons"]) == {
+        "assignment_scope_unknown",
+        "wildcard_permission_patterns",
+    }
+    assert review["coverage"]["assignment_scope_unknown"] == 1
+
+
+def test_least_privilege_review_paginates_candidates_without_dropping_total():
+    engine = _identity_engine(
+        role_assignments=[
+            _assignment(f"a{index}", principal=f"p{index}", scope="/subscriptions/sub-a")
+            for index in range(3)
+        ]
+    )
+
+    review = engine.least_privilege_review(offset=1, limit=1)
+
+    assert review["candidate_count"] == 3
+    assert review["offset"] == 1
+    assert review["limit"] == 1
+    assert len(review["candidates"]) == 1
 
 
 def test_subscription_owners_exclude_resource_group_owners():
@@ -669,7 +912,10 @@ def test_default_settings_are_conservative():
 
 def test_settings_update_merges_over_defaults():
     store = EnterpriseSettingsStore()
-    result = store.update({"retention_policy": {"audit_log_days": 30}})
+    result = store.update(
+        {"retention_policy": {"audit_log_days": 30}},
+        expected_revision=0, reason="Review retention", actor="admin@example.com",
+    )
     assert result["retention_policy"]["audit_log_days"] == 30
     # Untouched keys in the same section survive the partial update.
     assert result["retention_policy"]["estate_snapshot_days"] == 365
@@ -792,7 +1038,11 @@ def test_has_identity_data_distinguishes_empty_from_unsynced():
 # --------------------------------------------------------------------------
 
 
-def _client(tmp_path, snapshot: GovernanceSnapshot | None = None):
+def _client(
+    tmp_path,
+    snapshot: GovernanceSnapshot | None = None,
+    execution_records: list[dict] | None = None,
+):
     principals = {
         ADMIN_TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),)),
         READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),)),
@@ -803,6 +1053,9 @@ def _client(tmp_path, snapshot: GovernanceSnapshot | None = None):
         authorizer=Authorizer(),
         telemetry=ApiTelemetry(),
         governance_provider=lambda: snapshot,
+        execution_record_reader=(
+            (lambda: execution_records) if execution_records is not None else None
+        ),
         settings_store=EnterpriseSettingsStore(),
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
@@ -1082,6 +1335,7 @@ def test_raw_connection_generation_serves_every_governance_section_without_ontol
         "/api/v1/governance/finops/attribution": ("count", 1),
         "/api/v1/governance/identity/summary": ("assignment_count", 1),
         "/api/v1/governance/identity/principals": ("count", 1),
+        "/api/v1/governance/identity/least-privilege": ("candidate_count", 1),
         "/api/v1/governance/identity/non-human": ("count", 2),
         "/api/v1/governance/identity/stale-access": ("count", 1),
         "/api/v1/governance/identity/subscription-owners": ("count", 1),
@@ -1910,6 +2164,34 @@ def test_identity_summary_returns_evidence_and_scope(tmp_path):
     assert "scope" in body
 
 
+def test_identity_least_privilege_is_scoped_paginated_and_qualified(tmp_path):
+    client = _client(tmp_path, snapshot=_snapshot())
+
+    response = client.get(
+        "/api/v1/governance/identity/least-privilege?subscription=sub-a&offset=0&limit=1",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["candidate_count"] == 1
+    assert body["data"]["limit"] == 1
+    assert body["data"]["effective_access"] == "not_evaluated"
+    assert body["data"]["candidates"][0]["principal_id"] == "p-a"
+    assert body["scope"]["subscription"] == ["sub-a"]
+    assert body["evidence"][0]["source_engine"].endswith("IdentityRiskEngine")
+
+
+@pytest.mark.parametrize("query", ["offset=-1", "limit=0", "limit=101"])
+def test_identity_least_privilege_rejects_invalid_pagination(tmp_path, query):
+    response = _client(tmp_path, snapshot=_snapshot()).get(
+        f"/api/v1/governance/identity/least-privilege?{query}",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 400
+
+
 def test_empty_identity_data_is_warned_about_not_silently_empty(tmp_path):
     client = _client(tmp_path, snapshot=GovernanceSnapshot([], observed_at="2026-01-01T00:00:00Z"))
     response = client.get("/api/v1/governance/identity/principals", headers=_headers())
@@ -1917,6 +2199,13 @@ def test_empty_identity_data_is_warned_about_not_silently_empty(tmp_path):
     body = response.json()
     assert body["data"]["count"] == 0
     assert any("not a statement" in warning.lower() for warning in body["warnings"])
+
+
+def test_role_definitions_alone_do_not_claim_role_assignment_coverage(tmp_path):
+    snapshot = GovernanceSnapshot([_entity("RoleDefinition", "/roles/reader", _definition("/roles/reader", "Reader"))])
+    body = _client(tmp_path, snapshot).get("/api/v1/governance/identity/summary", headers=_headers()).json()
+    assert body["data"]["assignment_count"] == 0
+    assert any("No role assignment data" in warning for warning in body["warnings"])
 
 
 def test_governance_snapshot_warnings_reach_finops_and_identity_routes(tmp_path):
@@ -1987,8 +2276,190 @@ def test_finops_summary_exposes_unavailable_metrics(tmp_path):
     client = _client(tmp_path, snapshot=_snapshot())
     response = client.get("/api/v1/governance/finops/summary", headers=_headers())
     assert response.status_code == 200
-    metrics = {item["metric"] for item in response.json()["data"]["unavailable_metrics"]}
+    unavailable = response.json()["data"]["unavailable_metrics"]
+    metrics = {item["metric"] for item in unavailable}
     assert "actual_spend" in metrics
+    realized = next(item for item in unavailable if item["metric"] == "realized_savings")
+    assert "does not establish causality" in realized["reason"]
+
+
+def test_finops_cost_comparison_requires_clean_in_scope_execution_and_complete_windows(
+    tmp_path,
+):
+    target = (
+        "/subscriptions/sub-a/resourceGroups/rg/providers/"
+        "Microsoft.Compute/virtualMachines/vm-a"
+    )
+    costs = []
+    for day in range(1, 8):
+        costs.append(
+            _entity(
+                "CostActual",
+                f"/cost/{day}",
+                {
+                    "subscriptionId": "sub-a",
+                    "targetResourceId": target,
+                    "resourceId": target,
+                    "usageDate": f"2026-06-{day:02}",
+                    "cost": 10,
+                    "currency": "USD",
+                    "sourceSystem": "azure:CostManagement",
+                },
+            )
+        )
+    for day in range(14, 21):
+        costs.append(
+            _entity(
+                "CostActual",
+                f"/cost/{day}",
+                {
+                    "subscriptionId": "sub-a",
+                    "targetResourceId": target,
+                    "resourceId": target,
+                    "usageDate": f"2026-06-{day:02}",
+                    "cost": 5,
+                    "currency": "USD",
+                    "sourceSystem": "azure:CostManagement",
+                },
+            )
+        )
+    execution = {
+        "execution_id": "execution-a",
+        "status": "succeeded",
+        "scope_attributes": {"subscription": "sub-a"},
+        "execution_snapshot": {"target_id": target},
+        "evidence_reconciliation": {
+            "status": "reconciled_clean",
+            "assessed_at": "2026-06-11T12:00:00Z",
+        },
+        "history": [
+            {"status": "succeeded", "timestamp": "2026-06-10T10:00:00Z"}
+        ],
+    }
+    client = _client(
+        tmp_path,
+        snapshot=GovernanceSnapshot(costs, observed_at="2026-06-21T00:00:00Z"),
+        execution_records=[execution],
+    )
+
+    response = client.get(
+        "/api/v1/governance/finops/remediation-cost-comparison",
+        params={
+            "subscription": "sub-a",
+            "execution_id": "execution-a",
+            "baseline_start": "2026-06-01",
+            "baseline_end": "2026-06-07",
+            "followup_start": "2026-06-14",
+            "followup_end": "2026-06-20",
+        },
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["available"] is True
+    assert result["baseline"]["total_cost"] == 70
+    assert result["followup"]["total_cost"] == 35
+    assert result["observed_average_daily_cost_change"] == 5
+    assert result["currency"] == "USD"
+    assert result["coverage"]["baseline_days_observed"] == 7
+    assert result["coverage"]["followup_days_observed"] == 7
+    assert any("not realized" in item for item in result["limitations"])
+
+
+def test_finops_cost_comparison_fails_closed_for_out_of_scope_execution_and_gaps(
+    tmp_path,
+):
+    target = "/subscriptions/sub-b/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-b"
+    execution = {
+        "execution_id": "execution-b",
+        "status": "succeeded",
+        "scope_attributes": {"subscription": "sub-b"},
+        "execution_snapshot": {"target_id": target},
+        "evidence_reconciliation": {
+            "status": "reconciled_clean",
+            "assessed_at": "2026-06-11T12:00:00Z",
+        },
+        "history": [{"status": "succeeded", "timestamp": "2026-06-10T10:00:00Z"}],
+    }
+    client = _client(
+        tmp_path,
+        snapshot=GovernanceSnapshot([], observed_at="2026-06-21T00:00:00Z"),
+        execution_records=[execution],
+    )
+    params = {
+        "execution_id": "execution-b",
+        "baseline_start": "2026-06-01",
+        "baseline_end": "2026-06-07",
+        "followup_start": "2026-06-14",
+        "followup_end": "2026-06-20",
+    }
+
+    hidden = client.get(
+        "/api/v1/governance/finops/remediation-cost-comparison",
+        params={"subscription": "sub-a", **params},
+        headers=_headers(),
+    )
+    assert hidden.status_code == 404
+
+    scoped = client.get(
+        "/api/v1/governance/finops/remediation-cost-comparison",
+        params={"subscription": "sub-b", **params},
+        headers=_headers(),
+    )
+    assert scoped.status_code == 200
+    assert scoped.json()["data"]["available"] is False
+    assert scoped.json()["data"]["coverage"]["followup_days_observed"] == 0
+
+
+def test_finops_verified_remediations_excludes_unclean_or_unscoped_records(tmp_path):
+    records = [
+        {
+            "execution_id": "verified",
+            "status": "succeeded",
+            "scope_attributes": {"subscription": "sub-a"},
+            "execution_snapshot": {"target_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm"},
+            "evidence_reconciliation": {
+                "status": "reconciled_clean",
+                "assessed_at": "2026-06-11T12:00:00Z",
+            },
+            "history": [{"status": "succeeded", "timestamp": "2026-06-10T10:00:00Z"}],
+        },
+        {
+            "execution_id": "unclean",
+            "status": "succeeded",
+            "scope_attributes": {"subscription": "sub-a"},
+            "execution_snapshot": {"target_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm"},
+            "evidence_reconciliation": {"status": "reconciled_incomplete"},
+            "history": [{"status": "succeeded", "timestamp": "2026-06-10T10:00:00Z"}],
+        },
+        {
+            "execution_id": "outside",
+            "status": "succeeded",
+            "scope_attributes": {"subscription": "sub-b"},
+            "execution_snapshot": {"target_id": "/subscriptions/sub-b/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm"},
+            "evidence_reconciliation": {
+                "status": "reconciled_clean",
+                "assessed_at": "2026-06-11T12:00:00Z",
+            },
+            "history": [{"status": "succeeded", "timestamp": "2026-06-10T10:00:00Z"}],
+        },
+    ]
+    client = _client(
+        tmp_path,
+        snapshot=_snapshot(),
+        execution_records=records,
+    )
+
+    response = client.get(
+        "/api/v1/governance/finops/verified-remediations?subscription=sub-a",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert [item["execution_id"] for item in response.json()["data"]["executions"]] == [
+        "verified"
+    ]
 
 
 def test_access_review_pack_is_served_per_audience(tmp_path):
@@ -2038,7 +2509,8 @@ def test_admin_can_update_settings(tmp_path):
     client = _client(tmp_path)
     response = client.patch(
         "/api/v1/governance/settings",
-        json={"retention_policy": {"audit_log_days": 30}},
+        json={"expected_revision": 0, "reason": "Review retention",
+              "changes": {"retention_policy": {"audit_log_days": 30}}},
         headers=_headers(ADMIN_TOKEN),
     )
     assert response.status_code == 200
@@ -2049,7 +2521,8 @@ def test_invalid_settings_update_is_rejected_with_a_clear_error(tmp_path):
     client = _client(tmp_path)
     response = client.patch(
         "/api/v1/governance/settings",
-        json={"retention_policy": {"audit_log_days": 999999}},
+        json={"expected_revision": 0, "reason": "Review retention",
+              "changes": {"retention_policy": {"audit_log_days": 999999}}},
         headers=_headers(ADMIN_TOKEN),
     )
     assert response.status_code == 400

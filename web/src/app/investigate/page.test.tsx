@@ -1,6 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ScopeProvider } from "@/lib/scope-context";
+import { ScopeProvider, useScope } from "@/lib/scope-context";
+import { SCOPE_DIMENSIONS, type ScopeSelection } from "@/lib/scope";
+import type { ThreadContinuityContextValue } from "@/lib/copilot/thread-context";
+
+const navigation = vi.hoisted(() => ({ query: "" }));
+const continuity = vi.hoisted<{ value: ThreadContinuityContextValue | null }>(() => ({ value: null }));
 
 const {
   businessService,
@@ -35,7 +40,11 @@ const {
 }));
 
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => new URLSearchParams("type=BusinessService&value=Payments"),
+  useSearchParams: () => new URLSearchParams(navigation.query),
+}));
+
+vi.mock("@/lib/copilot/thread-context", () => ({
+  useOptionalThreadContinuity: () => continuity.value,
 }));
 
 vi.mock("@/components/network/TopologyWorkspace", () => ({
@@ -87,9 +96,15 @@ const envelope = <T,>(data: T) => ({
   source_status: { ARG: "live" },
 });
 
-function renderWorkspace() {
+function ScopeSwitcher() {
+  const { setScope } = useScope();
+  return <button onClick={() => setScope({ subscription: ["sub-b"] })}>Switch operating scope</button>;
+}
+
+function renderWorkspace(initialScope?: ScopeSelection) {
   return render(
-    <ScopeProvider>
+    <ScopeProvider initialScope={initialScope}>
+      <ScopeSwitcher />
       <InvestigationWorkspacePage />
     </ScopeProvider>
   );
@@ -97,6 +112,9 @@ function renderWorkspace() {
 
 describe("Executive Investigation Workspace", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
+    navigation.query = "type=BusinessService&value=Payments";
+    continuity.value = null;
     window.localStorage.clear();
     businessService.mockResolvedValue(envelope({
       subject: { name: "Payments", owner: "Payments SRE", entity_type: "business_service" },
@@ -256,5 +274,195 @@ describe("Executive Investigation Workspace", () => {
         call.some((value) => String(value).includes("same key"))),
     ).toBe(false);
     consoleError.mockRestore();
+  });
+
+  it.each([
+    "type=Unknown", "mode=unsupported", "mode=", "type=CVE&type=Incident",
+    "value=one&value=two", "mode=engineer&mode=executive", "value=bad%0Avalue",
+    `value=${"x".repeat(513)}`,
+    "workspace_id=invalid", `workspace_id=wrk-${"a".repeat(32)}&workspace_revision=0`,
+    `workspace_id=wrk-${"a".repeat(32)}&workspace_revision=41`, "workspace_revision=1",
+    `workspace_id=wrk-${"a".repeat(32)}&workspace_revision=01`,
+    `workspace_id=wrk-${"a".repeat(32)}&workspace_revision=1&workspace_revision=2`,
+  ])("rejects malformed entry bookmarks before loading sources: %s", async query => {
+    navigation.query = query;
+    renderWorkspace();
+    expect(screen.getByText("Investigation bookmark unavailable")).toBeInTheDocument();
+    expect(incidents).not.toHaveBeenCalled();
+    expect(businessService).not.toHaveBeenCalled();
+    expect(investigateCanonical).not.toHaveBeenCalled();
+  });
+
+  it.each(SCOPE_DIMENSIONS)("passes bookmarked %s to every source and Copilot", async dimension => {
+    navigation.query += `&${dimension}=narrow`;
+    renderWorkspace();
+    await screen.findByText("Patch payment servers");
+    const effective = { [dimension]: ["narrow"] };
+    for (const source of [incidents, topology, gaps, ruleFindings, summary, exposures, remediationPlans]) {
+      expect(source.mock.calls[0][0]).toEqual(effective);
+    }
+    expect(businessService).toHaveBeenCalledWith("Payments", effective);
+    fireEvent.click(screen.getByRole("button", { name: "Generate conclusion" }));
+    await screen.findByText(/approve patch plan-1/i);
+    expect(investigateCanonical.mock.calls[0][0].requested_scope).toEqual(effective);
+    expect(investigateCanonical.mock.calls[0][1]).toEqual(effective);
+  });
+
+  it.each(SCOPE_DIMENSIONS)("rejects a bookmarked %s outside the current selection", dimension => {
+    navigation.query += `&${dimension}=outside`;
+    renderWorkspace({ [dimension]: ["permitted"] });
+    expect(screen.getByText("Investigation bookmark unavailable")).toBeInTheDocument();
+    expect(incidents).not.toHaveBeenCalled();
+  });
+
+  it("preserves all nine scope dimensions in shared links without executing Copilot", async () => {
+    const scope = Object.fromEntries(SCOPE_DIMENSIONS.map(dimension => [dimension, [`${dimension}-a`, `${dimension}-b`]]));
+    renderWorkspace(scope);
+    await screen.findByText("Patch payment servers");
+    const copy = vi.fn().mockResolvedValue(undefined);
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copy } });
+    const originalUrl = window.location.href;
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Copy current entry link" }));
+      await waitFor(() => expect(copy).toHaveBeenCalledOnce());
+      const shared = new URL(copy.mock.calls[0][0]);
+      for (const dimension of SCOPE_DIMENSIONS) {
+        expect(shared.searchParams.getAll(dimension)).toEqual(scope[dimension]);
+      }
+      expect(shared.searchParams.get("type")).toBe("BusinessService");
+      expect(shared.searchParams.get("value")).toBe("Payments");
+      expect(shared.searchParams.get("mode")).toBe("executive");
+      expect(investigateCanonical).not.toHaveBeenCalled();
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+      window.history.replaceState(null, "", originalUrl);
+    }
+  });
+
+  it("surfaces clipboard failure with a usable entry link and no false copy audit", async () => {
+    renderWorkspace({ subscription: ["sub-a"] });
+    await screen.findByText("Patch payment servers");
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("clipboard unavailable")) },
+    });
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Copy current entry link" }));
+      await screen.findByText(/Clipboard copy unavailable/);
+      expect(screen.getByRole("link", { name: "Open current entry link" })).toHaveAttribute(
+        "href", expect.stringContaining("subscription=sub-a"),
+      );
+      expect(screen.queryByText("Copied current entry link")).not.toBeInTheDocument();
+      expect(investigateCanonical).not.toHaveBeenCalled();
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
+  it.each(["success", "failure"] as const)("discards late Copilot %s after operating scope changes", async outcome => {
+    let resolve!: (value: unknown) => void;
+    let reject!: (error: Error) => void;
+    const answer = await investigateCanonical();
+    investigateCanonical.mockClear();
+    investigateCanonical.mockReturnValueOnce(new Promise((accept, fail) => { resolve = accept; reject = fail; }));
+    const acceptServerState = vi.fn();
+    continuity.value = {
+      thread: null, generation: 0, requiresServerRevalidation: false, resetReason: null,
+      acceptServerState, resetContinuity: vi.fn(),
+    };
+    renderWorkspace();
+    await screen.findByText("Patch payment servers");
+    fireEvent.click(screen.getByRole("button", { name: "Generate conclusion" }));
+    expect(investigateCanonical).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Generate conclusion" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Switch operating scope" }));
+    await screen.findByText("Patch payment servers");
+    await act(async () => {
+      if (outcome === "success") resolve(answer);
+      else reject(new Error("old scope unavailable"));
+    });
+    expect(screen.queryByText(/approve patch plan-1/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("copilot unavailable")).not.toBeInTheDocument();
+    expect(acceptServerState).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Generate conclusion" })).toBeEnabled();
+  });
+
+  it("clears prior subject evidence while replacement sources are pending", async () => {
+    renderWorkspace();
+    await screen.findByText("Patch payment servers");
+    incidents.mockReturnValueOnce(new Promise(() => {}));
+    fireEvent.change(screen.getByRole("textbox", { name: "Subject" }), { target: { value: "Another service" } });
+    await waitFor(() => expect(businessService).toHaveBeenCalledWith("Another service", {}));
+    expect(screen.queryByText("Patch payment servers")).not.toBeInTheDocument();
+    expect(screen.queryByText("CVE-2026-0001")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate conclusion" })).toBeDisabled();
+    expect(screen.getByLabelText("Current signals value")).toHaveTextContent("—");
+    expect(screen.queryByText("Quiet")).not.toBeInTheDocument();
+  });
+
+  it("does not infer quiet or a historical trend from unavailable sources", async () => {
+    exposures.mockRejectedValueOnce(new Error("provider unavailable"));
+    renderWorkspace();
+    await screen.findByText("Patch payment servers");
+    expect(screen.getByLabelText("Current signals value")).toHaveTextContent("—");
+    expect(screen.getByText("Incident or exposure evidence unavailable; no activity conclusion is available")).toBeInTheDocument();
+    expect(screen.queryByText("Quiet")).not.toBeInTheDocument();
+  });
+
+  it("does not reuse or rebind root conversation continuity for a narrowed bookmark", async () => {
+    navigation.query += "&subscription=sub-a";
+    const acceptServerState = vi.fn();
+    continuity.value = {
+      thread: { threadId: `thr-${"b".repeat(32)}`, threadRevision: 3 },
+      generation: 0, requiresServerRevalidation: false, resetReason: null,
+      acceptServerState, resetContinuity: vi.fn(),
+    };
+    renderWorkspace();
+    await screen.findByText("Patch payment servers");
+    fireEvent.click(screen.getByRole("button", { name: "Generate conclusion" }));
+    await screen.findByText(/approve patch plan-1/i);
+    expect(investigateCanonical.mock.calls[0][0]).not.toHaveProperty("thread_id");
+    expect(investigateCanonical.mock.calls[0][0]).not.toHaveProperty("expected_thread_revision");
+    expect(acceptServerState).not.toHaveBeenCalled();
+  });
+
+  it("continues and accepts the root conversation only in the matching effective scope", async () => {
+    const acceptServerState = vi.fn();
+    continuity.value = {
+      thread: { threadId: `thr-${"b".repeat(32)}`, threadRevision: 3 },
+      generation: 7, requiresServerRevalidation: false, resetReason: null,
+      acceptServerState, resetContinuity: vi.fn(),
+    };
+    const result = await investigateCanonical();
+    investigateCanonical.mockClear();
+    investigateCanonical.mockResolvedValueOnce({
+      ...result, data: { ...result.data, thread_id: `thr-${"b".repeat(32)}`, thread_revision: 4 },
+    });
+    renderWorkspace({ subscription: ["sub-a"] });
+    await screen.findByText("Patch payment servers");
+    fireEvent.click(screen.getByRole("button", { name: "Generate conclusion" }));
+    await screen.findByText(/approve patch plan-1/i);
+    expect(investigateCanonical.mock.calls[0][0]).toMatchObject({
+      thread_id: `thr-${"b".repeat(32)}`, expected_thread_revision: 3,
+    });
+    expect(acceptServerState).toHaveBeenCalledWith({ threadId: `thr-${"b".repeat(32)}`, threadRevision: 4 }, 7);
+  });
+
+  it("rejects a response targeting a different root conversation", async () => {
+    const acceptServerState = vi.fn();
+    continuity.value = {
+      thread: { threadId: `thr-${"b".repeat(32)}`, threadRevision: 3 },
+      generation: 7, requiresServerRevalidation: false, resetReason: null,
+      acceptServerState, resetContinuity: vi.fn(),
+    };
+    renderWorkspace();
+    await screen.findByText("Patch payment servers");
+    fireEvent.click(screen.getByRole("button", { name: "Generate conclusion" }));
+    await screen.findByText("copilot unavailable");
+    expect(screen.queryByText(/approve patch plan-1/i)).not.toBeInTheDocument();
+    expect(acceptServerState).not.toHaveBeenCalled();
   });
 });

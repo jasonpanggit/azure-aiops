@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { SourceSectionState } from "@/components/exposure/SourceSectionState";
+import { PatchReview } from "@/components/exposure/PatchReview";
+import { validateExposureFacets } from "@/lib/exposure-facets";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { DonutChart } from "@/components/ui/DonutChart";
@@ -39,6 +41,11 @@ interface DefenderExposureFinding extends ExposureFinding {
   sla_state?: string;
   priority_score?: number | null;
   recommendation?: string;
+  image_digest?: string;
+  deployment_state?: string;
+  represented_workload_count?: number | null;
+  total_workload_count?: number | null;
+  unknown_workload_count?: number | null;
 }
 
 function completeness(page: ExposurePage<DefenderExposureFinding> | null): PageHeaderCompleteness | undefined {
@@ -74,12 +81,12 @@ function displayFacet(value: string): string {
 }
 
 function facetCount(facets: ExposureFacets | null, name: string, value: string): number | null {
-  if (!facets) return null;
+  if (!facets || !Object.hasOwn(facets.facets, name)) return null;
   const folded = value.toLocaleLowerCase("en-US");
   const match = (facets.facets[name] ?? []).find(
     (item) => item.value.toLocaleLowerCase("en-US") === folded,
   );
-  return match?.count ?? 0;
+  return match?.count ?? ((facets.facets[name] ?? []).reduce((sum, row) => sum + row.count, 0) === facets.total_count ? 0 : null);
 }
 
 function detailHref(item: DefenderExposureFinding, state: ExposureQueryState): string {
@@ -144,29 +151,32 @@ export default function DefenderPosturePage() {
   const section = useExposureSection<ExposurePage<DefenderExposureFinding>>({
     queryKey: `${exposureQueryKey(queryState)}|defender-exposure`,
     retentionKey: `${exposureRetentionKey(queryState)}|defender-exposure`,
-    load: ({ signal }) =>
-      vulnerabilityApi.exposureItems(queryState, { signal }) as unknown as Promise<
-        import("@/lib/types").ExposureEnvelope<ExposurePage<DefenderExposureFinding>>
-      >,
+    load: ({ signal }) => vulnerabilityApi.exposureItems(queryState, { signal }),
     isEmpty: (page) => page.items.length === 0,
   });
 
+  const page = section.data;
+  const loadedQuery = useMemo(() => ({ ...queryState, generation: page?.generation ?? queryState.generation }), [queryState, page?.generation]);
   const facets = useExposureSection<ExposureFacets>({
-    queryKey: `${exposureQueryKey(queryState)}|defender-exposure=facets`,
-    retentionKey: `${exposureRetentionKey(queryState)}|defender-exposure=facets`,
-    load: ({ signal }) =>
-      vulnerabilityApi.exposureFacets(queryState, ["severity"], { signal }),
+    enabled: Boolean(page),
+    queryKey: `${exposureRetentionKey(loadedQuery)}|defender-exposure=facets`,
+    retentionKey: `${exposureRetentionKey(loadedQuery)}|defender-exposure=facets`,
+    load: async ({ signal }) => {
+      const result = await vulnerabilityApi.exposureFacets(loadedQuery, ["severity"], { signal });
+      validateExposureFacets(result, loadedQuery);
+      if (result.data.total_count !== page?.total_count) throw new Error("Defender aggregate total does not match the loaded findings.");
+      return result;
+    },
     isEmpty: (data) => data.total_count === 0,
   });
-  const facetData = facets.data;
+  const facetData = facets.data?.generation === page?.generation ? facets.data : null;
 
-  const page = section.data;
   const rows = useMemo(() => page?.items ?? [], [page?.items]);
-  const criticalCount = facetCount(facetData, "severity", "critical")
-    ?? rows.filter((item) => item.severity?.toLocaleLowerCase("en-US") === "critical").length;
+  const criticalCount = facetCount(facetData, "severity", "critical");
+  const severityRepresented = facetData?.facets.severity?.reduce((sum, row) => sum + row.count, 0);
   const severityBreakdown = useMemo(() => {
     const order = ["critical", "high", "medium", "low", "unknown"];
-    if (facetData) {
+    if (facetData?.facets.severity) {
       const items = facetData.facets.severity ?? [];
       const byValue = new Map(items.map((item) => [item.value.toLocaleLowerCase("en-US"), item]));
       const extra = items.filter((item) => !order.includes(item.value.toLocaleLowerCase("en-US")));
@@ -322,10 +332,11 @@ export default function DefenderPosturePage() {
             <h2>Defender image findings</h2>
             <p>Highest-priority current findings in the authorized SQL partition.</p>
           </div>
-          <Link className="button" href="/exposure/patch-priorities">Open all priorities</Link>
+          <Link className="button" href={`/exposure/patch-priorities?${encodeExposureQueryState(loadedQuery)}`}>Open all priorities</Link>
         </div>
         <div className="card-body">
           <SourceSectionState sourceName="Defender image findings" itemLabel="findings" state={section}>
+            <SourceSectionState sourceName="Defender severity aggregates" itemLabel="findings" state={facets}>{null}</SourceSectionState>
             <div className="metric-grid exposure-metrics">
               <MetricCard
                 label="Total Defender image findings"
@@ -337,28 +348,38 @@ export default function DefenderPosturePage() {
                 label="Critical findings"
                 value={criticalCount}
                 detail={
-                  facetData
-                    ? `Across ${(page?.total_count ?? 0).toLocaleString("en-US")} total findings`
-                    : `Across ${rows.length.toLocaleString("en-US")} rows loaded on this page`
+                  criticalCount !== null
+                    ? `Across ${facetData!.total_count.toLocaleString("en-US")} matching findings`
+                    : "Whole-query severity vocabulary unavailable; page samples are not a substitute"
                 }
-                tone={criticalCount > 0 ? "critical" : "success"}
+                tone={criticalCount === null ? "default" : criticalCount > 0 ? "critical" : "success"}
                 completeness={facets.status === "current" ? "complete" : "partial"}
               />
+              <MetricCard label="Distinct image targets" value={page?.distinct_counts?.targets}
+                detail="Server-counted target identities across this filtered query, not loaded rows" completeness={section.status === "current" ? "complete" : "partial"} />
+              <MetricCard label="Distinct weakness identifiers" value={page?.distinct_counts?.weaknesses}
+                detail="Server-counted weakness identifiers, not finding instances" completeness={section.status === "current" ? "complete" : "partial"} />
+              <MetricCard label="Recorded image digest identifiers" value={page?.distinct_counts?.recorded_digests}
+                detail="Distinct nonblank recorded digests; zero does not prove no deployed images" completeness={section.status === "current" ? "complete" : "partial"} />
             </div>
+            <p>Finding instances, image target identities, weakness identifiers and recorded digest strings are different units.
+              Missing distinct-count evidence stays unavailable. These query counts do not count distinct running workloads or prove current deployment.</p>
 
             {rows.length > 0 && (
               <div className="dashboard-charts-row">
                 <div className="chart-card">
                   <h3 className="chart-card-title">
-                    {facetData ? "Severity mix (all findings)" : "Severity mix (loaded rows only)"}
+                    {facetData?.facets.severity ? severityRepresented === facetData.total_count ? "Severity mix (all findings)" : "Severity mix (classified findings only)" : "Severity mix (loaded rows only)"}
                   </h3>
                   <DonutChart
                     segments={severityBreakdown}
-                    centerValue={facetData ? (page?.total_count ?? rows.length) : rows.length}
-                    centerLabel={facetData ? "total findings" : "on this page"}
+                    centerValue={severityRepresented ?? rows.length}
+                    centerLabel={severityRepresented !== undefined ? "classified findings" : "on this page"}
                     onSegmentClick={toggleSeverityFilter}
                     activeFilterValue={queryState.filters.severity ?? null}
                   />
+                  {severityRepresented !== undefined && facetData && severityRepresented < facetData.total_count &&
+                    <p>{facetData.total_count - severityRepresented} matching findings are not represented in this severity vocabulary. They are not an all-clear.</p>}
                 </div>
               </div>
             )}
@@ -383,6 +404,14 @@ export default function DefenderPosturePage() {
                       <span className="table-secondary exposure-long-value">{item.target_id}</span>
                     </div>
                     <p>{item.recommendation || "Review the affected image and current evidence."}</p>
+                    <details><summary>Inspect image mapping for {item.weakness_id}</summary>
+                      <p className="exposure-long-value">Recorded digest: {item.image_digest || "unreported"}; deployment mapping: {item.deployment_state || "unknown"}.
+                        Source generation: {page?.generation || "unknown"}.</p>
+                      <p>Recorded workload mapping: {item.represented_workload_count ?? "unknown"} represented / {item.total_workload_count ?? "unknown"} total;
+                        {" "}{item.unknown_workload_count ?? "unknown"} unknown. Mapping counts are repeated finding-level evidence; never sum them into distinct workload totals.</p>
+                      <p>A digest string or provider image finding alone does not establish a running workload, owner, reachable attack path or verified remediation.
+                        Unknown mapping requires review, not an all-clear.</p>
+                    </details>
                   </div>
                   <div className="exposure-finding-score">
                     <strong>{item.priority_score ?? "Unknown"}</strong>
@@ -436,6 +465,8 @@ export default function DefenderPosturePage() {
           </SourceSectionState>
         </div>
       </section>
+      {page && !section.restart.required && <PatchReview key={exposureQueryKey(loadedQuery)} query={loadedQuery}
+        rows={rows} ready={!section.loading && !section.refreshing && !section.retained} imageOwner />}
       <CopilotDrawer
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}

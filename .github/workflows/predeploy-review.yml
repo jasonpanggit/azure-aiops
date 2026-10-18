@@ -1,0 +1,65 @@
+name: Predeploy advisory review
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_path:
+        description: Reviewed sanitized JSON artifact path in the trusted main checkout
+        required: true
+        type: string
+      source:
+        description: Artifact source format
+        required: true
+        type: choice
+        options: [terraform_plan, bicep_what_if, arm_diff, github_pull_request, azure_devops]
+      assessment_id:
+        description: Retained assessment owned by the configured reader identity
+        required: true
+        type: string
+      review_sha256:
+        description: Exact review_sha256 from the explicitly reviewed portal export
+        required: true
+        type: string
+      scope_json:
+        description: Exact effective scope as a JSON object of string arrays
+        default: "{}"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: github.ref == 'refs/heads/main' && vars.AIOPS_PREDEPLOY_REVIEW_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[api]"
+      - name: Validate exact retained review without deploying
+        env:
+          AIOPS_PREDEPLOY_API_URL: ${{ vars.AIOPS_PREDEPLOY_API_URL }}
+          AIOPS_PREDEPLOY_REVIEW_TOKEN: ${{ secrets.AIOPS_PREDEPLOY_REVIEW_TOKEN }}
+          REVIEW_ARTIFACT: ${{ inputs.artifact_path }}
+          REVIEW_SOURCE: ${{ inputs.source }}
+          REVIEW_ASSESSMENT: ${{ inputs.assessment_id }}
+          REVIEW_SHA256: ${{ inputs.review_sha256 }}
+          REVIEW_SCOPE: ${{ inputs.scope_json }}
+        run: |
+          python scripts/predeploy-review.py \
+            --artifact "$REVIEW_ARTIFACT" --source "$REVIEW_SOURCE" \
+            --assessment-id "$REVIEW_ASSESSMENT" --review-sha256 "$REVIEW_SHA256" \
+            --scope-json "$REVIEW_SCOPE" \
+            > "$RUNNER_TEMP/predeploy-review.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: predeploy-advisory-review
+          path: ${{ runner.temp }}/predeploy-review.json
+          retention-days: 7

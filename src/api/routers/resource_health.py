@@ -1,6 +1,6 @@
 """Live resource utilization (CPU, disk, network) via Azure Monitor Metrics.
 
-Unlike most routes this has no snapshot-backed fallback: utilization is only
+Live reads have no snapshot-backed fallback: utilization is only
 meaningful as a live reading, so the route always calls the hybrid
 (per-connection, live) provider. There is no platform-metric equivalent for
 OS-level memory or disk-space utilization for an ordinary VM -- both require
@@ -23,19 +23,29 @@ several browser tabs) re-issues the full fan-out and risks Monitor
 throttling (429s). The cache is intentionally short-lived and always
 bypassable with ``?force_refresh=true`` so an operator chasing a live
 incident can always get a fresh reading on demand.
+
+Separate personal retention routes store explicit, authorized collection
+receipts. They do not replace live reads or imply continuous availability.
 """
 
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Query
 
 from intelligence.health.service import SUPPORTED_RESOURCE_TYPES
 from onboarding.runtime import connection_cache_identity
+from operations.overview_history import HistoryCapture
+from operations.resource_health_history import (
+    ResourceHealthHistoryStore,
+    health_observation,
+)
+from storage.onelake_documents import DocumentConflictError
 
-from ..dependencies import Context, ReadScope, live_subscription_ids
+from ..dependencies import Context, CurrentPrincipal, ReadScope, live_subscription_ids
 from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, Evidence, envelope
 
@@ -218,3 +228,103 @@ def resource_health_resource(
 
 def _resource_not_found() -> ApiError:
     return ApiError(ErrorCode.NOT_FOUND, "Resource health was not found")
+
+
+def _authorized_history(
+    context: Context,
+    scope: ReadScope,
+    resource_id: str,
+) -> tuple[ResourceHealthHistoryStore, str]:
+    identity = context.inventory_read_port().get_resource(scope, resource_id)
+    if (
+        identity is None
+        or str(identity.get("resource_type") or "").casefold()
+        not in SUPPORTED_RESOURCE_TYPES
+        or not identity.get("resource_id")
+        or not identity.get("subscription_id")
+    ):
+        raise _resource_not_found()
+    if context.resource_health_history_store is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Durable resource health history is unavailable",
+        )
+    return context.resource_health_history_store, str(identity["resource_id"])
+
+
+def _history_response(data: dict, scope: ReadScope) -> dict:
+    return envelope(
+        data,
+        scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="resource_health.retained_observations",
+            source_table="state/resource-health-history",
+            timestamp=data["observations"][-1]["captured_at"]
+            if data["observations"]
+            else "",
+            confidence="unknown",
+        ),
+        warnings=[
+            "Explicit provider-collection receipts for an authorized resource address, not continuous history, availability, SLOs or resource-incarnation continuity.",
+            "Original metric aggregation windows and rate semantics are unreported. Cached captures are not independent telemetry samples.",
+        ],
+    )
+
+
+@router.get("/resource/history")
+def resource_history(
+    context: Context,
+    principal: CurrentPrincipal,
+    scope: ReadScope,
+    resource_id: str = Query(..., min_length=1, max_length=4096),
+) -> dict:
+    """Reauthorize current Inventory membership before reading retained personal history."""
+    store, canonical_id = _authorized_history(context, scope, resource_id)
+    return _history_response(
+        store.read(principal.subject, scope.to_dict(), canonical_id), scope
+    )
+
+
+@router.post("/resource/history", status_code=201)
+def capture_resource_history(
+    payload: HistoryCapture,
+    context: Context,
+    principal: CurrentPrincipal,
+    scope: ReadScope,
+    resource_id: str = Query(..., min_length=1, max_length=4096),
+) -> dict:
+    """Acquire one server-side per-resource observation; no submitted metrics or execution."""
+    store, canonical_id = _authorized_history(context, scope, resource_id)
+    if (
+        store.read(principal.subject, scope.to_dict(), canonical_id)["revision"]
+        != payload.expected_revision
+    ):
+        raise ApiError(
+            ErrorCode.CONFLICT, "Health history changed; reload before capturing"
+        )
+    started = datetime.now(UTC).isoformat()
+    result = resource_health_resource(context, scope, canonical_id, force_refresh=False)
+    finished = datetime.now(UTC).isoformat()
+    try:
+        observation = health_observation(
+            result["data"], canonical_id, started, finished
+        )
+    except (ValueError, KeyError) as exc:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "The reported resource health collection cannot be retained; no capture was saved",
+        ) from exc
+    store, _ = _authorized_history(context, scope, canonical_id)
+    try:
+        data = store.append(
+            principal.subject,
+            scope.to_dict(),
+            canonical_id,
+            payload.expected_revision,
+            observation,
+        )
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    return _history_response(data, scope)

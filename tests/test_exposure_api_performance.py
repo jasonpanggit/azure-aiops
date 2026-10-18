@@ -119,6 +119,44 @@ def _authorization() -> ExposureAuthorization:
     )
 
 
+@pytest.mark.parametrize("counts", [
+    {"distinct_targets": 20, "distinct_weaknesses": 50, "distinct_recorded_digests": 10},
+    {},
+])
+def test_distinct_units_come_from_scoped_sql_count_not_cursor_rows(counts) -> None:
+    class DistinctReader(PageReader):
+        def query(self, sql, parameters=(), *, max_rows=None):
+            rows = super().query(sql, parameters, max_rows=max_rows)
+            if "COUNT_BIG" in sql:
+                rows[0].update(counts)
+            return rows
+
+    reader = DistinctReader()
+    page = ExposureQueryService(reader).list_page(_authorization(), generation_id="generation-17", query=ExposureQuery(page_size=25))
+    assert page.distinct_counts == {name.removeprefix("distinct_"): value for name, value in counts.items()}
+    assert page.total_count == 100_000
+    assert len(page.items) == 25
+    sql, parameters, _ = reader.calls[0]
+    assert "COUNT_BIG(DISTINCT NULLIF(LOWER([target_id]), ''))" in sql
+    assert "COUNT_BIG(DISTINCT NULLIF(LOWER([weakness_id]), ''))" in sql
+    assert "COUNT_BIG(DISTINCT NULLIF(LOWER([image_digest]), ''))" in sql
+    assert "generation-17" in parameters
+    assert "subscription-scale" in parameters
+    assert "connection-scale" in parameters
+
+
+@pytest.mark.parametrize("value", [-1, True, 100_001, 1.5])
+def test_inconsistent_distinct_counts_are_rejected(value) -> None:
+    class InvalidReader(PageReader):
+        def query(self, sql, parameters=(), *, max_rows=None):
+            rows = super().query(sql, parameters, max_rows=max_rows)
+            if "COUNT_BIG" in sql:
+                rows[0]["distinct_targets"] = value
+            return rows
+    with pytest.raises(ValueError, match="distinct counts"):
+        ExposureQueryService(InvalidReader()).list_page(_authorization(), generation_id="generation-17", query=ExposureQuery(page_size=25))
+
+
 def test_provenance_query_is_scope_bounded_and_returns_redacted_counts() -> None:
     reader = ProvenanceReader()
     authorization = ExposureAuthorization(
@@ -519,6 +557,20 @@ def test_exposure_list_endpoint_returns_cursor_envelope(
     )
     assert service.calls[0]["generation_id"] == "generation-100k"
     assert service.refresh_calls == []
+
+
+def test_distinct_counts_survive_the_authorized_api_projection(exposure_api, monkeypatch) -> None:
+    client, service = exposure_api
+    original = service.list_page
+
+    def with_counts(*args, **kwargs):
+        from dataclasses import replace
+        return replace(original(*args, **kwargs), distinct_counts={"targets": 2, "weaknesses": 3, "recorded_digests": 1})
+
+    monkeypatch.setattr(service, "list_page", with_counts)
+    response = client.get("/api/v1/vulnerabilities/exposure/items", params={"subscription": "subscription-scale", "generation": "generation-100k"})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["distinct_counts"] == {"targets": 2, "weaknesses": 3, "recorded_digests": 1}
 
 
 def test_stale_patch_items_return_lkg_and_trigger_scoped_background_refresh(

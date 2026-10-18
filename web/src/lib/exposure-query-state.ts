@@ -57,6 +57,57 @@ const API_FILTER_KEYS = [
   "sla_overdue",
   "weakness_id",
 ] as const;
+
+/** Collection bookmark context; cursors and external origins never cross aliases. */
+export const EXPOSURE_COLLECTION_QUERY_KEYS: ReadonlySet<string> = new Set([
+  ...SCOPE_DIMENSIONS,
+  ...API_FILTER_KEYS,
+  ...FREEFORM_FILTERS,
+  "q", "sort_by", "sort_direction", "page_size", "target", "drawer",
+  "view", "include_resolved", "row", "scroll", "generation",
+]);
+
+const LEGACY_EXPOSURE_QUERY_NAMES: Readonly<Record<string, string>> = {
+  search: "q",
+  subscription_id: "subscription",
+  source: "source_family",
+  status: "current_state",
+  sort: "sort_by",
+  direction: "sort_direction",
+  pageSize: "page_size",
+};
+
+function bookmarkValues(value: string | string[] | undefined): string[] {
+  return (Array.isArray(value) ? value : [value])
+    .map(item => item?.trim() ?? "")
+    .filter(item => item.length > 0 && item.length <= 2048 && !/[\u0000-\u001f\u007f]/.test(item));
+}
+
+/** Translate old bookmarks with explicit canonical values taking precedence. */
+export function legacyExposureBookmark(input: Record<string, string | string[] | undefined>): {
+  query: URLSearchParams;
+  translatedNames: string[];
+  discardedKeyCount: number;
+} {
+  const query = new URLSearchParams();
+  const translatedNames: string[] = [];
+  let discardedKeyCount = 0;
+  for (const [key, raw] of Object.entries(input)) {
+    if (EXPOSURE_COLLECTION_QUERY_KEYS.has(key)) {
+      for (const value of bookmarkValues(raw)) query.append(key, value);
+    } else if (!Object.hasOwn(LEGACY_EXPOSURE_QUERY_NAMES, key)) {
+      discardedKeyCount += 1;
+    }
+  }
+  for (const [oldName, canonicalName] of Object.entries(LEGACY_EXPOSURE_QUERY_NAMES)) {
+    if (!Object.hasOwn(input, oldName)) continue;
+    translatedNames.push(oldName);
+    // Even an empty explicit canonical value overrides its legacy synonym.
+    if (Object.hasOwn(input, canonicalName)) continue;
+    for (const value of bookmarkValues(input[oldName])) query.append(canonicalName, value);
+  }
+  return { query, translatedNames, discardedKeyCount };
+}
 const MAX_CURSOR_LENGTH = 16_384;
 const MAX_QUERY_VALUE_LENGTH = 256;
 const MAX_TARGET_LENGTH = 2_048;
@@ -153,6 +204,12 @@ function authorizedUrlScope(
     const requested = normalizedValues(params.getAll(dimension));
     if (!requested.length) {
       if (authorized.length) resolved[dimension] = [...authorized];
+      continue;
+    }
+    if (!authorized.length) {
+      // An unconstrained browser selector is not an empty RBAC allowlist.
+      // Preserve bookmark narrowing; the API still authorizes the principal.
+      resolved[dimension] = requested;
       continue;
     }
 

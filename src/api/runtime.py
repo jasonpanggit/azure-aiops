@@ -4533,10 +4533,23 @@ def _allow_self_approval() -> bool:
 
 
 def _settings_store() -> EnterpriseSettingsStore:
-    """Settings persisted to OneLake when available, in memory otherwise."""
+    """Persist enterprise settings through the same local/OneLake contract."""
     root = aiops_home()
-    documents = OneLakeDocumentStore(str(root)) if is_onelake_uri(root) else None
-    return EnterpriseSettingsStore(documents)
+    return EnterpriseSettingsStore(OneLakeDocumentStore(str(root)))
+
+
+def _retained_audit_export_store():
+    """Retain personal exact-scope audit packs without new cloud resources."""
+    from intelligence.governance.retained_exports import RetainedAuditExportStore
+
+    return RetainedAuditExportStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _access_campaign_store():
+    """Persist shared exact-scope review declarations without new cloud resources."""
+    from intelligence.governance.campaigns import AccessCampaignStore
+
+    return AccessCampaignStore(OneLakeDocumentStore(str(aiops_home())))
 
 
 def _compliance_policy_store():
@@ -4544,6 +4557,129 @@ def _compliance_policy_store():
     from intelligence.governance.compliance_policy import CompliancePolicyStore
 
     return CompliancePolicyStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _situation_notes_store():
+    """Persist exact-scope handover annotations using existing durable storage."""
+    from situations.notes import SituationNotesStore
+
+    return SituationNotesStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _situation_deadline_store():
+    """Keep explicit case response-review declarations on the existing durable root."""
+    from situations.deadlines import SituationDeadlineStore
+
+    return SituationDeadlineStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _inventory_export_store():
+    """Use the existing local/OneLake root for exact-scope captured exports."""
+    from intelligence.inventory.exports import InventoryExportStore
+
+    return InventoryExportStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _overview_history_store():
+    """Retain explicit Overview observations on the existing durable root."""
+    from operations.overview_history import OverviewHistoryStore
+
+    return OverviewHistoryStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _exposure_history_store():
+    """Retain explicit Exposure aggregates on the existing durable document root."""
+    from operations.exposure_history import ExposureHistoryStore
+
+    return ExposureHistoryStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _service_portfolio_store():
+    """Retain authorized service portfolio observations on the existing durable root."""
+    from operations.service_portfolio import ServicePortfolioStore
+
+    return ServicePortfolioStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _saved_view_store():
+    """Persist personal query preferences on the existing durable document root."""
+    from operations.saved_views import SavedViewStore
+
+    return SavedViewStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _investigation_workspace_store():
+    """Persist exact-scope team navigation revisions on the existing durable root."""
+    from operations.investigation_workspaces import InvestigationWorkspaceStore
+
+    return InvestigationWorkspaceStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _investigation_job_store():
+    """Retain single-dispatch investigation jobs on the existing durable root."""
+    from operations.investigation_jobs import InvestigationJobStore
+
+    return InvestigationJobStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _predeploy_history_store():
+    """Retain explicit exact-scope assessment receipts on the existing durable root."""
+    from operations.predeploy_history import PredeployHistoryStore
+
+    return PredeployHistoryStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _twin_history_store():
+    """Retain explicit personal Twin projections on the existing durable root."""
+    from semantic.twin_history import TwinHistoryStore
+
+    return TwinHistoryStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _service_objective_store():
+    """Keep explicit shared exact-scope component targets on the existing durable root."""
+    from operations.service_reliability import ServiceObjectiveStore
+
+    return ServiceObjectiveStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _service_request_metrics(onboarding, config, resource_id: str, window_hours: int, connection_id: str) -> dict[str, Any]:
+    """Select one enabled same-subscription connection, never an arbitrary first credential."""
+    from operations.service_reliability import component_id
+
+    identity = component_id(resource_id)
+    subscription = identity.split("/")[2]
+    connections = [
+        connection for connection in onboarding.registry.list(include_disabled=False)
+        if str(connection.subscription_id).casefold() == subscription
+        and (not connection_id or str(connection.connection_id).casefold() == connection_id.casefold())
+    ]
+    if len(connections) != 1:
+        raise RuntimeError("Component telemetry needs one unambiguous enabled subscription connection")
+    return build_connection_logs_client(
+        config, connections[0], onboarding.resolver,
+    ).query_request_telemetry(identity, window_hours)
+
+
+def _network_intent_store():
+    """Persist personal connectivity suites on the existing durable document root."""
+    from network.intents import NetworkIntentStore
+
+    return NetworkIntentStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _network_history_store():
+    """Persist explicit scoped topology projections on the existing durable root."""
+    from network.history import NetworkHistoryStore
+
+    return NetworkHistoryStore(OneLakeDocumentStore(str(aiops_home())))
+
+
+def _resource_health_history_store():
+    """Retain personal utilization receipts on the existing durable root."""
+    from operations.resource_health_history import ResourceHealthHistoryStore
+
+    return ResourceHealthHistoryStore(OneLakeDocumentStore(str(aiops_home())))
 
 
 #: Module-level so every provider closure that builds a NetworkIntelligenceService
@@ -4955,10 +5091,9 @@ def build_context() -> ApiContext:
             onboarding.detail(scope.connection_id).get("sync_state") or {}
         ),
     )
-    # Investigation ledgers are the audit trail for operator decisions, so they
-    # are written through to OneLake and survive replica restarts. A local
-    # AIOPS_HOME has no document store; the ledger falls back to memory.
-    configure_ledger_store(_document_store())
+    # Async job completion requires confirmed ledger retention. Local homes use
+    # the same durable filesystem document contract as the OneLake home.
+    configure_ledger_store(OneLakeDocumentStore(str(aiops_home())))
     arg_config = (
         ConnectorConfig.load(os.environ[ENV_ARG_CONFIG])
         if os.environ.get(ENV_ARG_CONFIG, "").strip()
@@ -5582,6 +5717,9 @@ def build_context() -> ApiContext:
             ),
         )
 
+    def service_request_metrics(resource_id: str, window_hours: int, connection_id: str) -> dict[str, Any]:
+        return _service_request_metrics(onboarding, arg_config, resource_id, window_hours, connection_id)
+
     def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:
         # Live per-connection utilization: each request re-lists in-scope
         # compute resources via ARG and fetches fresh Monitor Metrics, so no
@@ -5716,7 +5854,27 @@ def build_context() -> ApiContext:
         governance_provider=lambda: providers.get("governance", optional=True),
         governance_generation_provider=_load_governance_generation_snapshot,
         settings_store=_settings_store(),
+        retained_audit_export_store=_retained_audit_export_store(),
+        access_campaign_store=_access_campaign_store(),
         compliance_policy_store=_compliance_policy_store(),
+        situation_notes_store=_situation_notes_store(),
+        situation_deadline_store=_situation_deadline_store(),
+        execution_record_reader=lambda: _remediation_execution_store().list_all(),
+        rollout_store_provider=_remediation_execution_store,
+        inventory_export_store=_inventory_export_store(),
+        overview_history_store=_overview_history_store(),
+        exposure_history_store=_exposure_history_store(),
+        service_portfolio_store=_service_portfolio_store(),
+        resource_health_history_store=_resource_health_history_store(),
+        network_intent_store=_network_intent_store(),
+        network_history_store=_network_history_store(),
+        saved_view_store=_saved_view_store(),
+        investigation_workspace_store=_investigation_workspace_store(),
+        investigation_job_store=_investigation_job_store(),
+        predeploy_history_store=_predeploy_history_store(),
+        twin_history_store=_twin_history_store(),
+        service_objective_store=_service_objective_store(),
+        service_request_metrics=service_request_metrics,
         network_policy_store=_network_policy_store(),
         risk_exception_list=list_risk_exceptions,
         risk_exception_add=add_risk_exception,

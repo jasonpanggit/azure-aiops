@@ -134,6 +134,36 @@ def _adapter(
     )
 
 
+def test_rollout_binding_survives_the_locked_provider_envelope() -> None:
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(202, json={"success": True, "threadId": "thread-rollout"}, request=request)
+    adapter, _ = _adapter(handler)
+    run = _run()
+    snapshot = run.details["approval_context"]["execution_snapshot"]
+    snapshot["rollout"] = {"rollout_id": "RMO-" + "a" * 32, "terms_hash": "b" * 64, "wave": 1}
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
+    adapter.submit(run, _target())
+    sent = json.loads(requests[0].content)["approval"]["execution_snapshot"]
+    assert sent == snapshot
+    assert sent["snapshot_hash"] == sre_adapter._approved_snapshot_hash(sent)
+
+
+@pytest.mark.parametrize("mutation", [
+    {"wave": True}, {"wave": 0}, {"wave": 6}, {"terms_hash": "not-a-digest"},
+    {"rollout_id": "foreign"}, {"extra": "not-allowed"},
+])
+def test_invalid_rollout_metadata_never_crosses_the_provider_boundary(mutation) -> None:
+    adapter, _ = _adapter(lambda _: pytest.fail("Invalid metadata must not submit"))
+    run = _run()
+    snapshot = run.details["approval_context"]["execution_snapshot"]
+    snapshot["rollout"] = {"rollout_id": "RMO-" + "a" * 32, "terms_hash": "b" * 64, "wave": 1, **mutation}
+    snapshot["snapshot_hash"] = execution_snapshot_hash(snapshot)
+    with pytest.raises(PatchExecutionUnavailable):
+        adapter.submit(run, _target())
+
+
 def test_submit_posts_only_the_versioned_immutable_envelope() -> None:
     requests: list[httpx.Request] = []
 

@@ -1,17 +1,27 @@
 """Operational digital twin composition.
 
 The twin is a request-time projection over the durable semantic graph and live
-operational providers. It does not ask AIOps to snapshot mutable facts; instead
-it versions the current composed view and emits provenance for each contribution.
+operational providers. Explicit safe retained captures live in twin_history;
+composition alone does not create historical evidence.
 """
 
 from __future__ import annotations
 
 import re
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
+
+SCENARIO_NARRATIVES = {
+    "firewall_failure": "Review inspection dependencies if the selected resource's firewall path fails.",
+    "route_change": "Review routing and inspection dependencies before changing the selected resource's path.",
+    "subscription_outage": "Review the selected resource's mapped dependencies for a hypothetical subscription outage.",
+    "cve_exploitation": "Review mapped dependencies; exploitability, reachability and compromise are not established.",
+    "patch_deployment": "Review mapped dependencies before patching; compatibility and risk reduction are not established.",
+    "architecture_remediation": "Review mapped dependencies before remediation; control improvement is not established.",
+}
 
 
 def _utc_now() -> str:
@@ -24,6 +34,15 @@ def _as_list(value: Any) -> list[Any]:
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _scope_attributes(value: dict[str, Any]) -> dict[str, str]:
+    from api.scope import scope_attributes
+
+    attributes = scope_attributes(value)
+    if "subscription_connection" not in attributes and value.get("subscription_connection_id"):
+        attributes["subscription_connection"] = str(value["subscription_connection_id"]).strip().casefold()
+    return attributes
 
 
 def _stable_id(*parts: Any) -> str:
@@ -113,6 +132,25 @@ class OperationalTwinComposer:
             else None,
             source_errors,
         )
+        if incidents is not None:
+            incident_rows = _as_list(_as_dict(incidents).get("incidents"))
+            visible_incidents = [
+                row for row in incident_rows
+                if self._contribution_in_scope(row, "incident")
+            ]
+            incidents = {
+                **incidents,
+                "incidents": visible_incidents,
+                "scope_projection_incomplete": len(visible_incidents) != len(incident_rows),
+            }
+        if remediation is not None:
+            remediation = {
+                **remediation,
+                "plans": [
+                    row for row in _as_list(_as_dict(remediation).get("plans"))
+                    if self._contribution_in_scope(row, "resource")
+                ],
+            }
 
         semantic_ids: dict[str, str] = {}
         semantic_indexes = getattr(self.semantic, "indexes", None)
@@ -156,6 +194,10 @@ class OperationalTwinComposer:
                 )
 
         for resource in _as_list(_as_dict(network_report).get("resources")):
+            network_attributes = {**_as_dict(resource.get("details")), **resource}
+            if not self._in_scope(network_attributes):
+                continue
+            dimensions = _scope_attributes(network_attributes)
             resource_id = str(resource.get("id") or resource.get("name") or "")
             entity = _entity(
                 "resource",
@@ -167,7 +209,11 @@ class OperationalTwinComposer:
                 business_service=resource.get("business_service", ""),
                 application=resource.get("application", ""),
                 owner=resource.get("owner", ""),
-                temporal_state={"observed_at": observed_at, "source": "network.topology"},
+                subscription_connection=dimensions.get("subscription_connection", ""),
+                support_team=dimensions.get("support_team", ""),
+                region=dimensions.get("region", ""),
+                criticality=dimensions.get("criticality", ""),
+                temporal_state={"composed_at": observed_at, "source": "network.topology"},
                 provenance=[{"source": "network.topology", "confidence": "high"}],
             )
             entities[entity["id"]] = entity
@@ -179,7 +225,7 @@ class OperationalTwinComposer:
                 ("subscription", resource.get("subscription_id"), "belongs_to"),
             ):
                 if value:
-                    target = _entity(kind, str(value), str(value), temporal_state={"observed_at": observed_at})
+                    target = _entity(kind, str(value), str(value), temporal_state={"composed_at": observed_at})
                     entities.setdefault(target["id"], target)
                     relationships.append(_relationship(entity["id"], target["id"], rel_type, confidence="high"))
 
@@ -198,7 +244,11 @@ class OperationalTwinComposer:
                 cve,
                 severity=exposure.get("severity", ""),
                 risk_reduction=exposure.get("expected_risk_reduction", 0),
-                temporal_state={"observed_at": observed_at, "source": "vulnerability.live"},
+                temporal_state={
+                    "composed_at": observed_at,
+                    "observed_at": _as_dict(vulnerabilities).get("freshness"),
+                    "source": "vulnerability.live",
+                },
                 provenance=[{"source": "vulnerability.live", "confidence": "medium"}],
             )
             entities[entity["id"]] = entity
@@ -215,12 +265,19 @@ class OperationalTwinComposer:
                 str(identity.get("title") or incident_id),
                 severity=identity.get("severity", ""),
                 status=identity.get("status", ""),
-                temporal_state={"observed_at": identity.get("started_at") or observed_at, "source": "incidents"},
+                temporal_state={
+                    "composed_at": observed_at,
+                    "event_started_at": identity.get("started_at"),
+                    "observed_at": _as_dict(incidents).get("freshness"),
+                    "source": "incidents",
+                },
                 provenance=[{"source": "incidents", "confidence": "medium"}],
             )
             entities[entity["id"]] = entity
             for service in _as_list(_as_dict(incident.get("business_impact")).get("business_services")):
-                target = _entity("business_service", str(service), str(service), temporal_state={"observed_at": observed_at})
+                if not self._in_scope({**identity, **incident, "business_service": str(service)}):
+                    continue
+                target = _entity("business_service", str(service), str(service), temporal_state={"composed_at": observed_at})
                 entities.setdefault(target["id"], target)
                 relationships.append(_relationship(entity["id"], target["id"], "affects", confidence="medium"))
             for event in _as_list(incident.get("timeline")):
@@ -230,7 +287,7 @@ class OperationalTwinComposer:
                         "type": event.get("event_type") or "incident_event",
                         "entity": entity["id"],
                         "summary": event.get("summary") or incident_id,
-                        "provenance": event,
+                        "provenance": {"source": "incidents"},
                     }
                 )
 
@@ -244,20 +301,25 @@ class OperationalTwinComposer:
                 str(plan.get("title") or plan_id),
                 status=plan.get("status", ""),
                 risk_reduction=_as_dict(plan.get("simulation_result")).get("risk_reduction_percent", 0),
-                temporal_state={"observed_at": _as_dict(remediation).get("generated_at") or observed_at, "source": "remediation"},
+                temporal_state={
+                    "composed_at": observed_at,
+                    "generated_at": _as_dict(remediation).get("generated_at"),
+                    "observed_at": _as_dict(remediation).get("freshness"),
+                    "source": "remediation",
+                },
                 provenance=[{"source": "remediation", "confidence": "medium"}],
             )
             entities[entity["id"]] = entity
             service = plan.get("business_service")
             if service:
-                target = _entity("business_service", str(service), str(service), temporal_state={"observed_at": observed_at})
+                target = _entity("business_service", str(service), str(service), temporal_state={"composed_at": observed_at})
                 entities.setdefault(target["id"], target)
                 relationships.append(_relationship(entity["id"], target["id"], "mitigates_risk_for", confidence="medium"))
             events.append({"timestamp": observed_at, "type": "remediation_candidate", "entity": entity["id"], "summary": entity["name"]})
 
         provenance.extend(
             [
-                {"source": "semantic_graph", "confidence": "high"},
+                {"source": "semantic_graph", "confidence": "high" if self.semantic is not None else "unknown"},
                 {"source": "network", "confidence": "high" if network_report is not None else "unknown"},
                 {"source": "vulnerability", "confidence": "medium" if vulnerabilities is not None else "unknown"},
                 {"source": "incidents", "confidence": "medium" if incidents is not None else "unknown"},
@@ -265,14 +327,17 @@ class OperationalTwinComposer:
             ]
         )
         entity_list = list(entities.values())
-        rel_list = list({rel["id"]: rel for rel in relationships}.values())
+        rel_list = list({
+            rel["id"]: rel for rel in relationships
+            if rel["source"] in entities and rel["target"] in entities
+        }.values())
         current_version = _version((entity_list, rel_list, events))
-        previous_version = f"prev-{current_version[:8]}"
         return {
             "twin_id": "operational-twin",
             "version": current_version,
-            "previous_version": previous_version,
+            "previous_version": None,
             "observed_at": observed_at,
+            "observation_kind": "request_time_composition",
             "scope": self.scope or {},
             "entities": entity_list,
             "relationships": rel_list,
@@ -281,14 +346,17 @@ class OperationalTwinComposer:
             "confidence": self._confidence(provenance),
             "temporal": {
                 "current_state_version": current_version,
-                "previous_state_version": previous_version,
-                "change_history": self._change_history(events, current_version, previous_version),
+                "previous_state_version": None,
+                "change_history": [],
                 "risk_trend": self._risk_trend(vulnerabilities, incidents),
                 "dependency_evolution": self._dependency_evolution(rel_list),
             },
             "warnings": [
                 f"{item['source']} unavailable: {item['error']}" for item in source_errors
-            ],
+            ] + (
+                ["Incident and remediation rows require confirmed metadata for every requested scope dimension; unmapped or conflicting rows are omitted."]
+                if self.scope else []
+            ),
         }
 
     def query(self, text: str) -> dict[str, Any]:
@@ -311,39 +379,46 @@ class OperationalTwinComposer:
 
     def compare(self) -> dict[str, Any]:
         snapshot = self.snapshot()
-        current = len(snapshot["entities"])
         return {
             "current_version": snapshot["version"],
-            "previous_version": snapshot["previous_version"],
-            "added": snapshot["entities"][:10],
+            "previous_version": None,
+            "comparison_available": False,
+            "added": [],
             "removed": [],
-            "changed": snapshot["timeline"][:10],
-            "summary": f"{current} current entities; prior state retained as {snapshot['previous_version']} for temporal comparison.",
+            "changed": [],
+            "summary": "No retained baseline selected. Current observations are not historical differences.",
             "warnings": snapshot["warnings"],
         }
 
     def scenario(self, scenario_type: str, target: str = "") -> dict[str, Any]:
-        snapshot = self.snapshot()
-        impacted = self._impacted(snapshot, target)
-        multipliers = {
-            "firewall_failure": (0.85, "Traffic inspection and hub dependencies degrade."),
-            "route_change": (0.65, "Route changes may bypass approved inspection paths."),
-            "subscription_outage": (0.9, "Subscription-scoped resources and dependent services are unavailable."),
-            "cve_exploitation": (0.95, "Reachable vulnerable resources become active compromise candidates."),
-            "patch_deployment": (-0.45, "Patch should reduce vulnerability risk after validation."),
-            "architecture_remediation": (-0.35, "Approved remediation should reduce topology and control risk."),
-        }
-        multiplier, narrative = multipliers.get(scenario_type, (0.4, "Scenario impact is estimated from current dependencies."))
+        if scenario_type not in SCENARIO_NARRATIVES:
+            raise ValueError("Select a supported Twin scenario")
+        return self.review_snapshot(self.snapshot(), scenario_type, target)
+
+    @staticmethod
+    def review_snapshot(snapshot: dict[str, Any], scenario_type: str, target: str) -> dict[str, Any]:
+        """Review one server-composed or validated retained graph without provider reads."""
+        if scenario_type not in SCENARIO_NARRATIVES:
+            raise ValueError("Select a supported Twin scenario")
+        impacted, truncated = OperationalTwinComposer._impacted(snapshot, target)
         return {
             "scenario": scenario_type,
             "target": target,
             "version": snapshot["version"],
-            "likely_impact": narrative,
-            "risk_delta": round(multiplier * max(1, len(impacted)) * 10, 2),
+            "likely_impact": SCENARIO_NARRATIVES[scenario_type],
+            "risk_delta": None,
+            "analysis_kind": "bounded_topology_review",
+            "authority": "none",
+            "impacted_total": len(impacted),
+            "truncated": truncated or len(impacted) > 25,
+            "traversal": {"direction": "undirected", "max_hops": 3, "max_entities": 500},
             "impacted_entities": impacted[:25],
             "assumptions": [
-                "Scenario is advisory and requires operator validation.",
-                "Impact follows current twin relationships and live observations only.",
+                "Review only; no execution, deployment approval or measured risk delta.",
+                "Related entities follow observed links in either direction, at most three hops and 500 entities.",
+                "Links show mapped association, not causal failure propagation or verified network reachability.",
+                "The selected resource is the seed, not proof of a scenario-specific fault or subscription-wide coverage.",
+                "Missing providers and unmapped dependencies remain unknown.",
             ],
             "warnings": snapshot["warnings"],
         }
@@ -400,22 +475,23 @@ class OperationalTwinComposer:
         return "medium"
 
     @staticmethod
-    def _change_history(events: list[dict[str, Any]], current: str, previous: str) -> list[dict[str, Any]]:
-        return [
-            {"version": current, "previous_version": previous, "change_type": event.get("type"), "summary": event.get("summary"), "timestamp": event.get("timestamp")}
-            for event in events[:20]
-        ]
-
-    @staticmethod
     def _risk_trend(vulnerabilities: Any, incidents: Any) -> list[dict[str, Any]]:
         vuln = _as_dict(vulnerabilities)
+        critical = vuln.get("critical_count")
+        if (
+            isinstance(critical, bool) or not isinstance(critical, int) or critical < 0
+            or not isinstance(incidents, dict) or not isinstance(incidents.get("incidents"), list)
+            or incidents.get("scope_projection_incomplete")
+        ):
+            return []
         incident_count = len(_as_list(_as_dict(incidents).get("incidents")))
         return [
             {
                 "timestamp": _utc_now(),
-                "risk_score": min(100, int(vuln.get("critical_count", 0)) * 20 + incident_count * 12),
+                "risk_score": min(100, critical * 20 + incident_count * 12),
+                "interpretation": "Heuristic current index: min(100, critical vulnerabilities * 20 + visible incidents * 12); not a measured trend, probability or reliability score.",
                 "drivers": {
-                    "critical_vulnerabilities": vuln.get("critical_count", 0),
+                    "critical_vulnerabilities": critical,
                     "active_incidents": incident_count,
                 },
             }
@@ -426,40 +502,47 @@ class OperationalTwinComposer:
         counts: dict[str, int] = {}
         for rel in relationships:
             counts[str(rel.get("type"))] = counts.get(str(rel.get("type")), 0) + 1
-        return [{"relationship_type": key, "current_count": value, "previous_count": max(0, value - 1)} for key, value in sorted(counts.items())]
+        return [{"relationship_type": key, "current_count": value, "previous_count": None} for key, value in sorted(counts.items())]
 
     @staticmethod
-    def _impacted(snapshot: dict[str, Any], target: str) -> list[dict[str, Any]]:
-        if not target:
-            return snapshot["entities"][:15]
-        target_lower = target.casefold()
-        ids = {
-            entity["id"]
-            for entity in snapshot["entities"]
-            if target_lower in entity["id"].casefold() or target_lower in entity["name"].casefold()
-        }
-        for rel in snapshot["relationships"]:
-            if rel["source"] in ids:
-                ids.add(rel["target"])
-            if rel["target"] in ids:
-                ids.add(rel["source"])
+    def _impacted(snapshot: dict[str, Any], target: str) -> tuple[list[dict[str, Any]], bool]:
         by_id = {entity["id"]: entity for entity in snapshot["entities"]}
-        return [by_id[item] for item in ids if item in by_id]
+        start = target if target.startswith("resource:") else f"resource:{target}"
+        if not target or start not in by_id or by_id[start]["kind"] != "resource":
+            raise LookupError("Select an observed resource in the current scope")
+        adjacency: dict[str, set[str]] = {}
+        for rel in snapshot["relationships"]:
+            source, destination = rel["source"], rel["target"]
+            if source in by_id and destination in by_id:
+                adjacency.setdefault(source, set()).add(destination)
+                adjacency.setdefault(destination, set()).add(source)
+        ids = {start}
+        queue = deque([(start, 0)])
+        truncated = False
+        while queue:
+            current, depth = queue.popleft()
+            neighbors = adjacency.get(current, set()) - ids
+            if depth == 3:
+                truncated |= bool(neighbors)
+                continue
+            for other in sorted(neighbors):
+                if len(ids) == 500:
+                    truncated = True
+                    break
+                ids.add(other)
+                queue.append((other, depth + 1))
+        return [by_id[item] for item in sorted(ids)], truncated
+
+    def _contribution_in_scope(self, row: dict[str, Any], nested: str) -> bool:
+        from api.scope import Scope
+
+        outer = _scope_attributes(row)
+        inner = _scope_attributes(_as_dict(row.get(nested)))
+        if any(outer[key] != inner[key] for key in outer.keys() & inner.keys()):
+            return False
+        return Scope.from_mapping(self.scope).matches({**outer, **inner})
 
     def _in_scope(self, resource: dict[str, Any]) -> bool:
-        scope = self.scope or {}
-        field_map = {
-            "subscription": ("subscription_id", "subscription"),
-            "subscription_connection": ("subscription_connection_id", "subscription_connection"),
-            "environment": ("environment",),
-            "business_service": ("business_service", "business_service_name"),
-            "application": ("application", "application_name"),
-            "owner": ("owner", "owner_name"),
-        }
-        for dimension, fields in field_map.items():
-            allowed = {str(value).casefold() for value in scope.get(dimension, ())}
-            if allowed:
-                actual = {str(resource.get(field) or "").casefold() for field in fields}
-                if not actual.intersection(allowed):
-                    return False
-        return True
+        from api.scope import Scope
+
+        return Scope.from_mapping(self.scope).matches(_scope_attributes(resource))

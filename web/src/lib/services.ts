@@ -1,9 +1,17 @@
 import { apiRequest, resolveApiBaseUrl } from "./api-client";
 import type { ScopeSelection } from "./scope";
 import { scopeToSearchParams } from "./scope";
+import type { SavedView, SavedViewCollection } from "./saved-views";
 import type {
+  NetworkReviewReference,
+  NetworkFindingReview,
+  NetworkTopologyHistory,
+  NetworkTopologyComparison,
+  NetworkIntentSuite,
+  NetworkIntentTest,
   BusinessMetadata,
   ChangeAssessment,
+  ChangeObservationFeed,
   ChangeAssessmentSources,
   ChangeAssessmentSummary,
   ComplianceDeviation,
@@ -85,10 +93,13 @@ import type {
   AutonomousAgent,
   MultiAgentLedger,
   FinOpsSummary,
+  FinOpsVerifiedRemediation,
+  FinOpsRemediationCostComparison,
   SavingsOpportunity,
   WasteItem,
   FinOpsAttributionGroup,
   IdentitySummary,
+  IdentityLeastPrivilegeReview,
   PrincipalRisk,
   SubscriptionOwnerRecord,
   StaleAccessRecord,
@@ -98,6 +109,7 @@ import type {
   AccessReviewPack,
   AuditExportPack,
   EnterpriseSettings,
+  EnterpriseSettingsChange,
   OsInventoryCollection,
   OsInventoryDetail,
   InventoryNarrative,
@@ -148,6 +160,30 @@ async function listAllConnections(scope: ScopeSelection): Promise<Envelope<Subsc
 // Subscription connections
 // ---------------------------------------------------------------------------
 
+/** Personal exact-scope navigation preferences; mutations do not query source providers. */
+export const savedViewsApi = {
+  read: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<SavedViewCollection>("/saved-views", {
+      query: scopeToSearchParams(scope), signal: options.signal,
+    }),
+  replace: (scope: ScopeSelection, expectedRevision: number, views: SavedView[], options: { signal?: AbortSignal } = {}) =>
+    apiRequest<SavedViewCollection>("/saved-views", {
+      method: "PUT", query: scopeToSearchParams(scope), signal: options.signal,
+      body: { expected_revision: expectedRevision, views },
+    }),
+};
+
+export const overviewApi = {
+  /** Recover exact-caller/scope observations without resolving active source providers. */
+  history: (scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").OverviewHistory>("/overview/history", { query: scopeToSearchParams(scope) }),
+  /** Capture fresh server reads, never client-supplied metrics, using history CAS. */
+  capture: (scope: ScopeSelection, expected_revision: number) =>
+    apiRequest<import("./types").OverviewHistory>("/overview/history", {
+      method: "POST", query: scopeToSearchParams(scope), body: { expected_revision },
+    }),
+};
+
 export const connectionsApi = {
   list: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);
@@ -163,6 +199,9 @@ export const connectionsApi = {
 
   create: (payload: ConnectionCreateRequest) =>
     apiRequest<ConnectionCreateResult>("/subscription-connections", { method: "POST", body: payload }),
+  /** Probe a proposed connection without storing its secret or starting a sync. */
+  preflight: (payload: ConnectionCreateRequest) =>
+    apiRequest<import("./types").ConnectionPreflightReport>("/subscription-connections/preflight", { method: "POST", body: payload }),
 
   update: (id: string, payload: ConnectionUpdateRequest) =>
     apiRequest<SubscriptionConnection>(`/subscription-connections/${encodeURIComponent(id)}`, {
@@ -218,6 +257,12 @@ export const fabricMedallionApi = {
 
   dataset: (tableName: string, scope: ScopeSelection = {}) =>
     apiRequest<FabricDataset>(`/fabric-medallion/datasets/${encodeURIComponent(tableName)}`, {
+      query: scopeToSearchParams(scope),
+    }),
+
+  /** Read a declared schema and recorded source diagnostics without probing or publishing data. */
+  datasetContract: (tableName: string, scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").FabricDatasetContract>(`/fabric-medallion/datasets/${encodeURIComponent(tableName)}/contract`, {
       query: scopeToSearchParams(scope),
     }),
 
@@ -369,11 +414,39 @@ export const ontologyAutomationApi = {
     }),
 };
 
+/** Exact-principal, exact-scope durable export operations; every request reauthorizes. */
+export const inventoryExportApi = {
+  /** Recover this caller's exact effective-scope capture without the active provider. */
+  current: (scope: ScopeSelection) =>
+    apiRequest<{ export: import("./types").InventoryExportManifest | null }>("/inventory/exports/current", {
+      query: scopeToSearchParams(scope),
+    }),
+  /** Capture only the publication generation the caller reviewed. */
+  create: (scope: ScopeSelection, expectedGenerationId: string) =>
+    apiRequest<{ export: import("./types").InventoryExportManifest }>("/inventory/exports", {
+      method: "POST", query: scopeToSearchParams(scope),
+      body: { expected_generation_id: expectedGenerationId },
+    }),
+  /** Read a repeatable aligned 500-row batch, with independent scope authorization. */
+  batch: (scope: ScopeSelection, exportId: string, offset: number) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    return apiRequest<import("./types").InventoryExportBatch>(`/inventory/exports/${encodeURIComponent(exportId)}/batches`, { query });
+  },
+  /** Revoke future reads only if the capture still has the reviewed revision. */
+  cancel: (scope: ScopeSelection, exportId: string, expectedRevision: number) =>
+    apiRequest<{ export: import("./types").InventoryExportManifest }>(`/inventory/exports/${encodeURIComponent(exportId)}/cancel`, {
+      method: "POST", query: scopeToSearchParams(scope), body: { expected_revision: expectedRevision },
+    }),
+};
+
 export const inventoryApi = {
-  os: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+  /** Filter authorized OS groups before the server selects a page. */
+  os: (scope: ScopeSelection = {}, offset = 0, limit = 100, filters: Record<string, string> = {}) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
     query.set("limit", String(limit));
+    Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
     return apiRequest<OsInventoryCollection>("/inventory/os", { query });
   },
   osGroup: (key: string, scope: ScopeSelection = {}, offset = 0, limit = 100) => {
@@ -406,10 +479,12 @@ export const inventoryApi = {
         body: payload,
       },
     ),
-  software: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
+  /** Query installation groups at their own grain, not asset-list counts. */
+  software: (scope: ScopeSelection = {}, offset = 0, limit = 100, filters: Record<string, string> = {}) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
     query.set("limit", String(limit));
+    Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
     return apiRequest<SoftwareInventoryCollection>("/inventory/software", { query });
   },
   softwareGroup: (key: string, scope: ScopeSelection = {}, offset = 0, limit = 100) => {
@@ -418,10 +493,12 @@ export const inventoryApi = {
     query.set("limit", String(limit));
     return apiRequest<SoftwareInventoryDetail>(`/inventory/software/${encodeURIComponent(key)}`, { query });
   },
-  paas: (scope: ScopeSelection = {}, offset = 0, limit = 200) => {
+  /** Query complete authorized resource-type/SKU/tier groups and facets. */
+  paas: (scope: ScopeSelection = {}, offset = 0, limit = 200, filters: Record<string, string> = {}) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
     query.set("limit", String(limit));
+    Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
     return apiRequest<import("./types").PaasInventoryCollection>("/inventory/paas", { query });
   },
   paasGroup: (key: string, scope: ScopeSelection = {}, offset = 0, limit = 200) => {
@@ -433,11 +510,18 @@ export const inventoryApi = {
       { query },
     );
   },
-  resources: (scope: ScopeSelection = {}, offset = 0, limit = 500) => {
+  resources: (scope: ScopeSelection = {}, offset = 0, limit = 500, filters: import("./types").InventoryResourceQuery = {}) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
     query.set("limit", String(limit));
+    Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
     return apiRequest<import("./types").FlatResourceCollection>("/inventory/resources", { query });
+  },
+  /** Resolve an exact identity using the caller's current effective scope. */
+  asset: (resourceId: string, scope: ScopeSelection = {}) => {
+    const query = scopeToSearchParams(scope);
+    query.set("resource_id", resourceId);
+    return apiRequest<{ resource: import("./types").InventoryAsset; generation_id: string; query_version: string }>("/inventory/asset", { query });
   },
   narrative: (scope: ScopeSelection = {}) =>
     apiRequest<InventoryNarrative>("/inventory/narrative", {
@@ -489,10 +573,59 @@ export const SUPPORTED_SEARCH_PHRASES = [
   "critical infrastructure",
 ] as const;
 
+/** Retained service portfolio reads and server-side acquisitions; counts cannot be submitted. */
+/** Explicit exact-scope component targets and resource-context aggregate telemetry. */
+export const serviceReliabilityApi = {
+  /** Recover declarations without a current component or telemetry read. */
+  objectives: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./service-reliability").ServiceObjectivePolicy>("/service-reliability/objectives", { query: scopeToSearchParams(scope), signal }),
+  /** Search one page of currently authorized published component mappings. */
+  components: (scope: ScopeSelection, q: string, offset: number, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("q", q); query.set("offset", String(offset)); query.set("limit", "25");
+    return apiRequest<{ components: import("./service-reliability").ServiceComponent[] }>("/service-reliability/components", { query, signal });
+  },
+  /** Save one explicit administrator target against the reviewed revision. */
+  save: (scope: ScopeSelection, objective: Pick<import("./service-reliability").ServiceObjective, "resource_id" | "success_target_basis_points" | "window_hours">, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./service-reliability").ServiceObjectivePolicy>("/service-reliability/objectives", {
+      method: "PUT", query: scopeToSearchParams(scope), body: { ...objective, expected_revision: expectedRevision }, signal,
+    }),
+  /** Remove only the identified declaration, never its Azure resource. */
+  remove: (scope: ScopeSelection, resourceId: string, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./service-reliability").ServiceObjectivePolicy>("/service-reliability/objectives/remove", {
+      method: "POST", query: scopeToSearchParams(scope), body: { resource_id: resourceId, expected_revision: expectedRevision }, signal,
+    }),
+  /** Request fresh aggregate telemetry under the server-authorized saved objective. */
+  metrics: (scope: ScopeSelection, resourceId: string, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope); query.set("resource_id", resourceId);
+    return apiRequest<import("./service-reliability").ServiceRequestMetrics>("/service-reliability/metrics", { query, signal });
+  },
+};
+
+export const servicePortfolioApi = {
+  history: (scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").ServicePortfolioHistory>("/service-portfolio/history", { query: scopeToSearchParams(scope) }),
+  capture: (scope: ScopeSelection, expectedRevision: number) =>
+    apiRequest<import("./types").ServicePortfolioHistory>("/service-portfolio/history", {
+      method: "POST", query: scopeToSearchParams(scope), body: { expected_revision: expectedRevision },
+    }),
+};
+
 export const contextApi = {
-  search: (q: string, scope: ScopeSelection = {}) => {
+  /** Inspect configuration prerequisites without hydrating deferred providers. */
+  searchCapabilities: (scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").SearchCapabilities>("/search/capabilities", { query: scopeToSearchParams(scope) }),
+  search: (q: string, scope: ScopeSelection = {}, exploration?: {
+    offset: number; limit: number; entity_type: string; source: string;
+  }) => {
     const query = scopeToSearchParams(scope);
     query.set("q", q);
+    if (exploration) {
+      query.set("offset", String(exploration.offset));
+      query.set("limit", String(exploration.limit));
+      if (exploration.entity_type) query.set("entity_type", exploration.entity_type);
+      if (exploration.source) query.set("source", exploration.source);
+    }
     return apiRequest<SearchResult>("/search", { query });
   },
 
@@ -553,6 +686,7 @@ export interface CopilotToolCall {
 
 /** The outcome of a `/copilot/investigate` turn: every tool call plus the narration. */
 export interface CopilotInvestigation extends CanonicalInvestigationSemantics {
+  request_key?: string;
   question: string;
   tool_calls: CopilotToolCall[];
   answer: CopilotAnswer | null;
@@ -639,6 +773,23 @@ export interface CopilotToolSpec {
 }
 
 export const copilotApi = {
+  /** Discover a bounded authorized storage page, never execute or renew threads. */
+  retainedThreads: (scope: ScopeSelection, page = 0, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("page", String(page));
+    return apiRequest<import("./types").RetainedCopilotThreads>("/copilot/threads", { query, signal });
+  },
+  /** Inspect one exact admitted request without polling or redispatching work. */
+  requestReceipt: (requestKey: string, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").CopilotRequestReceipt>(`/copilot/requests/${encodeURIComponent(requestKey)}`, { query: scopeToSearchParams(scope), signal }),
+  /** Read exact authorized historical turns without renewing or executing a thread. */
+  retainedHistory: (threadId: string, scope: ScopeSelection, options: { signal?: AbortSignal; expectedRevision?: number } = {}) => {
+    const query = scopeToSearchParams(scope);
+    if (options.expectedRevision !== undefined) query.set("expected_revision", String(options.expectedRevision));
+    return apiRequest<import("./types").RetainedCopilotHistory>(`/copilot/threads/${encodeURIComponent(threadId)}/history`, {
+      query, signal: options.signal,
+    });
+  },
   /**
    * Asks the Operations Copilot. The API grounds an Azure AI Foundry prompt
    * agent on governed context, so `answer` is a narration of `results` — never
@@ -709,16 +860,19 @@ export const ROOT_COPILOT_SESSION = "aiops-root-copilot";
 export function askCanonicalInvestigation(
   question: string,
   scope: ScopeSelection = {},
-  options: { sessionId?: string; tool?: string; toolArguments?: Record<string, unknown> } = {},
+  options: { sessionId?: string; tool?: string; toolArguments?: Record<string, unknown>; signal?: AbortSignal; requestKey?: string; continuation?: { threadId: string; threadRevision: number } } = {},
 ): Promise<Envelope<CopilotInvestigation>> {
   return apiRequest<CopilotInvestigation>("/copilot/investigate", {
     method: "POST",
+    signal: options.signal,
     query: scopeToSearchParams(scope),
     body: {
       question,
       session_id: options.sessionId ?? ROOT_COPILOT_SESSION,
       tool: options.tool ?? "",
       tool_arguments: options.toolArguments ?? {},
+      ...(options.requestKey ? { request_key: options.requestKey } : {}),
+      ...(options.continuation ? { thread_id: options.continuation.threadId, expected_thread_revision: options.continuation.threadRevision } : {}),
     },
   });
 }
@@ -814,6 +968,14 @@ export function toCanonicalInvestigationView(
 // ---------------------------------------------------------------------------
 
 export const operationsApi = {
+  /** Read independent governed changes without accepting filter overrides of the authorized scope. */
+  changeObservations: (scope: ScopeSelection, filters: Record<string, string>, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    for (const key of ["q", "category", "source", "since", "until", "order", "offset", "limit"]) {
+      if (filters[key]) query.set(key, filters[key]);
+    }
+    return apiRequest<ChangeObservationFeed>("/changes/observations", { query, signal });
+  },
   incidents: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
@@ -876,6 +1038,7 @@ export interface RemediationAvailablePatch {
 }
 
 export interface RemediationExecutionSnapshot {
+  rollout?: { rollout_id: string; terms_hash: string; wave: number };
   snapshot_kind?: "defender_configuration";
   target_id: string;
   patch_ids: string[];
@@ -1203,6 +1366,13 @@ export interface RemediationWorkflow {
 }
 
 export const remediationApi = {
+  /** Read stored outcome notifications without polling providers or changing verification. */
+  notifications: (scope: ScopeSelection, kind: "" | "attention" | "complete" | "cancelled" = "", offset = 0, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset)); query.set("limit", "25");
+    if (kind) query.set("kind", kind);
+    return apiRequest<import("./remediation-notifications").RemediationNotificationInbox>("/remediation/verification-inbox", { query, signal });
+  },
   exposureHandoffs: (scope: ScopeSelection = {}) =>
     apiRequest<ExposureHandoffCollection>("/remediation/exposure-handoffs", {
       query: scopeToSearchParams(scope),
@@ -1330,6 +1500,12 @@ export const remediationApi = {
 // ---------------------------------------------------------------------------
 
 export const networkApi = {
+  /** Reauthorize exact current finding evidence without writing or generating a fix. */
+  review: (scope: ScopeSelection, reference: NetworkReviewReference, options: { signal?: AbortSignal } = {}) => {
+    const query = scopeToSearchParams(scope);
+    Object.entries(reference).forEach(([key, value]) => query.set(key, value));
+    return apiRequest<NetworkFindingReview>("/network/review", { query, signal: options.signal });
+  },
   topology: (
     scope: ScopeSelection = {},
     options: { detail: "summary" | "full" } = { detail: "full" },
@@ -1373,6 +1549,56 @@ export const networkApi = {
       `/network/topology/resources/${resourcePath}/details`,
       { query },
     );
+  },
+
+  /** Read personal saved declarations and receipts without current Network acquisition. */
+  intents: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<NetworkIntentSuite>("/network/intents", {
+      query: scopeToSearchParams(scope), signal: options.signal,
+    }),
+
+  /** Replace only reviewed declarations; this does not change network policy. */
+  saveIntents: (
+    scope: ScopeSelection, expectedRevision: number, tests: NetworkIntentTest[],
+    options: { signal?: AbortSignal } = {},
+  ) => apiRequest<NetworkIntentSuite>("/network/intents", {
+    method: "PUT", query: scopeToSearchParams(scope), signal: options.signal,
+    body: { expected_revision: expectedRevision, tests },
+  }),
+
+  /** Explicitly analyze the saved reviewed suite, never browser-submitted results. */
+  runIntents: (
+    scope: ScopeSelection, expectedRevision: number, options: { signal?: AbortSignal } = {},
+  ) => apiRequest<NetworkIntentSuite>("/network/intents/run", {
+    method: "POST", query: scopeToSearchParams(scope), signal: options.signal,
+    body: { expected_revision: expectedRevision },
+  }),
+
+  /** Read retained safe topology projections, never implicitly capture current data. */
+  topologyHistory: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<NetworkTopologyHistory>("/network/topology/history", {
+      query: scopeToSearchParams(scope), signal: options.signal,
+    }),
+
+  /** Retain one currently authorized server projection at the reviewed revision. */
+  captureTopology: (
+    scope: ScopeSelection, expectedRevision: number, options: { signal?: AbortSignal } = {},
+  ) => apiRequest<NetworkTopologyHistory>("/network/topology/history", {
+    method: "POST", query: scopeToSearchParams(scope), signal: options.signal,
+    body: { expected_revision: expectedRevision },
+  }),
+
+  /** Compare only the selected retained captures with bounded server paging. */
+  compareTopology: (
+    scope: ScopeSelection, baselineId: string, targetId: string, offset = 0,
+    options: { signal?: AbortSignal } = {},
+  ) => {
+    const query = scopeToSearchParams(scope);
+    query.set("baseline_id", baselineId); query.set("target_id", targetId);
+    query.set("offset", String(offset)); query.set("limit", "50");
+    return apiRequest<NetworkTopologyComparison>("/network/topology/history/compare", {
+      query, signal: options.signal,
+    });
   },
 
   /** "Which spokes bypass the firewall?" */
@@ -1502,10 +1728,59 @@ export const vulnerabilityApi = {
       { query, signal: options.signal },
     );
   },
+  /** Read exact-principal/scope retained aggregates without current source acquisition. */
+  exposureHistory: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").ExposureHistory>("/vulnerabilities/exposure/history", {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Explicitly reacquire server aggregates and append against the reviewed history revision. */
+  captureExposureObservation: (scope: ScopeSelection, expectedRevision: number, generation?: string) =>
+    apiRequest<import("./types").ExposureHistory>("/vulnerabilities/exposure/history", {
+      method: "POST", query: scopeToSearchParams(scope),
+      body: { expected_revision: expectedRevision, ...(generation ? { generation } : {}) },
+    }),
+  /** Read retained-evidence candidates and personal workflow declarations, without providers. */
+  exposureRecovery: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").ExposureRecoveryState>("/vulnerabilities/exposure/recovery", {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Append one explicit revision-bound review declaration; never repairs sources. */
+  reviewExposureRecovery: (scope: ScopeSelection, review: import("./types").ExposureRecoveryReview) =>
+    apiRequest<import("./types").ExposureRecoveryState>("/vulnerabilities/exposure/recovery", {
+      method: "POST", query: scopeToSearchParams(scope), body: review,
+    }),
+  /** Read personal immutable patch-review snapshots without current provider acquisition. */
+  patchReviews: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").PatchReviewHistory>("/vulnerabilities/exposure/patch-reviews", { query: scopeToSearchParams(scope), signal }),
+  /** Reacquire and retain selected finding identities, never executing a patch. */
+  createPatchReview: (query: ExposureQueryState, expectedRevision: number, exposureIds: string[], owner: string, note: string) =>
+    apiRequest<import("./types").PatchReviewHistory>("/vulnerabilities/exposure/patch-reviews", {
+      method: "POST", query: scopeToSearchParams(query.scope),
+      body: {
+        expected_revision: expectedRevision, generation: query.generation, cursor: query.cursor,
+        page_size: query.pageSize, sort_by: query.sort.field, sort_direction: query.sort.direction,
+        filters: query.filters, exposure_ids: exposureIds, owner, note,
+      },
+    }),
   exposureCatalog: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
     apiRequest<ExposureQueryCatalog>("/vulnerabilities/exposure/catalog", {
       query: scopeToSearchParams(scope),
       signal: options.signal,
+    }),
+  /** Read personal retained CVE receipts without acquiring current sources. */
+  cveEvidence: (cveId: string, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").CveEvidenceHistory>(`/cves/${encodeURIComponent(cveId)}/evidence`, { query: scopeToSearchParams(scope), signal }),
+  /** Reacquire one authorized page/catalog pair; never accepts client evidence. */
+  captureCveEvidence: (cveId: string, query: ExposureQueryState, expectedRevision: number) =>
+    apiRequest<import("./types").CveEvidenceHistory>(`/cves/${encodeURIComponent(cveId)}/evidence`, {
+      method: "POST", query: scopeToSearchParams(query.scope),
+      body: { expected_revision: expectedRevision, generation: query.generation, cursor: query.cursor,
+        page_size: query.pageSize, sort_by: query.sort.field, sort_direction: query.sort.direction, filters: query.filters },
+    }),
+  /** Reauthorize exact retained bytes before client checksum verification/download. */
+  cveEvidenceBundle: (cveId: string, receiptId: string, scope: ScopeSelection) =>
+    apiRequest<import("./types").CveEvidenceBundle>(`/cves/${encodeURIComponent(cveId)}/evidence/${encodeURIComponent(receiptId)}`, {
+      query: scopeToSearchParams(scope),
     }),
   exposureExternalCatalog: <TItem = Record<string, unknown>>(
     weaknessId: string,
@@ -1664,6 +1939,32 @@ export const complianceApi = {
 };
 
 export const twinApi = {
+  /** Recover exact personal retained captures without current provider acquisition. */
+  snapshots: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./twin-history").TwinHistory>("/twin/snapshots", { query: scopeToSearchParams(scope), signal }),
+  /** Explicitly capture a fresh server projection, not the previously displayed graph. */
+  captureSnapshot: (scope: ScopeSelection, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./twin-history").TwinHistory>("/twin/snapshots", {
+      method: "POST", query: scopeToSearchParams(scope), body: { expected_revision: expectedRevision }, signal,
+    }),
+  /** Explicit removal from a reviewed history revision; source observations are untouched. */
+  removeSnapshot: (scope: ScopeSelection, snapshotId: string, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./twin-history").TwinHistory>("/twin/snapshots/remove", {
+      method: "POST", query: scopeToSearchParams(scope),
+      body: { snapshot_id: snapshotId, expected_revision: expectedRevision }, signal,
+    }),
+  /** Compare two owned same-scope captures without re-reading current providers. */
+  compareSnapshots: (scope: ScopeSelection, baselineId: string, candidateId: string, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("baseline_id", baselineId); query.set("candidate_id", candidateId);
+    return apiRequest<import("./twin-history").TwinCaptureComparison>("/twin/snapshots/compare", { query, signal });
+  },
+  /** Provider-free scenario pair bound to one exact immutable retained projection. */
+  retainedScenarios: (scope: ScopeSelection, snapshotId: string, left: string, right: string, target: string, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("left", left); query.set("right", right); query.set("target", target);
+    return apiRequest<import("./twin-history").TwinScenarioPair>(`/twin/snapshots/${encodeURIComponent(snapshotId)}/scenarios`, { query, signal });
+  },
   query: (q = "", scope: ScopeSelection = {}) => {
     const query = scopeToSearchParams(scope);
     if (q) query.set("q", q);
@@ -1693,6 +1994,25 @@ export const twinApi = {
 };
 
 export const multiAgentApi = {
+  /** Admit one caller-known background job; the same identity never redispatches. */
+  startJob: (jobId: string, objective: string, scope: ScopeSelection = {}, timeoutSeconds = 30) =>
+    apiRequest<import("./types").InvestigationJob>("/agents/investigation-jobs", {
+      method: "POST", query: scopeToSearchParams(scope),
+      body: { job_id: jobId, objective, timeout_seconds: timeoutSeconds },
+    }),
+  /** Recover exact outcome metadata without acquiring sources or restarting work. */
+  job: (jobId: string, scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<import("./types").InvestigationJob>(`/agents/investigation-jobs/${encodeURIComponent(jobId)}`, {
+      query: scopeToSearchParams(scope), signal: options.signal,
+    }),
+  /** Request stop of new scheduling; already dispatched provider work is not cancelled. */
+  stopJob: (jobId: string, scope: ScopeSelection = {}) =>
+    apiRequest<import("./types").InvestigationJob>(`/agents/investigation-jobs/${encodeURIComponent(jobId)}/stop`, {
+      method: "POST", query: scopeToSearchParams(scope),
+    }),
+  /** Read cached provider observations without refreshing or starting tools. */
+  runtimeReadiness: (scope: ScopeSelection = {}, options: { signal?: AbortSignal } = {}) =>
+    apiRequest<import("./types").AgentRuntimeReadiness>("/agents/runtime-readiness", { query: scopeToSearchParams(scope), signal: options.signal }),
   catalog: (scope: ScopeSelection = {}) =>
     apiRequest<{ agents: AutonomousAgent[] }>("/agents/catalog", { query: scopeToSearchParams(scope) }),
   investigate: (objective: string, scope: ScopeSelection = {}, timeoutSeconds = 8) =>
@@ -1714,6 +2034,26 @@ export const multiAgentApi = {
 };
 
 export const kbApi = {
+  /** Read personal retained KB source observations without provider acquisition. */
+  observations: (kbId: string, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").KbObservationHistory>(`/kbs/${encodeURIComponent(kbId)}/observations`, {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Explicitly retain the latest authorized Silver projection with optimistic revision. */
+  captureObservation: (kbId: string, scope: ScopeSelection, expectedRevision: number, generation: string) =>
+    apiRequest<import("./types").KbObservationHistory>(`/kbs/${encodeURIComponent(kbId)}/observations`, {
+      method: "POST", query: scopeToSearchParams(scope), body: { expected_revision: expectedRevision, generation },
+    }),
+  /** Read private exact-scope KB declarations without refreshing provider data. */
+  reviews: (kbId: string, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").KbReviewHistory>(`/kbs/${encodeURIComponent(kbId)}/reviews`, {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Reauthorize/reacquire Silver metadata before retaining an operator declaration. */
+  createReview: (kbId: string, scope: ScopeSelection, expectedRevision: number, declaration: import("./types").KbReviewDeclaration) =>
+    apiRequest<import("./types").KbReviewHistory>(`/kbs/${encodeURIComponent(kbId)}/reviews`, {
+      method: "POST", query: scopeToSearchParams(scope), body: { ...declaration, expected_revision: expectedRevision },
+    }),
   detail: (
     kbId: string,
     scope: ScopeSelection = {},
@@ -1766,6 +2106,22 @@ export const healthApi = {
 };
 
 export const resourceHealthApi = {
+  /** Read personal retained receipts after current Inventory membership authorization. */
+  history: (resourceId: string, scope: ScopeSelection, options: { signal?: AbortSignal } = {}) => {
+    const query = scopeToSearchParams(scope);
+    query.set("resource_id", resourceId);
+    return apiRequest<import("./types").ResourceHealthHistory>("/resource-health/resource/history", {
+      query, signal: options.signal,
+    });
+  },
+  /** Acquire measurements on the server and append with the reviewed revision only. */
+  captureHistory: (resourceId: string, scope: ScopeSelection, expectedRevision: number, options: { signal?: AbortSignal } = {}) => {
+    const query = scopeToSearchParams(scope);
+    query.set("resource_id", resourceId);
+    return apiRequest<import("./types").ResourceHealthHistory>("/resource-health/resource/history", {
+      method: "POST", query, body: { expected_revision: expectedRevision }, signal: options.signal,
+    });
+  },
   /** Live CPU/network/disk utilization for in-scope compute resources. */
   snapshot: (scope: ScopeSelection = {}, forceRefresh = false) => {
     const query = scopeToSearchParams(scope);
@@ -1803,10 +2159,86 @@ export type { Envelope };
  * global scope so the API applies subscription isolation server-side.
  */
 export const governanceApi = {
+  /** Recover shared exact-scope advisory campaign metadata under current grants. */
+  campaigns: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignCollection>("/governance/access-campaigns", { query: scopeToSearchParams(scope), signal }),
+  /** Read frozen source and attributed recommendations without current providers. */
+  campaign: (scope: ScopeSelection, campaignId: string, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignDetail>(`/governance/access-campaigns/${encodeURIComponent(campaignId)}`, { query: scopeToSearchParams(scope), signal }),
+  /** Explicit assigned-source capture; only manager authority over the full scope suffices. */
+  createCampaign: (scope: ScopeSelection, body: import("./access-campaigns").CampaignCreate, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignCollection>("/governance/access-campaigns", { method: "POST", body, query: scopeToSearchParams(scope), signal }),
+  /** Record only the authenticated assigned reviewer's immutable recommendation. */
+  decideCampaign: (scope: ScopeSelection, body: import("./access-campaigns").CampaignDecisionRequest, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignCollection>("/governance/access-campaigns/decisions", { method: "POST", body, query: scopeToSearchParams(scope), signal }),
+  /** Complete/cancel reviewed work, never Azure access or execution approvals. */
+  closeCampaign: (scope: ScopeSelection, action: "complete" | "cancel", body: import("./access-campaigns").CampaignClosure, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignCollection>(`/governance/access-campaigns/${action}`, { method: "POST", body, query: scopeToSearchParams(scope), signal }),
+  /** Remove only a reviewed terminal stored copy; downloaded records remain. */
+  removeCampaign: (scope: ScopeSelection, body: import("./access-campaigns").CampaignAddress, signal?: AbortSignal) =>
+    apiRequest<import("./access-campaigns").AccessCampaignCollection>("/governance/access-campaigns/remove", { method: "POST", body, query: scopeToSearchParams(scope), signal }),
+  /** Recover personal exact-scope metadata without acquiring live evidence. */
+  retainedExports: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./audit-exports").AuditCaptureCollection>("/governance/exports/retained", {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Explicitly generate a current pack and retain its standard-redacted bytes. */
+  captureExport: (scope: ScopeSelection, kind: import("./audit-exports").AuditCaptureKind, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./audit-exports").AuditCaptureCollection>("/governance/exports/retained", {
+      method: "POST", query: scopeToSearchParams(scope), signal,
+      body: { kind, expected_revision: expectedRevision },
+    }),
+  /** Read immutable content independently of current providers. */
+  retainedExport: (scope: ScopeSelection, exportId: string, signal?: AbortSignal) =>
+    apiRequest<import("./audit-exports").AuditCaptureDetail>(`/governance/exports/retained/${encodeURIComponent(exportId)}`, {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Remove only the reviewed stored copy; downloaded copies cannot be revoked. */
+  removeExport: (scope: ScopeSelection, exportId: string, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./audit-exports").AuditCaptureCollection>("/governance/exports/retained/remove", {
+      method: "POST", query: scopeToSearchParams(scope), signal,
+      body: { export_id: exportId, expected_revision: expectedRevision },
+    }),
   finopsSummary: (scope: ScopeSelection = {}) =>
     apiRequest<FinOpsSummary>("/governance/finops/summary", {
       query: scopeToSearchParams(scope),
     }),
+
+  finopsVerifiedRemediations: (
+    scope: ScopeSelection = {},
+    offset = 0,
+    limit = 50,
+    signal?: AbortSignal,
+  ) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<{
+      executions: FinOpsVerifiedRemediation[];
+      count: number;
+      read_only: boolean;
+      boundary: string;
+    }>("/governance/finops/verified-remediations", { query, signal });
+  },
+
+  finopsRemediationCostComparison: (
+    scope: ScopeSelection,
+    input: {
+      execution_id: string;
+      baseline_start: string;
+      baseline_end: string;
+      followup_start: string;
+      followup_end: string;
+    },
+    signal?: AbortSignal,
+  ) => {
+    const query = scopeToSearchParams(scope);
+    for (const [name, value] of Object.entries(input)) query.set(name, value);
+    return apiRequest<FinOpsRemediationCostComparison>(
+      "/governance/finops/remediation-cost-comparison",
+      { query, signal },
+    );
+  },
 
   finopsOpportunities: (scope: ScopeSelection = {}) =>
     apiRequest<{ opportunities: SavingsOpportunity[]; count: number }>(
@@ -1839,6 +2271,17 @@ export const governanceApi = {
       "/governance/identity/principals",
       { query: scopeToSearchParams(scope) },
     ),
+
+  /** Read a bounded, scoped advisory queue; it never evaluates or changes access. */
+  identityLeastPrivilege: (scope: ScopeSelection = {}, offset = 0, limit = 50) => {
+    const query = scopeToSearchParams(scope);
+    query.set("offset", String(offset));
+    query.set("limit", String(limit));
+    return apiRequest<IdentityLeastPrivilegeReview>(
+      "/governance/identity/least-privilege",
+      { query },
+    );
+  },
 
   subscriptionOwners: (scope: ScopeSelection = {}) =>
     apiRequest<{ owners: SubscriptionOwnerRecord[]; count: number }>(
@@ -1881,50 +2324,120 @@ export const governanceApi = {
       query: scopeToSearchParams(scope),
     }),
 
-  settings: (scope: ScopeSelection = {}) =>
+  settings: (scope: ScopeSelection = {}, signal?: AbortSignal) =>
     apiRequest<EnterpriseSettings>("/governance/settings", {
       query: scopeToSearchParams(scope),
+      signal,
     }),
 
-  updateSettings: (payload: Record<string, unknown>) =>
+  updateSettings: (payload: EnterpriseSettingsChange, signal?: AbortSignal) =>
     apiRequest<EnterpriseSettings>("/governance/settings", {
       method: "PATCH",
       body: payload,
+      signal,
     }),
 };
 
 /** Pre-deployment change risk and impact assessment. */
 export const predeployApi = {
-  sources: () => apiRequest<ChangeAssessmentSources>("/changes/assessment-sources"),
+  /** Export only the exact scoped retained receipt matching the reviewed artifact. */
+  reviewContract: (scope: ScopeSelection, assessmentId: string, artifactSha256: string, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("artifact_sha256", artifactSha256);
+    return apiRequest<import("./predeploy-history").CIReviewContract>(
+      `/changes/retained-assessments/${encodeURIComponent(assessmentId)}/review-contract`, { query, signal },
+    );
+  },
+  /** Provider-free personal exact-scope receipt recovery. */
+  retained: (scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./predeploy-history").AssessmentHistory>("/changes/retained-assessments", {
+      query: scopeToSearchParams(scope), signal,
+    }),
+  /** Retain only server-owned analysis matching the reviewed source digest and collection revision. */
+  retain: (scope: ScopeSelection, assessmentId: string, artifactSha256: string, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./predeploy-history").AssessmentHistory>("/changes/retained-assessments", {
+      method: "POST", query: scopeToSearchParams(scope), signal,
+      body: { assessment_id: assessmentId, artifact_sha256: artifactSha256, expected_revision: expectedRevision },
+    }),
+  /** Explicitly remove a receipt, not its source assessment or artifact. */
+  removeRetained: (scope: ScopeSelection, assessmentId: string, expectedRevision: number, signal?: AbortSignal) =>
+    apiRequest<import("./predeploy-history").AssessmentHistory>("/changes/retained-assessments/remove", {
+      method: "POST", query: scopeToSearchParams(scope), signal,
+      body: { assessment_id: assessmentId, expected_revision: expectedRevision },
+    }),
+  /** Compare two authorized retained summaries without current provider acquisition. */
+  compareRetained: (scope: ScopeSelection, baselineId: string, candidateId: string, signal?: AbortSignal) => {
+    const query = scopeToSearchParams(scope);
+    query.set("baseline_id", baselineId); query.set("candidate_id", candidateId);
+    return apiRequest<import("./predeploy-history").AssessmentComparison>("/changes/retained-assessments/compare", { query, signal });
+  },
+  sources: (scope: ScopeSelection = {}) => apiRequest<ChangeAssessmentSources>("/changes/assessment-sources", {
+    query: scopeToSearchParams(scope),
+  }),
 
-  assess: (source: string, payload: Record<string, unknown>, changeId = "") =>
+  /** Assess only the selected scope; optional exact finding context is rechecked server-side. */
+  assess: (source: string, payload: Record<string, unknown>, changeId = "", options: {
+    scope?: ScopeSelection; networkReview?: NetworkReviewReference; signal?: AbortSignal;
+  } = {}) =>
     apiRequest<ChangeAssessment>("/changes/assess", {
-      method: "POST",
-      body: { source, payload, change_id: changeId },
+      method: "POST", query: scopeToSearchParams(options.scope ?? {}), signal: options.signal,
+      body: { source, payload, change_id: changeId, ...(options.networkReview ? { network_review: options.networkReview } : {}) },
     }),
 
   assessments: (scope: ScopeSelection = {}) =>
-    apiRequest<{ assessments: ChangeAssessmentSummary[]; count: number }>(
+    apiRequest<ChangeAssessmentSummary[]>(
       "/changes/assessments",
       { query: scopeToSearchParams(scope) },
     ),
 
-  assessment: (assessmentId: string) =>
+  assessment: (assessmentId: string, scope: ScopeSelection = {}) =>
     apiRequest<ChangeAssessment>(
       `/changes/assessments/${encodeURIComponent(assessmentId)}`,
+      { query: scopeToSearchParams(scope) },
     ),
 };
 
 /** Durable Phase 1 situation reads; unlike the legacy incident API these IDs and records are persisted. */
 export const situationsApi = {
-  list: (scope: ScopeSelection = {}, query = "", priority = "", offset = 0, limit = 100) => {
+  /** Read an authorized current case's run-bound response-review declaration. */
+  deadline: (id: string, scope: ScopeSelection, signal?: AbortSignal) =>
+    apiRequest<import("./types").SituationResponseDeadline>(`/situations/${encodeURIComponent(id)}/response-deadline`, { query: scopeToSearchParams(scope), signal }),
+  /** Set or explicitly clear a declaration; never approve execution or certify an SLA. */
+  declareDeadline: (id: string, scope: ScopeSelection, change: { expected_revision: number; evidence_run_id: string; due_at: string | null; reason: string }, signal?: AbortSignal) =>
+    apiRequest<import("./types").SituationResponseDeadline>(`/situations/${encodeURIComponent(id)}/response-deadline`, {
+      method: "PUT", query: scopeToSearchParams(scope), body: change, signal,
+    }),
+  /** Read exact-scope, server-attributed handover annotations. */
+  notes: (id: string, scope: ScopeSelection) =>
+    apiRequest<import("./types").SituationNotesState>(`/situations/${encodeURIComponent(id)}/notes`, { query: scopeToSearchParams(scope) }),
+  /** Append one annotation against a reviewed history revision and evidence run. */
+  appendNote: (id: string, scope: ScopeSelection, change: { expected_revision: number; evidence_run_id: string; text: string }) =>
+    apiRequest<import("./types").SituationNotesState>(`/situations/${encodeURIComponent(id)}/notes`, {
+      method: "POST", query: scopeToSearchParams(scope), body: change,
+    }),
+  list: (scope: ScopeSelection = {}, query = "", priority = "", offset = 0, limit = 100, triage?: {
+    owner: string; lifecycle_state: string; older_than_hours: number | null; sort: "default" | "oldest" | "newest";
+    response_deadline?: "" | "due" | "overdue" | "unknown" | "closed";
+  }) => {
     const params = scopeToSearchParams(scope);
     if (query) params.set("q", query);
     if (priority) params.set("priority", priority);
     params.set("offset", String(offset));
     params.set("limit", String(limit));
+    if (triage) {
+      if (triage.owner) params.set("assigned_owner", triage.owner);
+      if (triage.lifecycle_state) params.set("lifecycle_state", triage.lifecycle_state);
+      if (triage.older_than_hours !== null) params.set("older_than_hours", String(triage.older_than_hours));
+      if (triage.sort !== "default") params.set("sort", triage.sort);
+      if (triage.response_deadline) params.set("response_deadline", triage.response_deadline);
+    }
     return apiRequest<import("./types").DurableSituation[]>("/situations", { query: params });
   },
+  /** Reauthorize a bounded selection of exact evidence runs for read-only handoff. */
+  handoff: (scope: ScopeSelection, selections: Array<{ situation_id: string; run_id: string }>) =>
+    apiRequest<{ artifact: Record<string, unknown>; sha256: string; count: number }>("/situations/handoff", {
+      method: "POST", query: scopeToSearchParams(scope), body: { selections },
+    }),
   get: (id: string, scope: ScopeSelection = {}) =>
     apiRequest<import("./types").DurableSituation>(`/situations/${encodeURIComponent(id)}`, {
       query: scopeToSearchParams(scope),

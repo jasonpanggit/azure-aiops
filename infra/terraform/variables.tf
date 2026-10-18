@@ -49,6 +49,28 @@ variable "deployer_object_id" {
   default     = ""
 }
 
+variable "fabric_gold_grounding_agent_id" {
+  description = "Verified Data Agent item ID in this environment's Fabric workspace. Empty omits optional grounding metadata rather than copying a historical item ID from deployment defaults. Does not enable runtime grounding."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.fabric_gold_grounding_agent_id == "" || can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.fabric_gold_grounding_agent_id))
+    error_message = "fabric_gold_grounding_agent_id must be empty or a verified Data Agent item UUID."
+  }
+}
+
+variable "foundry_deployer_object_id" {
+  description = "Stable object ID receiving Foundry deployment and knowledge-search roles. Set to the existing role recipient when changing Terraform credentials to preserve that recipient's access. Empty uses the current deployer."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.foundry_deployer_object_id == "" || can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.foundry_deployer_object_id))
+    error_message = "foundry_deployer_object_id must be empty or a principal object UUID."
+  }
+}
+
 variable "enable_role_assignments" {
   description = "Whether to create Azure RBAC role assignments. Requires User Access Administrator or Owner privileges."
   type        = bool

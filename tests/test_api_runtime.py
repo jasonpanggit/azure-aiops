@@ -325,6 +325,37 @@ def test_change_provider_does_not_hydrate_operations_agent() -> None:
     assert change.freshness == "2026-09-10T00:00:00Z"
 
 
+def test_verification_inbox_runtime_reader_never_constructs_execution_provider(monkeypatch, tmp_path):
+    from intelligence.remediation.execution_store import RemediationExecutionStore
+
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "demo")
+    context = build_context()
+    store = RemediationExecutionStore(tmp_path / "stored-executions.json")
+    record, _ = store.create_or_get(
+        "retired-plan", requested_by="operator", approved_by="approver",
+        execution_snapshot={"target_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm"},
+        scope_attributes={"subscription": "sub-a"},
+    )
+    store.update(record["execution_id"], status="failed")
+    monkeypatch.setattr(runtime_module, "_remediation_execution_store", lambda: store)
+
+    def forbidden(scope):
+        raise AssertionError("The inbox must not construct a live execution/planner provider")
+
+    context.execution_provider = forbidden
+    context.remediation_provider = forbidden
+    before = store.path.read_bytes()
+    response = TestClient(create_app(context)).get(
+        "/api/v1/remediation/verification-inbox?subscription=sub-a",
+        headers={"Authorization": "Bearer demo-token-0123456789abcdef"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["notifications"][0]["execution_id"] == record["execution_id"]
+    assert store.path.read_bytes() == before
+
+
 def test_resource_health_discovers_container_apps(
     monkeypatch,
     tmp_path,

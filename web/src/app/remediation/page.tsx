@@ -23,7 +23,7 @@ import {
   encodeExposureQueryState,
   parseExposureQueryState,
 } from "@/lib/exposure-query-state";
-import type { ScopeSelection } from "@/lib/scope";
+import { ScopeBookmarkError, scopedBookmark, type ScopeSelection } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import {
   isCanonicalAzureResourceId,
@@ -55,6 +55,9 @@ import { usePollingBackoff } from "./polling";
 import { BLOCKER_VOCABULARY, WORKFLOW_STEPS, blockerCopyWithTelemetry } from "./blockers";
 import type { WorkflowStep } from "./blockers";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
+import { RemediationVerificationInbox } from "@/components/RemediationVerificationInbox";
+import { RemediationRollouts } from "@/components/RemediationRollouts";
+import { DecisionSummary } from "./DecisionSummary";
 
 const COMPLIANCE_FINDING_TYPES = new Set([
   "firewall_bypass",
@@ -676,6 +679,21 @@ function withExecution(
 function RemediationContent() {
   const { scope } = useScope();
   const searchParams = useSearchParams();
+  let effectiveScope: ScopeSelection;
+  try { effectiveScope = scopedBookmark(searchParams, scope); }
+  catch (error) {
+    if (!(error instanceof ScopeBookmarkError)) throw error;
+    return <div className="page-container">
+      <StatePanel title="Remediation bookmark unavailable" message={error.message} tone="error" />
+      <Link className="button" href="/remediation">Clear remediation bookmark</Link>
+    </div>;
+  }
+  return <RemediationWorkspace key={`${JSON.stringify(effectiveScope)}::${searchParams.toString()}`} effectiveScope={effectiveScope} />;
+}
+
+function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelection }) {
+  const searchParams = useSearchParams();
+  const requestedPlanId = searchParams.get("plan_id") ?? "";
   const requestedResource = searchParams.get("resource_key") ?? searchParams.get("resource") ?? "";
   const fromCve = searchParams.get("cve") ?? "";
   const fromKb = searchParams.get("kb") ?? "";
@@ -684,14 +702,6 @@ function RemediationContent() {
   const requestedHandoff = searchParams.get("handoff") ?? "";
   const requestedReturnFocus = searchParams.get("return_focus") ?? "";
   const complianceReview = complianceFindingReview(searchParams);
-  const effectiveScope = useMemo<ScopeSelection>(() => {
-    const scoped: ScopeSelection = { ...scope };
-    const subscriptions = searchParams.getAll("subscription").filter(Boolean);
-    const connections = searchParams.getAll("subscription_connection").filter(Boolean);
-    if (subscriptions.length) scoped.subscription = subscriptions;
-    if (connections.length) scoped.subscription_connection = connections;
-    return scoped;
-  }, [scope, searchParams]);
   const scopeKey = JSON.stringify(effectiveScope);
   const returnTo = useMemo(
     () =>
@@ -758,8 +768,14 @@ function RemediationContent() {
   const [copilotOpen, setCopilotOpen] = useState(false);
   const riskInvokerRef = useRef<HTMLButtonElement>(null);
   const requestId = useRef(0);
+  const submissionId = useRef(0);
   const patchFetchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const workflowFetchKeyRef = useRef<string | null>(null);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   // Phase 03.5 CR-05 fix: a decision attests exactly one required role
   // (approval_role_id), so the operator must pick which unmet requirement
@@ -809,10 +825,14 @@ function RemediationContent() {
       setSelectedPlanId("");
       return;
     }
+    if (requestedPlanId) {
+      setSelectedPlanId(planRows.some(plan => plan.plan_id === requestedPlanId) ? requestedPlanId : "");
+      return;
+    }
     if (selectedPlanId && planRows.some((plan) => plan.plan_id === selectedPlanId)) return;
     const contextual = planRows.find((plan) => resourceMatches(plan, requestedResource));
     setSelectedPlanId((contextual ?? planRows[0]).plan_id);
-  }, [complianceReview, planRows, requestedResource, selectedPlanId]);
+  }, [complianceReview, planRows, requestedResource, requestedPlanId, selectedPlanId]);
 
   useEffect(() => {
     if (!selectedPlanId) {
@@ -865,6 +885,7 @@ function RemediationContent() {
       patchFetchDebounceRef.current = null;
     }
     if (isPatchSelectionOnlyChange) {
+      setPatchRevalidating(true);
       patchFetchDebounceRef.current = setTimeout(runFetch, 400);
     } else {
       runFetch();
@@ -882,6 +903,11 @@ function RemediationContent() {
   }, [scopeKey, selectedPlanId, workflowRefresh, selectedPatchIds]);
 
   useEffect(() => {
+    submissionId.current += 1;
+    setSubmitting(false);
+    setDecision("approved");
+    setDecisionReason("");
+    setDecisionExpiresAt("");
     setActiveStep(selectedPlanId ? "review" : "select");
     setActionError("");
     setActionNotice("");
@@ -908,6 +934,7 @@ function RemediationContent() {
       !approvedSnapshot
       || !currentSnapshot
       || !currentSnapshot.available_patches
+      || currentSnapshot.rollout
       || approvedSnapshot.action_version !== workflow.plan.action_version
     ) {
       return;
@@ -957,11 +984,19 @@ function RemediationContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workflow?.preview?.execution_snapshot?.available_patches]);
 
+  function recordExecution(execution: RemediationExecution) {
+    if (execution.plan_id !== workflow?.plan.plan_id) {
+      throw new Error("The returned execution does not belong to this plan. Reload this page before another action.");
+    }
+    setWorkflow(current => current?.plan.plan_id === execution.plan_id ? withExecution(current, execution) : current);
+  }
+
   const executionStatus = workflow?.execution?.status ?? "";
   const pollingActive = ["queued", "running", "retrying"].includes(executionStatus);
   const pollingResetKey = `${selectedPlanId}:${workflow?.execution?.execution_id ?? ""}`;
   const handlePoll = useRef(() => setWorkflowRefresh((value) => value + 1));
   handlePoll.current = () => {
+    const currentRequest = requestId.current;
     const executionId = workflow?.execution?.execution_id;
     if (!executionId) {
       setWorkflowRefresh((value) => value + 1);
@@ -969,11 +1004,11 @@ function RemediationContent() {
     }
     void remediationApi.execution(executionId, effectiveScope)
       .then((response) => {
-        setWorkflow((current) => (
-          current ? withExecution(current, response.data) : current
-        ));
+        if (!mounted.current || requestId.current !== currentRequest) return;
+        recordExecution(response.data);
       })
       .catch((error) => {
+        if (!mounted.current || requestId.current !== currentRequest) return;
         setActionError(error instanceof Error ? error.message : String(error));
       });
   };
@@ -1003,6 +1038,8 @@ function RemediationContent() {
       setActionError("Select which required role this decision is for.");
       return;
     }
+    const currentRequest = requestId.current;
+    const currentSubmission = ++submissionId.current;
     setSubmitting(true);
     setActionError("");
     try {
@@ -1023,6 +1060,7 @@ function RemediationContent() {
         },
         effectiveScope,
       );
+      if (!mounted.current || requestId.current !== currentRequest) return;
       setDecisionReason("");
       setSelectedRoleId("");
       setActionNotice("");
@@ -1033,6 +1071,7 @@ function RemediationContent() {
           : "approve",
       );
     } catch (error) {
+      if (!mounted.current || requestId.current !== currentRequest) return;
       if (error instanceof ApiError && error.details?.reason === "stale_execution_preview") {
         setActionError("The preview changed. Review the refreshed impact before approving.");
         setWorkflowRefresh((value) => value + 1);
@@ -1041,13 +1080,15 @@ function RemediationContent() {
         setActionError(error instanceof Error ? error.message : String(error));
       }
     } finally {
-      setSubmitting(false);
+      if (mounted.current && submissionId.current === currentSubmission) setSubmitting(false);
     }
   };
 
   const runPlan = async () => {
     const planId = String(workflow?.plan.plan_id ?? "");
     if (!planId || !workflow?.approval.current || submitting) return;
+    const currentRequest = requestId.current;
+    const currentSubmission = ++submissionId.current;
     setSubmitting(true);
     setActionError("");
     setActionNotice("");
@@ -1057,6 +1098,7 @@ function RemediationContent() {
         effectiveScope,
         selectedPatchIds ?? [],
       );
+      if (!mounted.current || requestId.current !== currentRequest) return;
       const latest = revalidated.data;
       setWorkflow(latest);
       if (
@@ -1076,52 +1118,59 @@ function RemediationContent() {
         return;
       }
       const response = await remediationApi.execute(planId, effectiveScope);
-      setWorkflow((current) => (
-        current ? withExecution(current, response.data) : current
-      ));
+      if (!mounted.current || requestId.current !== currentRequest) return;
+      recordExecution(response.data);
       setConfirmRun(false);
       setActiveStep("verify");
     } catch (error) {
+      if (!mounted.current || requestId.current !== currentRequest) return;
+      setConfirmRun(false);
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
-      setSubmitting(false);
+      if (mounted.current && submissionId.current === currentSubmission) setSubmitting(false);
     }
   };
 
   const retryExecution = async (execution: RemediationExecution) => {
     if (!execution.retryable || submitting) return;
+    const currentRequest = requestId.current;
+    const currentSubmission = ++submissionId.current;
     setSubmitting(true);
     setActionError("");
     try {
       const response = await remediationApi.retry(execution.execution_id, effectiveScope);
-      setWorkflow((current) => (
-        current ? withExecution(current, response.data) : current
-      ));
+      if (!mounted.current || requestId.current !== currentRequest) return;
+      recordExecution(response.data);
     } catch (error) {
+      if (!mounted.current || requestId.current !== currentRequest) return;
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
-      setSubmitting(false);
+      if (mounted.current && submissionId.current === currentSubmission) setSubmitting(false);
     }
   };
 
   const cancelExecution = async (execution: RemediationExecution) => {
     if (!execution.cancellable || submitting) return;
+    const currentRequest = requestId.current;
+    const currentSubmission = ++submissionId.current;
     setSubmitting(true);
     setActionError("");
     try {
       const response = await remediationApi.cancel(execution.execution_id, effectiveScope);
-      setWorkflow((current) => (
-        current ? withExecution(current, response.data) : current
-      ));
+      if (!mounted.current || requestId.current !== currentRequest) return;
+      recordExecution(response.data);
     } catch (error) {
+      if (!mounted.current || requestId.current !== currentRequest) return;
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
-      setSubmitting(false);
+      if (mounted.current && submissionId.current === currentSubmission) setSubmitting(false);
     }
   };
 
   const approveProviderReview = async (execution: RemediationExecution) => {
     if (!execution.provider_reviewable || submitting) return;
+    const currentRequest = requestId.current;
+    const currentSubmission = ++submissionId.current;
     setSubmitting(true);
     setActionError("");
     try {
@@ -1129,44 +1178,48 @@ function RemediationContent() {
         execution.execution_id,
         effectiveScope,
       );
-      setWorkflow((current) => (
-        current ? withExecution(current, response.data) : current
-      ));
+      if (!mounted.current || requestId.current !== currentRequest) return;
+      recordExecution(response.data);
     } catch (error) {
+      if (!mounted.current || requestId.current !== currentRequest) return;
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
-      setSubmitting(false);
+      if (mounted.current && submissionId.current === currentSubmission) setSubmitting(false);
     }
   };
 
   const abandonExecution = async (execution: RemediationExecution) => {
     if (!execution.can_abandon || submitting) return;
+    const currentRequest = requestId.current;
+    const currentSubmission = ++submissionId.current;
     setSubmitting(true);
     setActionError("");
     try {
       const response = await remediationApi.abandon(execution.execution_id, effectiveScope);
-      setWorkflow((current) => (
-        current ? withExecution(current, response.data) : current
-      ));
+      if (!mounted.current || requestId.current !== currentRequest) return;
+      recordExecution(response.data);
       setWorkflowRefresh((value) => value + 1);
     } catch (error) {
+      if (!mounted.current || requestId.current !== currentRequest) return;
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
-      setSubmitting(false);
+      if (mounted.current && submissionId.current === currentSubmission) setSubmitting(false);
     }
   };
 
   const supersedeExecution = async (execution: RemediationExecution, reason: string) => {
     if (!execution.supersedable || submitting) return;
+    const currentRequest = requestId.current;
+    const currentSubmission = ++submissionId.current;
     setSubmitting(true);
     setActionError("");
     setSupersedeIneligibilityReason("");
     try {
       const response = await remediationApi.supersede(execution.execution_id, reason, effectiveScope);
-      setWorkflow((current) => (
-        current ? withExecution(current, response.data) : current
-      ));
+      if (!mounted.current || requestId.current !== currentRequest) return;
+      recordExecution(response.data);
     } catch (error) {
+      if (!mounted.current || requestId.current !== currentRequest) return;
       if (error instanceof ApiError && typeof error.details?.reason === "string") {
         setSupersedeIneligibilityReason(error.details.reason);
         setWorkflowRefresh((value) => value + 1);
@@ -1174,7 +1227,7 @@ function RemediationContent() {
         setActionError(error instanceof Error ? error.message : String(error));
       }
     } finally {
-      setSubmitting(false);
+      if (mounted.current && submissionId.current === currentSubmission) setSubmitting(false);
     }
   };
 
@@ -1199,13 +1252,23 @@ function RemediationContent() {
         row.handoff_id === requestedHandoff ||
         row.exposure_id === requestedHandoff,
     ) ?? null;
+  const previewPatchIds = workflow?.preview?.execution_snapshot?.patch_ids ?? [];
+  const requestedPatchIds = selectedPatchIds
+    ?? (workflow?.preview?.execution_snapshot?.rollout
+      ? previewPatchIds
+      : workflow?.preview?.execution_snapshot?.available_patches?.map(row => row.patch_id));
+  const patchBindingCurrent = !requestedPatchIds || (
+    requestedPatchIds.length === previewPatchIds.length
+    && requestedPatchIds.every(id => previewPatchIds.includes(id))
+  );
+  const decisionPending = patchRevalidating || !patchBindingCurrent;
   const canRun = Boolean(
     workflow?.action.executable
     && workflow.approval.current
     && workflow.preview?.execution_snapshot
     && workflow.plan.executable
     && businessEvidenceReady(workflow),
-  );
+  ) && !decisionPending;
   const pageError = plans.error && planRows.length === 0 ? plans.error : null;
 
   // Read-only Copilot context over the current governed workflow projection.
@@ -1418,6 +1481,11 @@ function RemediationContent() {
         onOpenCopilot={() => setCopilotOpen(true)}
       />
 
+      {!complianceReview && <>
+        <RemediationRollouts scope={effectiveScope} workflow={workflowLoading ? null : workflow} onChanged={() => setWorkflowRefresh(value => value + 1)} />
+        <RemediationVerificationInbox scope={effectiveScope} />
+      </>}
+
       {(requestedResource || fromCve || fromKb || fromIncident) && (
         <div className="callout remediation-handoff remediation-handoff-context">
           <div className="remediation-handoff-copy">
@@ -1586,9 +1654,25 @@ function RemediationContent() {
             ) : workflowError ? (
               <StatePanel title="Workflow unavailable" message={workflowError} tone="error" />
             ) : !workflow ? (
-              <StatePanel title="Select a fix" message="Choose a generated plan to begin." />
+              requestedPlanId ? (
+                <>
+                  <StatePanel title="Requested plan unavailable" message="The exact linked plan is absent from the current authorized results. No replacement plan has been selected." tone="partial" />
+                  <Link className="button button-secondary" href={(() => {
+                    const query = new URLSearchParams(searchParams.toString());
+                    query.delete("plan_id");
+                    return `/remediation${query.size ? `?${query}` : ""}`;
+                  })()}>Clear exact plan selection</Link>
+                </>
+              ) : <StatePanel title="Select a fix" message="Choose a generated plan to begin." />
             ) : (
               <>
+                <DecisionSummary
+                  workflow={workflow}
+                  canRun={canRun}
+                  businessReady={businessEvidenceReady(workflow)}
+                  pending={submitting || decisionPending}
+                  onNavigate={setActiveStep}
+                />
                 <div className="card-header">
                   <div>
                     <span className="eyebrow">Step {WORKFLOW_STEPS.findIndex((item) => item.id === activeStep) + 1} of 5</span>
@@ -1704,7 +1788,7 @@ function RemediationContent() {
                             </div>
                             {workflow.preview?.execution_snapshot?.available_patches?.length ? (
                               <StatusBadge
-                                label={`${selectedPatchIds?.length ?? workflow.preview.execution_snapshot.available_patches.length} selected`}
+                                label={`${selectedPatchIds?.length ?? (workflow.preview.execution_snapshot.rollout ? workflow.preview.execution_snapshot.patch_ids.length : workflow.preview.execution_snapshot.available_patches.length)} selected`}
                                 tone="info"
                                 compact
                               />
@@ -1713,7 +1797,9 @@ function RemediationContent() {
                           {workflow.preview?.execution_snapshot?.available_patches?.length ? (
                             <>
                               <p className="remediation-patch-mode-line">
-                                {selectedPatchIds === null
+                                {workflow.preview.execution_snapshot.rollout
+                                  ? `${workflow.preview.execution_snapshot.patch_ids.length} patches fixed by the immutable rollout. A different selection requires a newly generated plan.`
+                                  : selectedPatchIds === null
                                   ? `All ${workflow.preview.execution_snapshot.available_patches.length} eligible patches are selected.`
                                   : `${selectedPatchIds.length} of ${workflow.preview.execution_snapshot.available_patches.length} patches explicitly selected.`}
                                 {patchRevalidating ? (
@@ -1725,7 +1811,9 @@ function RemediationContent() {
                               <ul className="remediation-patch-list">
                                 {workflow.preview.execution_snapshot.available_patches.map((patch) => {
                                   const allPatchIds = workflow.preview!.execution_snapshot!.available_patches!.map((p) => p.patch_id);
-                                  const checked = selectedPatchIds === null || selectedPatchIds.includes(patch.patch_id);
+                                  const checked = selectedPatchIds === null
+                                    ? !workflow.preview!.execution_snapshot!.rollout || workflow.preview!.execution_snapshot!.patch_ids.includes(patch.patch_id)
+                                    : selectedPatchIds.includes(patch.patch_id);
                                   const classification = patchClassification(patch);
                                   return (
                                     <li key={patch.patch_id} className="remediation-patch-item">
@@ -1733,6 +1821,7 @@ function RemediationContent() {
                                         <input
                                           type="checkbox"
                                           checked={checked}
+                                          disabled={Boolean(workflow.preview?.execution_snapshot?.rollout)}
                                           onChange={(event) => {
                                             const current = selectedPatchIds === null ? allPatchIds : selectedPatchIds;
                                             const next = event.target.checked
@@ -1882,7 +1971,7 @@ function RemediationContent() {
                             <button
                               type="button"
                               className="button button-primary"
-                              disabled={submitting || !workflow.approval.can_approve || (roleSelectionRequired && !selectedRoleId)}
+                              disabled={submitting || decisionPending || !workflow.approval.can_approve || (roleSelectionRequired && !selectedRoleId)}
                               onClick={() => void recordDecision()}
                             >
                               {submitting ? "Recording…" : "Record decision"}

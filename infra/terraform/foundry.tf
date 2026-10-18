@@ -9,6 +9,7 @@
 # ---------------------------------------------------------------------------
 
 locals {
+  foundry_deployer_object_id   = coalesce(var.foundry_deployer_object_id, local.deployer_object_id)
   foundry_deployment_auth_mode = var.client_id == "" ? "azure_cli" : "client_credentials"
 
   # ---------------------------------------------------------------------------
@@ -825,14 +826,22 @@ resource "azurerm_role_assignment" "deployer_search_index_data_contributor" {
   count                = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                = azurerm_search_service.knowledge[0].id
   role_definition_name = "Search Index Data Contributor"
-  principal_id         = local.deployer_object_id
+  principal_id         = local.foundry_deployer_object_id
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "azurerm_role_assignment" "deployer_search_service_contributor" {
   count                = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                = azurerm_search_service.knowledge[0].id
   role_definition_name = "Search Service Contributor"
-  principal_id         = local.deployer_object_id
+  principal_id         = local.foundry_deployer_object_id
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # The deploying principal also calls the embedding deployment directly
@@ -843,7 +852,11 @@ resource "azurerm_role_assignment" "deployer_cognitive_services_openai_user" {
   count                = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                = azurerm_cognitive_account.foundry.id
   role_definition_name = "Cognitive Services OpenAI User"
-  principal_id         = local.deployer_object_id
+  principal_id         = local.foundry_deployer_object_id
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Entra ID data-plane calls to Cognitive Services (embeddings, inference)
@@ -853,7 +866,11 @@ resource "azurerm_role_assignment" "deployer_cognitive_services_user" {
   count                = var.enable_foundry_knowledge_search && (var.enable_role_assignments || var.enable_foundry_role_assignments) ? 1 : 0
   scope                = azurerm_cognitive_account.foundry.id
   role_definition_name = "Cognitive Services User"
-  principal_id         = local.deployer_object_id
+  principal_id         = local.foundry_deployer_object_id
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Creates (or updates) the knowledge index and pushes every document under
@@ -997,7 +1014,11 @@ resource "azurerm_role_assignment" "deployer_foundry_manager" {
   count                = var.enable_role_assignments || var.enable_foundry_role_assignments ? 1 : 0
   scope                = azurerm_cognitive_account_project.ops.id
   role_definition_name = "Foundry Project Manager"
-  principal_id         = local.deployer_object_id
+  principal_id         = local.foundry_deployer_object_id
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ---------------------------------------------------------------------------

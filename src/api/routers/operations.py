@@ -504,8 +504,17 @@ def record_remediation_decision(
                 plan,
                 _patching_service(context, approve_scope),
                 scope=approve_scope,
-                selected_patch_ids=request.selected_patch_ids or None,
+                selected_patch_ids=request.selected_patch_ids or (
+                    context.rollout_store_provider().rollout_patch_selection(plan_id)
+                    if context.rollout_store_provider is not None else None
+                ),
             )
+            if context.rollout_store_provider is not None:
+                from intelligence.remediation.rollout import RolloutError
+                try:
+                    execution_snapshot = context.rollout_store_provider().bind_rollout_snapshot(plan_id, execution_snapshot)
+                except RolloutError as exc:
+                    raise ExecutionSnapshotError(str(exc), reason=exc.reason) from exc
         except ExecutionSnapshotError as exc:
             raise ApiError(
                 ErrorCode.CONFLICT,

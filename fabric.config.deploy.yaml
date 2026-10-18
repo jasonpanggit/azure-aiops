@@ -64,6 +64,11 @@ fabric:
     enabled: true
     ontology_id: ""
     ontology_name: "Operational_Context_Ontology_v2"
+  # Pins the Terraform-owned Data Agent for configuration and health reporting.
+  # Runtime grounding remains opt-in via AIOPS_ENABLE_FABRIC_DATA_AGENT_GROUNDING.
+  gold_grounding_agent:
+    item_id: "8a8cf431-f881-46a0-b669-463d4c1d5535"
+    display_name: "AI Ops Data Agent"
   exposure:
     enabled: true
     adapter: fabric_sql

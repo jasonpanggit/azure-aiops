@@ -1,15 +1,20 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider, useScope } from "@/lib/scope-context";
+import { SCOPE_DIMENSIONS } from "@/lib/scope";
 
-const { action, catalog, investigate } = vi.hoisted(() => ({
+const { action, catalog, investigate, readLedger, readJob, searchParams } = vi.hoisted(() => ({
   action: vi.fn(),
   catalog: vi.fn(),
   investigate: vi.fn(),
+  readLedger: vi.fn(),
+  readJob: vi.fn(),
+  searchParams: { current: new URLSearchParams() },
 }));
 
+vi.mock("next/navigation", () => ({ useSearchParams: () => searchParams.current }));
 vi.mock("@/lib/services", () => ({
-  multiAgentApi: { action, catalog, investigate },
+  multiAgentApi: { action, catalog, investigate, ledger: readLedger, job: readJob },
 }));
 
 import MultiAgentInvestigationPage from "./page";
@@ -81,6 +86,9 @@ function renderPage() {
 
 describe("Multi-Agent Autonomous Investigation workspace", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
+    searchParams.current = new URLSearchParams();
+    readLedger.mockResolvedValue(envelope(ledger));
     catalog.mockResolvedValue(envelope({ agents: catalogAgents }));
     investigate.mockResolvedValue(envelope(ledger));
     action.mockImplementation((_ledgerId, actionName, payload) => Promise.resolve(envelope({
@@ -88,6 +96,121 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
       status: "human_review_in_progress",
       decisions: [{ at: "2026-01-01T10:05:00Z", action: actionName, payload }],
     })));
+  });
+
+  it("opens an exact retained ledger without starting tools and reloads only on request", async () => {
+    searchParams.current = new URLSearchParams({ ledger_id: "mai-123", region: "west" });
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Specialist plan activity" })).toBeVisible();
+    expect(readLedger).toHaveBeenCalledWith("mai-123", { region: ["west"] });
+    expect(investigate).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Run deterministic investigation" })).toBeDisabled();
+    expect(screen.getByLabelText("Investigation objective")).toHaveAttribute("readonly");
+    fireEvent.click(screen.getByRole("button", { name: "Reload retained investigation" }));
+    await waitFor(() => expect(readLedger).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("link", { name: "Start a different investigation" })).toHaveAttribute("href", "/agents?region=west");
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("hides the prior completed ledger immediately when another exact job or a fresh workspace is selected", async () => {
+    const first = `job-${"a".repeat(32)}`, second = `job-${"b".repeat(32)}`;
+    const job = {
+      revision: 4, job_id: first, scope: {}, objective: ledger.objective,
+      timeout_seconds: 30, created_at: 1800000000, updated_at: 1800000001,
+      status: "completed", stage: "ledger_retained", stop_requested: false,
+      ledger_id: ledger.ledger_id, durability: "durable",
+      liveness: "not_established", cancellation: "scheduling_only",
+    };
+    readJob.mockResolvedValueOnce(envelope(job));
+    searchParams.current = new URLSearchParams({ job_id: first });
+    const rendered = renderPage();
+    expect(await screen.findByRole("heading", { name: "Specialist plan activity" })).toBeVisible();
+    readJob.mockReturnValueOnce(new Promise(() => {}));
+    searchParams.current = new URLSearchParams({ job_id: second });
+    rendered.rerender(<ScopeProvider><MultiAgentInvestigationPage /><ScopeSwitcher /></ScopeProvider>);
+    expect(screen.queryByRole("heading", { name: "Specialist plan activity" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run deterministic investigation" })).toBeDisabled();
+    expect(investigate).not.toHaveBeenCalled();
+    searchParams.current = new URLSearchParams();
+    rendered.rerender(<ScopeProvider><MultiAgentInvestigationPage /><ScopeSwitcher /></ScopeProvider>);
+    expect(screen.queryByRole("heading", { name: "Specialist plan activity" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Start background investigation" })).toBeEnabled();
+  });
+
+  it.each(SCOPE_DIMENSIONS)("rejects a wider %s bookmark before any acquisition", dimension => {
+    searchParams.current = new URLSearchParams({ ledger_id: "mai-123", [dimension]: "outside" });
+    render(<ScopeProvider initialScope={{ [dimension]: ["authorized"] }}><MultiAgentInvestigationPage /></ScopeProvider>);
+    expect(screen.getByText("Investigation bookmark unavailable")).toBeVisible();
+    expect(readLedger).not.toHaveBeenCalled();
+    expect(catalog).not.toHaveBeenCalled();
+  });
+
+  it.each(["ledger_id=", "ledger_id=../private", "ledger_id=first&ledger_id=second", `ledger_id=${"a".repeat(129)}`,
+    "job_id=", "job_id=../private", `job_id=job-${"A".repeat(32)}`,
+    `job_id=job-${"a".repeat(32)}&job_id=job-${"b".repeat(32)}`,
+    `ledger_id=mai-123&job_id=job-${"a".repeat(32)}`,
+  ])("refuses malformed exact ledger selection: %s", query => {
+    searchParams.current = new URLSearchParams(query);
+    renderPage();
+    expect(screen.getByText("Investigation bookmark unavailable")).toBeVisible();
+    expect(readLedger).not.toHaveBeenCalled();
+    expect(catalog).not.toHaveBeenCalled();
+  });
+
+  it("does not substitute a foreign ledger response or silently restart a missing investigation", async () => {
+    searchParams.current = new URLSearchParams({ ledger_id: "missing-ledger" });
+    renderPage();
+    expect(await screen.findByText(/response did not match the exact retained/)).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Specialist plan activity" })).not.toBeInTheDocument();
+    expect(investigate).not.toHaveBeenCalled();
+  });
+
+  it("keeps not-found or unauthorized retained ledgers unavailable without starting another run", async () => {
+    readLedger.mockRejectedValueOnce(new Error("Investigation ledger not found"));
+    searchParams.current = new URLSearchParams({ ledger_id: "missing-ledger" });
+    renderPage();
+    expect(await screen.findByText("Investigation ledger not found")).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Specialist plan activity" })).not.toBeInTheDocument();
+    expect(investigate).not.toHaveBeenCalled();
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("rejects a review result for another ledger without losing the retained identity", async () => {
+    searchParams.current = new URLSearchParams({ ledger_id: "mai-123" });
+    action.mockResolvedValueOnce(envelope({ ...ledger, ledger_id: "foreign-ledger" }));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Assign owner" }));
+    expect(await screen.findByText(/action response did not match this retained/)).toBeVisible();
+    expect(screen.getByRole("region", { name: "Retained investigation continuation" })).toHaveTextContent("mai-123");
+    expect(screen.getByRole("button", { name: "Assign owner" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Reload retained investigation" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Assign owner" })).toBeEnabled());
+    expect(action).toHaveBeenCalledOnce();
+    expect(investigate).not.toHaveBeenCalled();
+  });
+
+  it("preserves every bookmarked scope dimension in a new retained link", async () => {
+    searchParams.current = new URLSearchParams(SCOPE_DIMENSIONS.map(key => [key, `${key}-value`]));
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Run deterministic investigation" }));
+    const link = await screen.findByRole("link", { name: "Open retained investigation" });
+    const query = new URL(link.getAttribute("href")!, "http://localhost").searchParams;
+    expect(query.get("ledger_id")).toBe("mai-123");
+    for (const dimension of SCOPE_DIMENSIONS) expect(query.get(dimension)).toBe(`${dimension}-value`);
+    expect(readLedger).not.toHaveBeenCalled();
+  });
+
+  it("discards a retained read after its bookmarked scope is replaced", async () => {
+    let resolve!: (value: ReturnType<typeof envelope<typeof ledger>>) => void;
+    readLedger.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    searchParams.current = new URLSearchParams({ ledger_id: "mai-123" });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Switch scope" }));
+    await waitFor(() => expect(readLedger).toHaveBeenLastCalledWith("mai-123", { subscription: ["sub-b"] }));
+    await screen.findByRole("heading", { name: "Specialist plan activity" });
+    await act(async () => resolve(envelope({ ...ledger, objective: "Old scope response" })));
+    expect(screen.getByLabelText("Investigation objective")).not.toHaveValue("Old scope response");
+    expect(investigate).not.toHaveBeenCalled();
   });
 
   it("distinguishes catalog failures from confirmed Foundry unavailability", async () => {

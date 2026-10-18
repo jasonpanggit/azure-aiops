@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -25,6 +26,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from api.scope import Scope
@@ -100,6 +102,10 @@ class ThreadDocumentStore(Protocol):
     """
 
     def read(self, name: str) -> dict[str, Any]: ...
+
+    def read_or_raise(self, name: str) -> dict[str, Any]: ...
+
+    def create_only(self, name: str, payload: dict[str, Any]) -> object: ...
 
     def write(
         self,
@@ -523,6 +529,8 @@ class InvestigationThreadStore:
         principal_subject: str,
         current_scope: Scope,
         now: float,
+        *,
+        maintenance: bool = True,
     ) -> InvestigationThread:
         """Return a thread only after every current-turn gate passes."""
 
@@ -537,21 +545,24 @@ class InvestigationThreadStore:
         # the reason is what makes an aged-out thread distinguishable in
         # telemetry even though the caller only ever sees not-found.
         expiry = self._expiry_reason(record, now) if record is not None else ""
-        self._sweep(now)
+        if maintenance:
+            self._sweep(now)
         if record is None:
             raise ThreadNotFound(reason="missing")
         if expiry:
-            self._threads.pop(thread_id, None)
-            self._forget_document(
-                thread_id,
-                expected_revision=record.storage_revision,
-            )
+            if maintenance:
+                self._threads.pop(thread_id, None)
+                self._forget_document(
+                    thread_id,
+                    expected_revision=record.storage_revision,
+                )
             raise ThreadNotFound(reason=expiry)
         if record.principal_subject != principal_subject:
             raise ThreadNotFound(reason="principal_mismatch")
         if not scope_within(current_scope, record.scope):
             raise ThreadNotFound(reason="scope_widened")
-        self._maybe_sweep_durable(now)
+        if maintenance:
+            self._maybe_sweep_durable(now)
         return record
 
     def _age_retained_turns(self, record: InvestigationThread) -> None:
@@ -672,6 +683,104 @@ class InvestigationThreadStore:
             self._threads.move_to_end(thread_id)
             self._persist(record)
             return record
+
+    def list_owned(
+        self,
+        principal_subject: str,
+        current_scope: Scope,
+        *,
+        page: int = 0,
+    ) -> dict[str, Any]:
+        """Discover one bounded storage page without renewing or writing threads."""
+        if not 0 <= page < 32:
+            raise ValueError("history page must be between 0 and 31")
+        with self._lock:
+            now = self._clock()
+            continuation = None
+            if self.documents is not None:
+                try:
+                    for index in range(page + 1):
+                        names, continuation = self.documents.list_names(
+                            "threads", limit=64, continuation=continuation,
+                        )
+                        if index < page and continuation is None:
+                            names = []
+                            break
+                except Exception:
+                    _LOGGER.warning("failed to list retained investigation threads", exc_info=True)
+                    raise ThreadStoreUnavailable() from None
+            else:
+                names = [thread_document_name(key) for key in sorted(self._threads)]
+                continuation = "more" if len(names) > (page + 1) * 64 else None
+                names = names[page * 64:(page + 1) * 64]
+            items = []
+            for name in names:
+                match = re.fullmatch(r"threads/(thr-[a-f0-9]{32})\.json", name)
+                if match is None:
+                    continue
+                thread_id = match.group(1)
+                try:
+                    record = self._load(thread_id) if self.documents is not None else self._threads.get(thread_id)
+                except ThreadNotFound:
+                    _LOGGER.warning("corrupt retained thread omitted from discovery")
+                    continue
+                if (
+                    record is None
+                    or record.principal_subject != principal_subject
+                    or self._expiry_reason(record, now)
+                    or not scope_within(current_scope, record.scope)
+                ):
+                    continue
+                latest = record.turns[-1] if record.turns else None
+                visible = latest is not None and scope_within(latest.scope, current_scope)
+                question = str(latest.payload.get("question") or "") if visible else ""
+                items.append({
+                    "thread_id": record.thread_id,
+                    "thread_revision": record.revision,
+                    "durability": record.durability,
+                    "question": question[:1024],
+                    "title_status": "visible" if visible else "withheld_or_empty",
+                })
+            return {
+                "threads": items, "page": page,
+                "has_more": continuation is not None and page < 31,
+                "scan_limit_reached": continuation is not None and page == 31,
+                "order": "storage_listing",
+                "durability": DURABILITY_DURABLE if self.documents is not None else DURABILITY_MEMORY_ONLY,
+            }
+
+    def read_snapshot(
+        self,
+        thread_id: str,
+        principal_subject: str,
+        current_scope: Scope,
+        *,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Read historical turns without renewing TTL, narrowing state or writing."""
+        with self._lock:
+            record = self._resolve(
+                thread_id, principal_subject, current_scope, self._clock(),
+                maintenance=False,
+            )
+            if expected_revision is not None and expected_revision != record.revision:
+                raise ThreadRevisionConflict(current_revision=record.revision)
+            historical = deepcopy(record)
+            self._age_retained_turns(historical)
+            turns = self._project_history(historical, current_scope)
+            for payload, turn in zip(turns, historical.turns, strict=True):
+                if payload.get("status") != "historical_scope_restricted":
+                    payload["retained_at"] = datetime.fromtimestamp(
+                        turn.recorded_at, UTC,
+                    ).isoformat()
+            return {
+                "thread_id": record.thread_id,
+                "thread_revision": record.revision,
+                "durability": record.durability,
+                "observation_status": OBSERVATION_HISTORICAL,
+                "continuation_scope_match": record.scope.to_dict() == current_scope.to_dict(),
+                "turns": turns,
+            }
 
     def history(
         self,
@@ -896,10 +1005,18 @@ def configure_thread_store(
     exists on exactly one replica.
     """
 
-    _THREAD_STORE.documents = documents
-    if documents is not None:
-        for record in list(_THREAD_STORE._threads.values()):
-            _THREAD_STORE._persist(record)
+    with _THREAD_STORE._lock:
+        current_documents = _THREAD_STORE.documents
+        if current_documents is documents:
+            return _THREAD_STORE
+        if current_documents is not None:
+            _THREAD_STORE._threads.clear()
+            _THREAD_STORE._durable_continuation = None
+        _THREAD_STORE.documents = documents
+        if documents is not None:
+            for record in list(_THREAD_STORE._threads.values()):
+                if record.durability == DURABILITY_MEMORY_ONLY:
+                    _THREAD_STORE._persist(record)
     return _THREAD_STORE
 
 

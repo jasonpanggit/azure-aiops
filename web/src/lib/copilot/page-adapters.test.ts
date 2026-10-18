@@ -4028,6 +4028,12 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
       },
       principal_type: "User",
       privileged: true,
+      classification_basis: "observed_rbac_role_name_action_heuristic",
+      effective_access: "not_evaluated",
+      risk_classification: "unreported",
+      unresolved_role_assignments: null,
+      unknown_age_assignments: null,
+      change_recency_does_not_establish_use_or_review: true,
       widest_scope_breadth: "subscription",
       selected: true,
       actionable: false,
@@ -4132,11 +4138,17 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     summary: {
       identified_annual_savings: 125000,
       currency: "USD",
+      identified_annual_savings_currency_totals: [
+        { currency: "USD", amount: 125000, count: 7 },
+      ],
       savings_opportunity_count: 10,
       quantified_opportunity_count: 7,
       waste_item_count: 4,
       actual_spend: 98000,
       actual_spend_currency: "USD",
+      actual_spend_currency_totals: [
+        { currency: "USD", amount: 98000, count: 31 },
+      ],
       actual_spend_period_start: "2026-08-01",
       actual_spend_period_end: "2026-08-31",
       unavailable_metrics: [
@@ -4149,6 +4161,10 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
         dimension: "business_service",
         group: "Payments",
         identified_annual_savings: 60000,
+        currency: "USD",
+        identified_annual_savings_currency_totals: [
+          { currency: "USD", amount: 60000, count: 4 },
+        ],
         savings_opportunity_count: 4,
         waste_item_count: 2,
       },
@@ -4218,6 +4234,12 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
         source_key: "finops-summary",
       },
       currency: "USD",
+      identified_annual_savings_currency_totals: [
+        { currency: "USD", amount: 125000, count: 7 },
+      ],
+      actual_spend_currency_totals: [
+        { currency: "USD", amount: 98000, count: 31 },
+      ],
       actual_spend_period_start: "2026-08-01",
       actual_spend_period_end: "2026-08-31",
       actionable: false,
@@ -4245,6 +4267,11 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
     expect(rowByClaim(context, "cost_attribution")[0]?.data.entity).toMatchObject({
       type: "observation",
       source: "finops/attribution",
+    });
+    expect(rowByClaim(context, "cost_attribution")[0]?.data).toMatchObject({
+      identified_annual_savings_currency_totals: [
+        { currency: "USD", amount: 60000, count: 4 },
+      ],
     });
     expect(rowByClaim(context, "waste_item").length).toBe(1);
     expect(context.coverage.opportunities).toMatchObject({
@@ -4689,6 +4716,25 @@ describe("situation detail and service Copilot page adapters", () => {
     );
   });
 
+  it("withholds unavailable incident counts and separates an unmapped bucket from an identically named real service", () => {
+    const context = buildServicesCopilotContext({
+      ...servicesInput,
+      incidentsAvailable: false,
+      services: [
+        { ...servicesInput.services[0], id: "unmapped", name: "Unmapped service", operationalState: "Incident evidence unavailable" },
+        { ...servicesInput.services[0], id: "service:Unmapped service", name: "Unmapped service", operationalState: "Incident evidence unavailable" },
+      ],
+    });
+    const rows = context.snapshot.evidence.filter(row => row.data.service === "Unmapped service");
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.data.situation_count).toBeUndefined();
+      expect(row.data.critical_count).toBeUndefined();
+      expect(row.data.operational_state).toBe("Incident evidence unavailable");
+    }
+    expect(context.snapshot.freshness).toEqual(expect.arrayContaining([expect.objectContaining({ source: "incidents", status: "unavailable" })]));
+  });
+
   it("keeps rendered Services facts as non-authoritative observations when semantic resolution is unavailable", () => {
     const services = buildServicesCopilotContext(servicesInput);
     const serviceRow = services.snapshot.evidence.find(
@@ -4962,7 +5008,7 @@ describe("operational twin Copilot page adapter", () => {
         data: expect.objectContaining({
           business_service_count: 1,
           relationship_count: 1,
-          risk_detail: expect.stringContaining("risk score of 32"),
+          risk_detail: expect.stringContaining("heuristic current index of 32"),
           entity: expect.objectContaining({ type: "observation" }),
         }),
       }),
@@ -5084,14 +5130,15 @@ function routePathForFile(file: string): string {
   return relative_dir === "" ? "/" : `/${relative_dir}`;
 }
 
-describe("28-route Copilot disposition gate (COP-02, COP-03)", () => {
+describe("reviewed-route Copilot disposition gate (COP-02, COP-03)", () => {
   const discoveredRoutes = discoverRoutePageFiles(APP_DIR)
     .map(routePathForFile)
     .sort();
   const registeredRoutes = Object.keys(COPILOT_ROUTE_DISPOSITIONS).sort();
 
-  it("discovers exactly the 28 reviewed route files on disk", () => {
-    expect(discoveredRoutes).toHaveLength(28);
+  it("discovers the original 28 reviewed routes plus the inventory asset drilldown", () => {
+    expect(discoveredRoutes).toHaveLength(29);
+    expect(discoveredRoutes).toContain("/inventory/assets");
   });
 
   it("makes the registry route inventory equal the filesystem inventory exactly", () => {
@@ -5115,7 +5162,7 @@ describe("28-route Copilot disposition gate (COP-02, COP-03)", () => {
     for (const route of registeredRoutes) {
       counts[COPILOT_ROUTE_DISPOSITIONS[route].kind] += 1;
     }
-    expect(counts).toEqual({ integrated: 23, dedicated: 3, redirect: 1, excluded: 1 });
+    expect(counts).toEqual({ integrated: 23, dedicated: 3, redirect: 1, excluded: 2 });
   });
 
   it("names /copilot, /investigate, and /agents as the dedicated surfaces", () => {
@@ -5136,15 +5183,17 @@ describe("28-route Copilot disposition gate (COP-02, COP-03)", () => {
     expect(Object.prototype.hasOwnProperty.call(CORE_COPILOT_PAGE_ADAPTERS, "/vulnerabilities")).toBe(false);
   });
 
-  it("excludes /search as the single reasoned exclusion with a stable-evidence reason", () => {
+  it("excludes navigation-only search and asset drilldown until reviewed evidence contracts exist", () => {
     const excluded = registeredRoutes.filter(
       (route) => COPILOT_ROUTE_DISPOSITIONS[route].kind === "excluded",
     );
-    expect(excluded).toEqual(["/search"]);
+    expect(excluded).toEqual(["/inventory/assets", "/search"]);
     const disposition = COPILOT_ROUTE_DISPOSITIONS["/search"];
     expect(
       disposition.kind === "excluded" && /evidence/i.test(disposition.reason),
     ).toBe(true);
+    const assets = COPILOT_ROUTE_DISPOSITIONS["/inventory/assets"];
+    expect(assets.kind === "excluded" && /retained evidence snapshot.*selected-asset tool contract/i.test(assets.reason)).toBe(true);
   });
 
   it("anchors every integrated route on a declared Copilot page kind", () => {

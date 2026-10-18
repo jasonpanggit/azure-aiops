@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import threading
 import time
 import uuid as _uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter
+from azure.core.exceptions import AzureError
+from fastapi import APIRouter, BackgroundTasks, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from operations.autonomous_investigation import (
@@ -16,6 +19,17 @@ from operations.autonomous_investigation import (
     ledger_store,
     project_legacy_ledger,
     run_autonomous_investigation,
+)
+from operations.foundry_agent import SPECIALIST_IDS
+from operations.investigation_jobs import (
+    JOB_ID_PATTERN,
+    InvestigationBudgetExpired,
+    InvestigationExecutionControl,
+    InvestigationJobStore,
+    InvestigationStopped,
+    JobConflict,
+    JobNotFound,
+    JobUnavailable,
 )
 from operations.investigation_thread_store import (
     ThreadRevisionConflict,
@@ -34,6 +48,8 @@ from ..evidence import CONFIDENCE_MEDIUM, Evidence, envelope
 from ..scope import Scope
 
 router = APIRouter(prefix="/api/v1/agents", tags=["multi-agent-investigation"])
+_LOGGER = logging.getLogger(__name__)
+_JOB_SLOTS = threading.BoundedSemaphore(2)
 
 
 class InvestigationCreateRequest(BaseModel):
@@ -41,6 +57,10 @@ class InvestigationCreateRequest(BaseModel):
 
     objective: str = Field(min_length=1, max_length=1024)
     timeout_seconds: float = Field(default=8.0, ge=1.0, le=30.0, strict=True)
+
+
+class InvestigationJobRequest(InvestigationCreateRequest):
+    job_id: str = Field(pattern=f"^{JOB_ID_PATTERN}$")
 
 
 class LedgerActionRequest(BaseModel):
@@ -285,6 +305,53 @@ def catalog(context: Context, scope: ReadScope) -> dict[str, Any]:
     return envelope({"agents": agent_catalog()}, evidence=_evidence(), scope=scope.to_dict())
 
 
+@router.get("/runtime-readiness", summary="Cached investigation provider observations")
+def runtime_readiness(context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Read cached process state without acquiring providers or probing agents."""
+    if context.provider_runtime is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Cached agent runtime observations are not configured",
+        )
+    health = context.provider_runtime.health(refresh=False)
+    names = (
+        "copilot", "semantic", "network", "exposure_query", "incidents",
+        "remediation", "governance", "inventory", "fabric_iq",
+        *(f"{specialist}_agent" for specialist in SPECIALIST_IDS),
+    )
+    fields = (
+        "state", "configured", "loaded", "freshness", "ontology_version",
+        "loaded_at", "last_attempt_at", "last_success_at", "degraded_reason",
+        "cache_key_stale",
+    )
+    providers = health["providers"]
+    return envelope(
+        {
+            "source": "api.ProviderRuntime",
+            "report_kind": "cached_process_state",
+            "reported_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "providers": {
+                name: {field: providers[name].get(field) for field in fields}
+                if name in providers else None
+                for name in names
+            },
+        },
+        evidence=Evidence(
+            source_engine="api.ProviderRuntime",
+            source_table="cached_provider_states",
+            confidence=CONFIDENCE_MEDIUM,
+        ),
+        scope=scope.to_dict(),
+        warnings=[
+            (
+                "Process-local cached observations, not a live Foundry, APIM or MCP "
+                "probe, estate coverage, tool execution or operational authorization. "
+                "Report time is not provider observation time."
+            )
+        ],
+    )
+
+
 def _create_investigation_canonical(
     payload: InvestigationCreateRequest,
     *,
@@ -292,6 +359,7 @@ def _create_investigation_canonical(
     scope: ReadScope,
     principal: CurrentPrincipal,
     rollout_decision: CopilotRolloutDecision,
+    execution_control: InvestigationExecutionControl | None = None,
 ) -> dict[str, Any]:
     """Route POST /agents/investigations through the canonical service.
 
@@ -311,6 +379,7 @@ def _create_investigation_canonical(
             principal_subject=principal.subject,
             rollout_decision=rollout_decision,
             max_wall_seconds=payload.timeout_seconds,
+            execution_control=execution_control,
         )
     except ThreadStoreUnavailable as exc:
         raise ApiError(
@@ -599,8 +668,163 @@ def _create_investigation_canonical(
         "mutation_authorized": False,
     }
     ledger = _project_deterministic_activation(ledger, context=context)
-    ledger_store().add(ledger)
+    if execution_control is not None:
+        execution_control.checkpoint("retaining_ledger")
+        ledger_store().add(ledger, require_durable=True)
+    else:
+        ledger_store().add(ledger)
     return _respond(ledger, scope)
+
+
+def _jobs(context: Context) -> InvestigationJobStore:
+    if context.investigation_job_store is None:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable investigation jobs are not configured")
+    return context.investigation_job_store
+
+
+def _job_response(job: dict[str, Any], scope: ReadScope) -> dict[str, Any]:
+    return envelope(
+        job,
+        evidence=Evidence(
+            source_engine="operations.InvestigationJobStore",
+            source_table="investigation_jobs",
+            resource_id=job["job_id"],
+            timestamp="",
+            freshness="unknown",
+            confidence=CONFIDENCE_MEDIUM,
+        ),
+        scope=scope.to_dict(),
+        warnings=[
+            (
+                "Durable outcome metadata, not worker liveness or provider freshness. "
+                "Accepted or running jobs are never automatically replayed after process loss. "
+                "Stop prevents new scheduling at call boundaries; already dispatched, "
+                "nested or remote provider work may continue and is not cancelled. "
+                "Completion may win a late stop request."
+            ),
+        ],
+    )
+
+
+def _job_error(exc: Exception) -> ApiError:
+    if isinstance(exc, JobNotFound):
+        return ApiError(ErrorCode.NOT_FOUND, "Investigation job not found")
+    if isinstance(exc, JobConflict):
+        return ApiError(ErrorCode.CONFLICT, str(exc))
+    return ApiError(ErrorCode.PROVIDER_UNAVAILABLE, str(exc))
+
+
+def _run_job(
+    payload: InvestigationJobRequest, context: Context, scope: ReadScope,
+    principal: CurrentPrincipal, rollout: CopilotRolloutDecision,
+) -> None:
+    """Dispatch once after response; persist progress, never recover by replay."""
+    worker_id = _uuid.uuid4().hex
+    claimed = False
+    try:
+        store = _jobs(context)
+        store.claim(principal.subject, payload.job_id, scope, worker_id)
+        claimed = True
+        control = InvestigationExecutionControl(
+            store, principal.subject, payload.job_id, scope, worker_id, payload.timeout_seconds,
+        )
+        control.checkpoint("dispatch")
+        if canonical_orchestration_enabled(stable_key=principal.subject, decision=rollout):
+            result = _create_investigation_canonical(
+                payload, context=context, scope=scope, principal=principal,
+                rollout_decision=rollout, execution_control=control,
+            )
+            ledger_id = result["data"]["ledger_id"]
+        else:
+            ledger = run_autonomous_investigation(
+                payload.objective, context=context, scope=scope,
+                principal_subject=principal.subject, timeout_seconds=payload.timeout_seconds,
+                principal=principal, execution_control=control,
+            )
+            control.checkpoint("retaining_ledger")
+            ledger = _project_deterministic_activation(ledger, context=context)
+            ledger_store().add(ledger, require_durable=True)
+            ledger_id = ledger["ledger_id"]
+        store.finish(
+            principal.subject, payload.job_id, scope, worker_id, status="completed",
+            ledger_id=ledger_id, stage="ledger_retained",
+        )
+    except InvestigationStopped:
+        try:
+            store.finish(
+                principal.subject, payload.job_id, scope, worker_id,
+                status="stopped", stage="stopped_at_safe_boundary",
+            )
+        except (JobUnavailable, JobConflict, JobNotFound):
+            _LOGGER.exception("investigation scheduling-stop acknowledgment unconfirmed: %s", payload.job_id)
+    except (ApiError, AzureError, OSError, RuntimeError, TypeError, ValueError, LookupError) as exc:
+        _LOGGER.exception("investigation job worker outcome failed: %s", payload.job_id)
+        if claimed:
+            try:
+                store.finish(
+                    principal.subject, payload.job_id, scope, worker_id, status="failed",
+                    stage="budget_exhausted" if isinstance(exc, InvestigationBudgetExpired) else "execution_or_retention_failed",
+                )
+            except (JobUnavailable, JobConflict, JobNotFound):
+                _LOGGER.exception("investigation job outcome remains unconfirmed: %s", payload.job_id)
+    finally:
+        _JOB_SLOTS.release()
+
+
+@router.post("/investigation-jobs", summary="Admit one durable asynchronous investigation")
+def create_investigation_job(
+    payload: InvestigationJobRequest,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    context: Context,
+    scope: ReadScope,
+    principal: CurrentPrincipal,
+) -> dict[str, Any]:
+    store = _jobs(context)
+    if not ledger_store().is_durable:
+        raise ApiError(ErrorCode.PROVIDER_UNAVAILABLE, "Durable investigation ledger retention is not configured")
+    if not _JOB_SLOTS.acquire(blocking=False):
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "This replica's two investigation workers are occupied; inspect any known job before starting another",
+        )
+    scheduled = False
+    try:
+        job, created = store.accept(
+            principal.subject, payload.job_id, scope,
+            objective=payload.objective, timeout_seconds=payload.timeout_seconds,
+        )
+        if created:
+            rollout = copilot_rollout_decision(stable_key=principal.subject)
+            background_tasks.add_task(_run_job, payload, context, scope, principal, rollout)
+            scheduled = True
+            response.status_code = 202
+        return _job_response(job, scope)
+    except (JobNotFound, JobConflict, JobUnavailable) as exc:
+        raise _job_error(exc) from exc
+    finally:
+        if not scheduled:
+            _JOB_SLOTS.release()
+
+
+@router.get("/investigation-jobs/{job_id}", summary="Read exact job progress without redispatch")
+def get_investigation_job(
+    job_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal,
+) -> dict[str, Any]:
+    try:
+        return _job_response(_jobs(context).read(principal.subject, job_id, scope), scope)
+    except (JobNotFound, JobConflict, JobUnavailable) as exc:
+        raise _job_error(exc) from exc
+
+
+@router.post("/investigation-jobs/{job_id}/stop", summary="Request cooperative investigation stop")
+def stop_investigation_job(
+    job_id: str, context: Context, scope: ReadScope, principal: CurrentPrincipal,
+) -> dict[str, Any]:
+    try:
+        return _job_response(_jobs(context).request_stop(principal.subject, job_id, scope), scope)
+    except (JobNotFound, JobConflict, JobUnavailable) as exc:
+        raise _job_error(exc) from exc
 
 
 @router.post("/investigations", summary="Run autonomous multi-agent investigation")

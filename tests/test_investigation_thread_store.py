@@ -115,6 +115,89 @@ SUB_B = Scope({"subscription": ["sub-b"]})
 BROAD = Scope({"subscription": ["sub-a", "sub-b"]})
 
 
+def test_owned_discovery_survives_restart_without_writes_or_ttl_renewal() -> None:
+    documents, clock = FakeDocuments(), FakeClock()
+    store = InvestigationThreadStore(documents=documents, clock=clock)
+    owned = store.create("operator-a", BROAD)
+    store.append(owned.thread_id, "operator-a", BROAD, _turn())
+    foreign = store.create("operator-b", BROAD)
+    store.append(foreign.thread_id, "operator-b", BROAD, {"question": "foreign secret"})
+    before = deepcopy(documents.documents)
+    documents.fail_writes = True
+    restarted = InvestigationThreadStore(documents=documents, clock=clock)
+    clock.advance(IDLE_TTL_SECONDS - 1)
+    catalog = restarted.list_owned("operator-a", BROAD)
+    assert catalog["durability"] == "durable"
+    assert len(catalog["threads"]) == 1
+    assert catalog["threads"][0]["thread_id"] == owned.thread_id
+    assert catalog["threads"][0]["question"] == _turn()["question"]
+    assert catalog["threads"][0]["thread_revision"] == 1
+    assert catalog["has_more"] is False
+    narrowed = restarted.list_owned("operator-a", SUB_A)
+    assert narrowed["threads"][0]["question"] == ""
+    assert narrowed["threads"][0]["title_status"] == "withheld_or_empty"
+    assert documents.documents == before
+    assert documents.deleted == []
+    clock.advance(2)
+    assert restarted.list_owned("operator-a", BROAD)["threads"] == []
+    assert documents.documents == before
+
+
+def test_owned_discovery_pages_storage_before_authorized_projection() -> None:
+    store = InvestigationThreadStore()
+    for _ in range(65):
+        store.create("owner", SUB_A)
+    first = store.list_owned("owner", SUB_A)
+    second = store.list_owned("owner", SUB_A, page=1)
+    assert len(first["threads"]) == 64
+    assert first["has_more"] is True
+    assert len(second["threads"]) == 1
+    assert second["has_more"] is False
+    assert not ({item["thread_id"] for item in first["threads"]} & {item["thread_id"] for item in second["threads"]})
+    assert store.list_owned("foreign", SUB_A)["threads"] == []
+    assert store.list_owned("owner", BROAD)["threads"] == []
+    assert store.list_owned("owner", SUB_B)["threads"] == []
+    assert store.list_owned("owner", SUB_A, page=2)["threads"] == []
+    assert first["durability"] == "memory_only"
+
+
+def test_owned_discovery_durable_paging_is_bounded_and_failures_surface() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    for _ in range(65):
+        store.create("owner", SUB_A)
+    assert len(store.list_owned("owner", SUB_A)["threads"]) == 64
+    assert len(store.list_owned("owner", SUB_A, page=1)["threads"]) == 1
+    assert store.list_owned("owner", SUB_A, page=2)["threads"] == []
+    documents.fail_reads = True
+    with pytest.raises(ThreadStoreUnavailable):
+        store.list_owned("owner", SUB_A)
+
+
+def test_owned_discovery_reports_scan_limit_without_exposing_foreign_metadata() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    seed = store.create("foreign", SUB_A)
+    payload = documents.documents.pop(thread_document_name(seed.thread_id))
+    for index in range(2049):
+        thread_id = f"thr-{index:032x}"
+        documents.documents[thread_document_name(thread_id)] = {**deepcopy(payload), "thread_id": thread_id}
+    documents.list_calls.clear()
+    catalog = store.list_owned("owner", SUB_A, page=31)
+    assert catalog["threads"] == []
+    assert catalog["has_more"] is False
+    assert catalog["scan_limit_reached"] is True
+    assert len(documents.list_calls) == 32
+    assert all(call[1] == 64 for call in documents.list_calls)
+    assert documents.deleted == []
+
+
+@pytest.mark.parametrize("page", [-1, 32])
+def test_owned_discovery_rejects_out_of_bound_page(page: int) -> None:
+    with pytest.raises(ValueError):
+        InvestigationThreadStore().list_owned("owner", SUB_A, page=page)
+
+
 def _turn(marker: str = "one") -> dict[str, Any]:
     return {
         "question": "Show inventory resources.",
@@ -134,6 +217,71 @@ def _turn(marker: str = "one") -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Durability
 # ---------------------------------------------------------------------------
+
+def test_snapshot_is_historical_detached_and_does_not_renew_or_write() -> None:
+    documents, clock = FakeDocuments(), FakeClock()
+    store = InvestigationThreadStore(documents=documents, clock=clock)
+    thread = store.create("operator-a", BROAD)
+    store.append(thread.thread_id, "operator-a", BROAD, _turn())
+    before = deepcopy(documents.documents)
+    documents.fail_writes = True
+    clock.advance(IDLE_TTL_SECONDS - 1)
+    snapshot = InvestigationThreadStore(documents=documents, clock=clock).read_snapshot(
+        thread.thread_id, "operator-a", BROAD,
+    )
+    assert snapshot["durability"] == "durable"
+    assert snapshot["thread_revision"] == 1
+    assert snapshot["observation_status"] == OBSERVATION_HISTORICAL
+    turn = snapshot["turns"][0]
+    assert turn["observation_status"] == OBSERVATION_HISTORICAL
+    assert turn["tool_results"][0]["evidence"][0]["observation_status"] == OBSERVATION_HISTORICAL
+    assert turn["citations"][0]["observation_status"] == OBSERVATION_HISTORICAL
+    assert turn["retained_at"] == "1970-01-12T13:46:40+00:00"
+    turn["question"] = "mutated copy"
+    assert documents.documents == before
+    assert store.read_snapshot(thread.thread_id, "operator-a", BROAD)["turns"][0]["question"] == _turn()["question"]
+    assert not documents.deleted
+    assert not documents.list_calls[1:]
+    clock.advance(2)
+    with pytest.raises(ThreadNotFound):
+        store.read_snapshot(thread.thread_id, "operator-a", BROAD)
+    assert documents.documents == before
+    assert not documents.deleted
+
+
+def test_snapshot_narrowing_withholds_entire_old_payload_without_narrowing_record() -> None:
+    store = InvestigationThreadStore()
+    thread = store.create("operator-a", BROAD)
+    store.append(thread.thread_id, "operator-a", BROAD, _turn("secret"))
+    snapshot = store.read_snapshot(thread.thread_id, "operator-a", SUB_A)
+    restricted = snapshot["turns"][0]
+    assert restricted["status"] == "historical_scope_restricted"
+    assert "question" not in restricted
+    assert "snapshot_id" not in restricted
+    assert "retained_at" not in restricted
+    assert restricted["tool_results"] == restricted["citations"] == []
+    # A review read must not permanently narrow the thread.
+    assert store.read_snapshot(thread.thread_id, "operator-a", BROAD)["turns"][0]["snapshot_id"] == "snap-secret"
+    assert snapshot["durability"] == "memory_only"
+
+
+@pytest.mark.parametrize(
+    ("subject", "scope"), [("operator-b", SUB_A), ("operator-a", SUB_B), ("operator-a", BROAD)],
+)
+def test_snapshot_denies_foreign_or_wider_reads(subject: str, scope: Scope) -> None:
+    store = InvestigationThreadStore()
+    thread = store.create("operator-a", SUB_A)
+    with pytest.raises(ThreadNotFound):
+        store.read_snapshot(thread.thread_id, subject, scope)
+
+
+def test_snapshot_storage_failure_is_not_empty_history() -> None:
+    documents = FakeDocuments()
+    store = InvestigationThreadStore(documents=documents)
+    thread = store.create("operator-a", SUB_A)
+    documents.fail_reads = True
+    with pytest.raises(ThreadStoreUnavailable):
+        store.read_snapshot(thread.thread_id, "operator-a", SUB_A)
 
 
 def test_thread_survives_process_restart() -> None:

@@ -8,7 +8,7 @@
 
 export type CsvCell = string | number | boolean | null | undefined;
 
-const FORMULA_LEADING = /^[=+\-@]/;
+const FORMULA_LEADING = /^(?:[\t\r\n]|\s*[=+\-@])/;
 
 export function serializeCsv(
   rows: readonly Record<string, CsvCell>[],

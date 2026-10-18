@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { healthApi, type HealthResponse } from "../lib/services";
 import { AccountMenu } from "./AccountMenu";
 import { ScopeSelector } from "./ScopeSelector";
+import { RouteScopeBoundary } from "./RouteScopeBoundary";
 
 const PRIMARY_NAV = [
   { href: "/", label: "Home", short: "H" },
@@ -172,7 +173,7 @@ export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
       </aside>
 
       {open && <button className="shell-backdrop" aria-label="Close navigation" onClick={() => setOpen(false)} />}
-      <main className="shell-main">{children}</main>
+      <main className="shell-main"><RouteScopeBoundary>{children}</RouteScopeBoundary></main>
     </div>
   );
 }

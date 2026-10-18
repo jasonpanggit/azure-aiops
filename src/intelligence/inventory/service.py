@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +31,83 @@ from .software_normalization import (
     mapping_for_observation,
     project_mapping,
 )
+
+
+def _group_lifecycle(group: dict[str, Any]) -> str:
+    status = str(group.get("lifecycle_status") or "").casefold()
+    if group.get("review_required") or status == "unknown":
+        return "review"
+    if status in {"eol", "expired"}:
+        return "expired"
+    days = group.get("days_remaining")
+    if days is not None and 0 <= days <= 90:
+        return "expiring"
+    return "supported"
+
+
+def _group_values(group: dict[str, Any], field: str) -> list[str]:
+    if field == "lifecycle":
+        return [_group_lifecycle(group)]
+    if field == "provider":
+        return [str(group["resource_type"]).split("/")[0]]
+    if field == "sku_tier":
+        sku, tier = group.get("sku"), group.get("tier")
+        missing = "\u2014"
+        return [f"{sku or missing} / {tier or missing}" if sku or tier else "No SKU"]
+    value = group.get({"source_type": "source_types", "publisher": "publishers"}.get(field, field))
+    return [str(item) for item in (value if isinstance(value, list) else [value]) if item]
+
+
+def _group_page(
+    groups: list[dict[str, Any]], offset: int, limit: int | None, query: str,
+    filters: dict[str, str], facet_fields: tuple[str, ...], search_fields: tuple[str, ...],
+) -> dict[str, Any]:
+    if set(filters) - set(facet_fields):
+        raise ValueError("Unknown grouped inventory filter")
+    facets = {
+        field: [
+            {"value": value, "count": count}
+            for value, count in sorted(Counter(
+                value for group in groups for value in set(_group_values(group, field))
+            ).items())
+        ]
+        for field in facet_fields
+    }
+    wanted = query.strip().casefold()
+    matching = [
+        group for group in groups
+        if wanted in " ".join(str(group.get(field) or "") for field in search_fields).casefold()
+        and all(
+            not value or value.casefold() in {item.casefold() for item in _group_values(group, field)}
+            for field, value in filters.items()
+        )
+    ]
+    summary = {
+        field: sum(int(group.get(field) or 0) for group in matching)
+        for field in ("machine_count", "install_count", "unlinked_count", "resource_count")
+    }
+    summary.update({
+        "review_group_count": sum(bool(group.get("review_required")) for group in matching),
+        "expired_machine_count": sum(
+            int(group.get("machine_count") or 0) for group in matching
+            if _group_lifecycle(group) == "expired"
+        ),
+        "expiring_machine_count": sum(
+            int(group.get("machine_count") or 0) for group in matching
+            if _group_lifecycle(group) == "expiring"
+        ),
+        "provider_count": len({
+            str(group["resource_type"]).split("/")[0].casefold()
+            for group in matching if group.get("resource_type")
+        }),
+    })
+    return {
+        "data": {
+            "groups": matching[offset:None if limit is None else offset + limit],
+            "facets": facets, "represented_group_count": len(groups), "summary": summary,
+        },
+        "total": len(matching),
+    }
 
 
 @dataclass(frozen=True)
@@ -371,7 +449,11 @@ class InventoryService:
         first = matching[0]
         return self.eol_review.review(first.os_name, first.os_version).to_dict()
 
-    def collection(self, scope: Scope, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+    def collection(
+        self, scope: Scope, *, offset: int = 0, limit: int | None = 100,
+        query: str = "", filters: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Filter and facet all authorized OS groups before selecting a page."""
         rows = self._scoped_classified(scope)
         grouped: dict[str, list[MachineObservation]] = {}
         for row in rows:
@@ -380,9 +462,14 @@ class InventoryService:
             _make_group(key, items)
             for key, items in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
         ]
+        page = _group_page(
+            [item.to_dict() for item in groups], offset, limit, query, filters or {},
+            ("os_name", "os_version", "source_type", "lifecycle"),
+            ("os_name", "os_version"),
+        )
         statuses = self.source_status(rows)
         data = {
-            "groups": [item.to_dict() for item in groups[offset : offset + limit]],
+            **page["data"],
             "source_status": statuses,
             "observed_at": self.observed_at,
             "query_version": self.query_version,
@@ -391,7 +478,7 @@ class InventoryService:
         }
         return {
             "data": data,
-            "total": len(groups),
+            "total": page["total"],
             "evidence": self._evidence(rows),
             "warnings": _status_warnings(statuses),
         }
@@ -564,8 +651,10 @@ class InventoryService:
         }
 
     def software_collection(
-        self, scope: Scope, *, offset: int = 0, limit: int = 100
+        self, scope: Scope, *, offset: int = 0, limit: int | None = 100,
+        query: str = "", filters: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        """Filter authorized installation groups, preserving their distinct grain."""
         rows = self._scoped_software(scope)
         grouped: dict[str, list[SoftwareObservation]] = {}
         for row in rows:
@@ -574,9 +663,14 @@ class InventoryService:
             _make_software_group(key, items)
             for key, items in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
         ]
+        page = _group_page(
+            [item.to_dict() for item in groups], offset, limit, query, filters or {},
+            ("software_name", "publisher", "source_type"),
+            ("software_name", "software_version"),
+        )
         statuses = self.software_source_status(rows)
         data = {
-            "groups": [item.to_dict() for item in groups[offset : offset + limit]],
+            **page["data"],
             "source_status": statuses,
             "observed_at": self.observed_at,
             "query_version": self.query_version,
@@ -585,7 +679,7 @@ class InventoryService:
         }
         return {
             "data": data,
-            "total": len(groups),
+            "total": page["total"],
             "evidence": self._software_evidence(rows),
             "warnings": _status_warnings(statuses),
         }
@@ -627,7 +721,11 @@ class InventoryService:
     # Explicit alias for consumers that use the grouped-detail terminology.
     software_group_detail = software_detail
 
-    def paas_collection(self, scope: Scope, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+    def paas_collection(
+        self, scope: Scope, *, offset: int = 0, limit: int | None = 100,
+        query: str = "", filters: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Query the complete authorized resource-type/SKU/tier group projection."""
         rows = self._scoped_resources(scope, family="paas")
         grouped: dict[str, list[ResourceObservation]] = {}
         for row in rows:
@@ -642,9 +740,13 @@ class InventoryService:
             }
             for key, items in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
         ]
+        page = _group_page(
+            groups, offset, limit, query, filters or {},
+            ("provider", "resource_type", "sku_tier"), ("resource_type", "sku", "tier"),
+        )
         data = {
-            "groups": groups[offset : offset + limit],
-            "source_status": {"paas": self.family_availability()["paas"]},
+            **page["data"],
+            "source_status": {"paas": {**self.family_availability()["paas"], "row_count": len(rows)}},
             "observed_at": self.observed_at,
             "query_version": self.query_version,
             "generation_id": self.generation_id,
@@ -652,7 +754,7 @@ class InventoryService:
         }
         return {
             "data": data,
-            "total": len(groups),
+            "total": page["total"],
             "evidence": self._resource_evidence(rows),
             "warnings": _status_warnings(data["source_status"]),
         }
@@ -674,7 +776,7 @@ class InventoryService:
                     "resource_count": len(matching),
                 },
                 "resources": [row.to_api_dict() for row in matching[offset : offset + limit]],
-                "source_status": {"paas": self.family_availability()["paas"]},
+                "source_status": {"paas": {**self.family_availability()["paas"], "row_count": len(rows)}},
                 "observed_at": self.observed_at,
                 "query_version": self.query_version,
                 "generation_id": self.generation_id,
@@ -685,7 +787,8 @@ class InventoryService:
             "warnings": _status_warnings({"paas": self.family_availability()["paas"]}),
         }
 
-    def resources(self, scope: Scope, *, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+    def resources(self, scope: Scope, *, offset: int = 0, limit: int | None = 100) -> dict[str, Any]:
+        """Return normalized scoped observations; internal callers may request all rows."""
         rows = [
             {
                 "family": "os",
@@ -699,6 +802,10 @@ class InventoryService:
                 "subscription_id": row.subscription_id,
                 "resource_group": row.resource_group,
                 "environment": row.environment,
+                "source_type": row.source_type,
+                "observed_at": row.observed_at,
+                "os_name": row.os_name,
+                "os_version": row.os_version,
             }
             for row in self._scoped(scope)
         ]
@@ -706,7 +813,7 @@ class InventoryService:
         rows.sort(key=lambda row: (row["family"], row["resource_id"]))
         return {
             "data": {
-                "resources": rows[offset : offset + limit],
+                "resources": rows[offset : offset + limit if limit is not None else None],
                 "family_availability": self.family_availability(),
                 "requested_scope": scope.to_dict(),
                 "query_version": self.query_version,

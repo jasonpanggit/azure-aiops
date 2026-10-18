@@ -48,8 +48,9 @@ describe("ScopeSelector", () => {
     fireEvent.click(screen.getByRole("button", { name: /All subscriptions/i }));
     await waitFor(() => expect(listAll).toHaveBeenCalled());
 
-    const subscriptionMenu = await screen.findByLabelText("Subscription");
+    const subscriptionMenu = await screen.findByRole("combobox", { name: "Subscription" });
     fireEvent.change(subscriptionMenu, { target: { value: "sub-001" } });
+    expect(subscriptionMenu).toHaveAccessibleName("Subscription");
     expect(screen.getAllByText("sub-001")).toHaveLength(2);
   });
 });

@@ -27,21 +27,27 @@ from operations.copilot_canary_authorization import canary_authorization_health
 from .dependencies import ApiContext, OperatePrincipal
 from .errors import ApiError, ErrorCode, translate
 from .models import EnvelopeModel, ErrorModel
-from .routers import compliance as compliance_routes
 from .routers import (
+    changes,
     connections,
     fabric_medallion,
     graph,
     inventory,
+    investigation_workspaces,
     multi_agent,
     network,
     ontology_discovery,
     operations,
+    overview,
     patching,
     planned,
+    saved_views,
+    service_portfolio,
+    service_reliability,
     twin,
     vulnerability,
 )
+from .routers import compliance as compliance_routes
 from .routers import context as context_routes
 from .routers import copilot as copilot_routes
 from .routers import governance as governance_routes
@@ -351,6 +357,7 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     telemetry = context.telemetry
 
     app.include_router(connections.router)
+    app.include_router(changes.router)
     app.include_router(fabric_medallion.router)
     app.include_router(compliance_routes.router)
     app.include_router(context_routes.router)
@@ -363,6 +370,11 @@ def create_app(context: ApiContext | None = None, **kwargs: Any) -> FastAPI:
     app.include_router(network.router)
     app.include_router(ontology_discovery.router)
     app.include_router(operations.router)
+    app.include_router(overview.router)
+    app.include_router(service_portfolio.router)
+    app.include_router(service_reliability.router)
+    app.include_router(saved_views.router)
+    app.include_router(investigation_workspaces.router)
     app.include_router(patching.router)
     app.include_router(planned.router)
     app.include_router(remediation_routes.router)

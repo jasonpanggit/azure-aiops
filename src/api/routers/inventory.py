@@ -5,15 +5,22 @@ from __future__ import annotations
 import hmac
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 
 from intelligence.inventory.eol_repository import (
     CatalogRevisionConflict,
     DuplicateCatalogConfirmation,
 )
 from intelligence.inventory.eol_review import normalize_os_key
+from intelligence.inventory.exports import (
+    ExportCancel,
+    ExportCreate,
+    InventoryExportStore,
+)
 from intelligence.inventory.mapping_repository import (
     MappingNotFound,
     MappingRevisionConflict,
@@ -22,9 +29,10 @@ from intelligence.inventory.mapping_repository import (
 from intelligence.inventory.narrative import build_inventory_narrative
 from intelligence.inventory.read_port import InventoryReadPort
 from intelligence.inventory.service import InventoryService
+from storage.onelake_documents import DocumentConflictError
 
 from .. import inventory_refresh_runs
-from ..dependencies import Context, OperatePrincipal, Page, ReadScope
+from ..dependencies import Context, CurrentPrincipal, OperatePrincipal, Page, ReadScope
 from ..errors import ApiError, ErrorCode
 from ..evidence import Evidence, envelope
 from ..models import (
@@ -36,6 +44,17 @@ from ..models import (
 router = APIRouter(prefix="/api/v1", tags=["inventory"])
 _GROUP_KEY = re.compile(r"^[^|/\\]{1,120}\|[^|/\\]{1,120}$")
 _PAAS_GROUP_KEY = re.compile(r"^[^|/\\]{1,160}\|[^|/\\]{1,120}\|[^|/\\]{1,120}$")
+_ASSET_FIELDS = (
+    "family", "resource_id", "resource_name", "resource_type", "subscription_id",
+    "resource_group", "environment", "location", "sku", "tier", "runtime",
+    "provisioning_state", "os_name", "os_version", "source_type", "observed_at",
+    "query_version", "containment",
+)
+
+
+def _public_asset(row: dict[str, Any]) -> dict[str, Any]:
+    # Internal adapters retain raw properties/tags. Portal reads never expose them.
+    return {"environment": "", **{key: row[key] for key in _ASSET_FIELDS if key in row}}
 
 
 def _service(context: Context) -> InventoryService:
@@ -238,9 +257,19 @@ def inventory_refresh_status(request: Request, response: Response, run_id: str) 
 
 
 @router.get("/inventory/os", summary="Grouped operating-system inventory")
-def os_inventory(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+def os_inventory(
+    context: Context, scope: ReadScope, page: Page,
+    q: str = Query("", max_length=256),
+    os_name: str = Query("", max_length=120),
+    os_version: str = Query("", max_length=120),
+    source_type: str = Query("", pattern=r"^(|azure_vm|arc|logs)$"),
+    lifecycle: str = Query("", pattern=r"^(|expired|expiring|supported|review)$"),
+) -> dict[str, Any]:
+    """Return server-filtered scoped OS groups with complete group facets."""
     service = _service(context)
-    result = service.collection(scope, offset=page.offset, limit=page.limit)
+    result = service.collection(scope, offset=page.offset, limit=page.limit, query=q, filters={
+        "os_name": os_name, "os_version": os_version, "source_type": source_type, "lifecycle": lifecycle,
+    })
     return envelope(
         result["data"],
         evidence=_evidence(service),
@@ -345,9 +374,18 @@ def os_inventory_detail(
 
 
 @router.get("/inventory/software", summary="Grouped installed-software inventory")
-def software_inventory(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+def software_inventory(
+    context: Context, scope: ReadScope, page: Page,
+    q: str = Query("", max_length=256),
+    software_name: str = Query("", max_length=256),
+    publisher: str = Query("", max_length=256),
+    source_type: str = Query("", pattern=r"^(|azure_vm|arc|logs|unlinked)$"),
+) -> dict[str, Any]:
+    """Return authorized installation-group facets and filters before paging."""
     service = _service(context)
-    result = service.software_collection(scope, offset=page.offset, limit=page.limit)
+    result = service.software_collection(scope, offset=page.offset, limit=page.limit, query=q, filters={
+        "software_name": software_name, "publisher": publisher, "source_type": source_type,
+    })
     return envelope(
         result["data"],
         evidence=_software_evidence(service),
@@ -376,9 +414,18 @@ def inventory_narrative(context: Context, scope: ReadScope) -> dict[str, Any]:
 
 
 @router.get("/inventory/paas", summary="Grouped PaaS resource inventory")
-def paas_inventory(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+def paas_inventory(
+    context: Context, scope: ReadScope, page: Page,
+    q: str = Query("", max_length=256),
+    provider: str = Query("", max_length=256),
+    resource_type: str = Query("", max_length=256),
+    sku_tier: str = Query("", max_length=256),
+) -> dict[str, Any]:
+    """Return authorized type/SKU/tier groups, facets and matched summaries."""
     service = _service(context)
-    result = service.paas_collection(scope, offset=page.offset, limit=page.limit)
+    result = service.paas_collection(scope, offset=page.offset, limit=page.limit, query=q, filters={
+        "provider": provider, "resource_type": resource_type, "sku_tier": sku_tier,
+    })
     return envelope(
         result["data"],
         evidence=_resource_evidence(service),
@@ -410,19 +457,40 @@ def paas_inventory_detail(
 
 
 @router.get("/inventory/resources", summary="Scoped cross-family inventory resources")
-def inventory_resources(context: Context, scope: ReadScope, page: Page) -> dict[str, Any]:
+def inventory_resources(
+    context: Context,
+    scope: ReadScope,
+    page: Page,
+    family: str | None = Query(None, max_length=64),
+    resource_type: str | None = Query(None, max_length=256),
+    resource_group: str | None = Query(None, max_length=256),
+    q: str | None = Query(None, max_length=256),
+) -> dict[str, Any]:
+    """Filter the complete authorized published projection before pagination."""
     service = _service(context)
     result = InventoryReadPort(service).list_resources(
         scope,
         offset=page.offset,
         limit=page.limit,
+        family=family,
+        resource_type=resource_type,
+        resource_group=resource_group,
+        query=q,
     )
+    family_counts = {item["value"]: item["count"] for item in result["facets"]["family"]}
     return envelope(
         {
-            "resources": result["resources"],
-            "family_availability": result["family_availability"],
+            "resources": [_public_asset(row) for row in result["resources"]],
+            "family_availability": {
+                family: {**status, "row_count": family_counts.get(family, 0)}
+                for family, status in result["family_availability"].items()
+            },
             "requested_scope": scope.to_dict(),
             "query_version": service.query_version,
+            "generation_id": service.generation_id,
+            "facets": result["facets"],
+            "represented_count": result["represented_count"],
+            "aggregate_basis": "authorized_published_observations",
         },
         evidence=_resource_evidence(service),
         scope=scope.to_dict(),
@@ -430,6 +498,139 @@ def inventory_resources(context: Context, scope: ReadScope, page: Page) -> dict[
         warnings=result["warnings"],
         pagination=page.to_dict(result["total"]),
     )
+
+
+@router.get("/inventory/asset", summary="Resolve an exact authorized asset identity")
+def inventory_asset(
+    context: Context,
+    scope: ReadScope,
+    resource_id: str = Query(..., min_length=1, max_length=2048),
+) -> dict[str, Any]:
+    """Expose only normalized inventory fields, not raw provider payloads."""
+    if any(ord(char) < 32 or ord(char) == 127 for char in resource_id):
+        raise ApiError(ErrorCode.INVALID_REQUEST, "Invalid resource identity")
+    service = _service(context)
+    row = InventoryReadPort(service).get_resource(scope, resource_id)
+    if row is None:
+        raise ApiError(ErrorCode.NOT_FOUND, "No inventory asset matches this scope")
+    return envelope(
+        {"resource": _public_asset(row), "generation_id": service.generation_id, "query_version": service.query_version},
+        evidence=_resource_evidence(service),
+        scope=scope.to_dict(),
+        knowledge_version=service.query_version,
+    )
+
+
+@contextmanager
+def _export_store(context: Context) -> Iterator[InventoryExportStore]:
+    store = context.inventory_export_store
+    if store is None:
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Durable inventory export storage is unavailable",
+        )
+    try:
+        yield store
+    except DocumentConflictError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
+
+
+def _export_envelope(data: dict[str, Any], scope: ReadScope) -> dict[str, Any]:
+    manifest = data.get("manifest") or data.get("export") or {}
+    return envelope(
+        data,
+        scope=scope.to_dict(),
+        evidence=Evidence(
+            source_engine="inventory.captured_export",
+            source_table="inventory/resource_observations",
+            timestamp=manifest.get("observed_at", ""),
+            confidence="high" if manifest else "unknown",
+        ),
+        knowledge_version=manifest.get("query_version", ""),
+    )
+
+
+@router.post(
+    "/inventory/exports",
+    status_code=201,
+    summary="Capture a bounded generation-pinned inventory export",
+)
+def create_inventory_export(
+    payload: ExportCreate,
+    context: Context,
+    principal: CurrentPrincipal,
+    scope: ReadScope,
+) -> dict[str, Any]:
+    """Capture one authorized provider instance, with no background job or live-page mixing."""
+    with _export_store(context) as store:
+        service = _service(context)
+        if (
+            not service.generation_id
+            or service.generation_id != payload.expected_generation_id
+        ):
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "Inventory generation changed or is unreported; reload before capturing",
+            )
+        rows = service.resources(scope, limit=None)["data"]["resources"]
+        manifest = store.create(
+            principal.subject,
+            scope.to_dict(),
+            generation_id=service.generation_id,
+            query_version=service.query_version,
+            observed_at=service.observed_at,
+            rows=rows,
+        )
+    return _export_envelope({"export": manifest}, scope)
+
+
+@router.get(
+    "/inventory/exports/current",
+    summary="Find this principal's exact-scope export capture",
+)
+def current_inventory_export(
+    context: Context, principal: CurrentPrincipal, scope: ReadScope
+) -> dict[str, Any]:
+    """Recover a durable capture after refresh, without requiring the active provider."""
+    with _export_store(context) as store:
+        manifest = store.current(principal.subject, scope.to_dict())
+    return _export_envelope({"export": manifest}, scope)
+
+
+@router.get(
+    "/inventory/exports/{export_id}/batches",
+    summary="Read an immutable inventory export batch",
+)
+def inventory_export_batch(
+    export_id: str,
+    context: Context,
+    principal: CurrentPrincipal,
+    scope: ReadScope,
+    offset: int = Query(0, ge=0, le=49_999),
+) -> dict[str, Any]:
+    """Reauthorize exact caller scope for every bounded batch, including retries."""
+    with _export_store(context) as store:
+        batch = store.batch(principal.subject, scope.to_dict(), export_id, offset)
+    return _export_envelope(batch, scope)
+
+
+@router.post(
+    "/inventory/exports/{export_id}/cancel",
+    summary="Cancel an export and remove its captured rows",
+)
+def cancel_inventory_export(
+    export_id: str,
+    payload: ExportCancel,
+    context: Context,
+    principal: CurrentPrincipal,
+    scope: ReadScope,
+) -> dict[str, Any]:
+    """Cancel only the reviewed revision; previously downloaded files cannot be revoked."""
+    with _export_store(context) as store:
+        manifest = store.cancel(
+            principal.subject, scope.to_dict(), export_id, payload.expected_revision
+        )
+    return _export_envelope({"export": manifest}, scope)
 
 
 @router.get(

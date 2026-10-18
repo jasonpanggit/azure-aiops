@@ -17,6 +17,7 @@ import type {
   DurableSituation,
   Envelope,
   EvidenceItem,
+  FinOpsCurrencyTotal,
   NetworkGap,
   NetworkSummary,
   NetworkTopology,
@@ -139,7 +140,7 @@ export type CopilotRouteDisposition =
   | { kind: "excluded"; reason: string };
 
 /**
- * Exhaustive disposition for all 28 reviewed routes.
+ * Exhaustive disposition for all reviewed routes, including inventory drilldown.
  *
  * The Plan 11-16 filesystem gate compares these keys to
  * `web/src/app/**\/page.tsx` so no route can ship without exactly one reviewed
@@ -181,12 +182,17 @@ export const COPILOT_ROUTE_DISPOSITIONS: Record<string, CopilotRouteDisposition>
   "/agents": { kind: "dedicated", surface: "multi-agent-investigation" },
   // 1 redirect -- the legacy collection alias is consolidated into Patch priorities.
   "/vulnerabilities": { kind: "redirect", target: "/exposure/patch-priorities" },
-  // 1 excluded -- pure navigation/query aggregation with no stable retained
-  // evidence snapshot contract in Phase 11.
+  // Navigation/query drilldowns require a reviewed retained-evidence contract
+  // before they may construct their own model-bound snapshots.
   "/search": {
     kind: "excluded",
     reason:
       "Navigation and query aggregation only; Phase 11 defines no stable retained evidence snapshot contract for search results, so results deep-link to eligible detail pages instead of being carried as Copilot evidence.",
+  },
+  "/inventory/assets": {
+    kind: "excluded",
+    reason:
+      "Read-only published-asset navigation; no reviewed retained evidence snapshot and selected-asset tool contract exists for this drilldown. Governed inventory Copilot remains on /inventory; raw asset responses must not be passed as model evidence.",
   },
 };
 
@@ -1696,7 +1702,7 @@ export interface NetworkCopilotSelection {
 /** Already-loaded Network envelopes and active page state. */
 export interface NetworkCopilotPageInput {
   scope: ScopeSelection;
-  tab: "flow" | "topology" | "gaps" | "rules" | "policy";
+  tab: "flow" | "topology" | "gaps" | "rules" | "policy" | "intents" | "history";
   gapOffset: number;
   gapLimit: number;
   findingOffset: number;
@@ -2417,6 +2423,9 @@ export interface IdentityPrincipalObservation {
   widest_scope_breadth?: string;
   assignment_count?: number;
   roles?: string[];
+  risk_classification?: "privileged_signal" | "incomplete" | "no_classified_signal";
+  unresolved_role_assignments?: number;
+  unknown_age_assignments?: number;
 }
 
 /** A subscription-owner row projected before adapter typing. */
@@ -2426,6 +2435,7 @@ export interface IdentityOwnerObservation {
   subscription_id?: string;
   scope_breadth?: string;
   stale?: boolean;
+  age_state?: "stale" | "within_review_window" | "unknown";
 }
 
 /** A stale access-review assignment projected before adapter typing. */
@@ -2502,20 +2512,24 @@ export interface FinOpsWasteObservation {
 export interface FinOpsAttributionObservation {
   dimension: string;
   group: string;
-  identified_annual_savings: number;
+  identified_annual_savings: number | null;
+  currency?: string;
+  identified_annual_savings_currency_totals?: FinOpsCurrencyTotal[];
   savings_opportunity_count: number;
   waste_item_count: number;
 }
 
 /** FinOps summary aggregate the adapter cites (currency + observation window). */
 export interface FinOpsSummaryCopilotFields {
-  identified_annual_savings: number;
+  identified_annual_savings: number | null;
   currency: string;
+  identified_annual_savings_currency_totals?: FinOpsCurrencyTotal[];
   savings_opportunity_count: number;
   quantified_opportunity_count: number;
   waste_item_count: number;
-  actual_spend?: number;
+  actual_spend?: number | null;
   actual_spend_currency?: string;
+  actual_spend_currency_totals?: FinOpsCurrencyTotal[];
   actual_spend_period_start?: string;
   actual_spend_period_end?: string;
   unavailable_metrics: { metric: string; reason: string }[];
@@ -2652,6 +2666,8 @@ export interface SituationDetailCopilotPageInput {
 
 /** Synthesized business-service catalog row the Services adapter cites. */
 export interface ServicesCatalogObservation {
+  /** Distinguishes a synthetic unmapped bucket from a real service with the same label. */
+  id?: string;
   name: string;
   environments: string[];
   subscriptionCount: number;
@@ -2767,7 +2783,9 @@ export interface TwinScenarioObservation {
   scenario: string;
   target: string;
   likely_impact?: string;
-  risk_delta?: number;
+  risk_delta?: number | null;
+  analysis_kind?: "bounded_topology_review";
+  truncated?: boolean;
   impacted_count?: number;
   assumptions?: string[];
 }
@@ -2777,11 +2795,11 @@ export interface TwinCopilotPageInput {
   scope: ScopeSelection;
   twinId: string;
   version?: string;
-  previousVersion?: string;
+  previousVersion?: string | null;
   observedAt?: string;
   liveObservedAt?: string;
   confidence?: string;
-  /** Scenario-weighted risk score already rendered by the Twin page. */
+  /** Heuristic current index, not measured risk or a historical trend. */
   riskScore?: number | null;
   entities: TwinEntityObservation[];
   entitiesTotal: number;
@@ -3707,7 +3725,8 @@ function evidenceFreshness(value: EvidenceItem["freshness"]): CopilotFreshnessSt
   return "unavailable";
 }
 
-function envelopeSourceStatus(
+/** Preserve reported source freshness; HTTP success alone never establishes freshness. */
+export function envelopeSourceStatus(
   source: string,
   envelope: Envelope<unknown> | null | undefined,
 ): CoreCopilotSourceStatus {
@@ -5353,6 +5372,8 @@ function identityCoreInput(input: IdentityCopilotPageInput): CoreCopilotAdapterI
         stale_assignment_count: summary.stale_assignment_count,
         non_human_principal_count: summary.non_human_principal_count,
         assignment_count: summary.assignment_count,
+        classification_basis: "observed_rbac_role_name_action_heuristic",
+        effective_access: "not_evaluated",
       },
     }] : []),
     // Principals are non-ARM domain identities; the principal id is redacted
@@ -5367,8 +5388,14 @@ function identityCoreInput(input: IdentityCopilotPageInput): CoreCopilotAdapterI
       priority: index,
       data: {
         principal_type: principal.principal_type,
-        privileged: principal.privileged ?? false,
-        stale: principal.stale ?? false,
+        privileged: principal.privileged ?? null,
+        stale: principal.stale ?? null,
+        classification_basis: "observed_rbac_role_name_action_heuristic",
+        effective_access: "not_evaluated",
+        change_recency_does_not_establish_use_or_review: true,
+        risk_classification: principal.risk_classification ?? "unreported",
+        unresolved_role_assignments: principal.unresolved_role_assignments ?? null,
+        unknown_age_assignments: principal.unknown_age_assignments ?? null,
         widest_scope_breadth: principal.widest_scope_breadth,
         assignment_count: principal.assignment_count ?? 0,
         role_count: principal.roles?.length ?? 0,
@@ -5386,7 +5413,8 @@ function identityCoreInput(input: IdentityCopilotPageInput): CoreCopilotAdapterI
         principal_type: owner.principal_type,
         subscription_id: owner.subscription_id,
         scope_breadth: owner.scope_breadth,
-        stale: owner.stale ?? false,
+        stale: owner.stale ?? null,
+        change_age_state: owner.age_state ?? "unknown",
       },
     })),
     ...input.staleAccess.slice(0, 50).map((assignment, index) => ({
@@ -5475,11 +5503,14 @@ function finopsCoreInput(input: FinOpsCopilotPageInput): CoreCopilotAdapterInput
       data: {
         identified_annual_savings: summary.identified_annual_savings,
         currency: summary.currency,
+        identified_annual_savings_currency_totals:
+          summary.identified_annual_savings_currency_totals ?? [],
         savings_opportunity_count: summary.savings_opportunity_count,
         quantified_opportunity_count: summary.quantified_opportunity_count,
         waste_item_count: summary.waste_item_count,
         actual_spend: summary.actual_spend ?? null,
         actual_spend_currency: summary.actual_spend_currency,
+        actual_spend_currency_totals: summary.actual_spend_currency_totals ?? [],
         actual_spend_period_start: summary.actual_spend_period_start,
         actual_spend_period_end: summary.actual_spend_period_end,
       },
@@ -5495,6 +5526,9 @@ function finopsCoreInput(input: FinOpsCopilotPageInput): CoreCopilotAdapterInput
         dimension: group.dimension,
         group: group.group,
         identified_annual_savings: group.identified_annual_savings,
+        currency: group.currency,
+        identified_annual_savings_currency_totals:
+          group.identified_annual_savings_currency_totals ?? [],
         savings_opportunity_count: group.savings_opportunity_count,
         waste_item_count: group.waste_item_count,
       },
@@ -5793,7 +5827,7 @@ function situationDetailCoreInput(
 
 function servicesCoreInput(input: ServicesCopilotPageInput): CoreCopilotAdapterInput {
   const records: CoreCopilotRecord[] = input.services.slice(0, 50).map((service, index) => ({
-    identity: service.name,
+    identity: service.id ?? service.name,
     namespace: "operations",
     kind: "business_service",
     source: "services/catalog",
@@ -5806,9 +5840,9 @@ function servicesCoreInput(input: ServicesCopilotPageInput): CoreCopilotAdapterI
       operational_state: service.operationalState,
       environments: service.environments,
       subscription_count: service.subscriptionCount,
-      situation_count: service.situationCount,
-      critical_count: service.criticalCount,
-      health_risk: service.healthRisk,
+      situation_count: input.incidentsAvailable ? service.situationCount : undefined,
+      critical_count: input.incidentsAvailable ? service.criticalCount : undefined,
+      health_risk: input.connectionsAvailable ? service.healthRisk : undefined,
     },
   }));
   return {
@@ -5996,12 +6030,12 @@ function twinCoreInput(input: TwinCopilotPageInput): CoreCopilotAdapterInput {
       );
   const riskDetail = typeof input.riskScore === "number"
     ? (
-        `The current twin reports a scenario-weighted risk score of `
+        `The current twin reports a heuristic current index of `
         + `${input.riskScore} with ${vulnerabilityCount} visible vulnerability `
-        + `entit${vulnerabilityCount === 1 ? "y" : "ies"}.`
+        + `entit${vulnerabilityCount === 1 ? "y" : "ies"}; this is not measured risk, probability or reliability.`
       )
     : (
-        "The current twin has no scenario-weighted risk score, so a current "
+        "The current twin has no supported heuristic index, so a current "
         + "risk level cannot be asserted."
       );
   const records: CoreCopilotRecord[] = [
@@ -6107,6 +6141,8 @@ function twinCoreInput(input: TwinCopilotPageInput): CoreCopilotAdapterInput {
         target: input.scenario.target,
         likely_impact: input.scenario.likely_impact,
         risk_delta: input.scenario.risk_delta,
+        analysis_kind: input.scenario.analysis_kind,
+        truncated: input.scenario.truncated,
         impacted_count: input.scenario.impacted_count,
         assumptions: input.scenario.assumptions,
         // Scenario projections are hypothetical, never observed reality.

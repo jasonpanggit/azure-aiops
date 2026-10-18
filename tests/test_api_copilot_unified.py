@@ -133,6 +133,43 @@ def _result() -> ToolResult:
     )
 
 
+class _ExecutiveSummaryAgent:
+    agent_name = "executive-summary"
+    agent_version = "1"
+
+    def __init__(self, summary: str) -> None:
+        self.summary = summary
+        self.calls = []
+
+    def answer(self, *, context, **_kwargs):
+        self.calls.append(context)
+        evidence_refs = [
+            reference
+            for finding in context["findings"]
+            for reference in finding["evidence_refs"]
+        ]
+        return AgentAnswer(
+            text=json.dumps(
+                {
+                    "findings": [
+                        {
+                            "finding_id": "executive-summary",
+                            "evidence_refs": evidence_refs,
+                            "confidence": "high",
+                            "uncertainty": [],
+                            "freshness": "fresh",
+                            "actionable": False,
+                            "next_check": "Review the cited evidence.",
+                            "summary": self.summary,
+                        }
+                    ]
+                }
+            ),
+            agent_name=self.agent_name,
+            agent_version=self.agent_version,
+        )
+
+
 def test_canonical_inventory_tracer_returns_citations_uncertainty_and_thread():
     calls: list[tuple[str, dict[str, object], dict[str, list[str]]]] = []
 
@@ -2929,8 +2966,13 @@ def test_operations_copilot_coordinates_plan_and_final_network_answer(
         ),
     )
 
+    executive = _ExecutiveSummaryAgent(
+        "The payments subnet bypasses inspection because it has no default route through the hub firewall."
+    )
+    context = _context(tmp_path, coordinator)
+    context.executive_summary_agent_provider = lambda: executive
     response = TestClient(
-        create_app(_context(tmp_path, coordinator)),
+        create_app(context),
         raise_server_exceptions=False,
     ).post(
         "/api/v1/copilot/investigations?subscription=sub-a",
@@ -2954,10 +2996,10 @@ def test_operations_copilot_coordinates_plan_and_final_network_answer(
     assert "payments subnet bypasses inspection" in (
         data["synthesis"]["claims"][0]["summary"]
     )
-    assert len(coordinator.calls) == 2
+    assert len(coordinator.calls) == 1
     assert any(
         "payments" in finding["summary"]
-        for finding in coordinator.calls[1]["context"]["findings"]
+        for finding in executive.calls[0]["findings"]
     )
 
 
@@ -3065,8 +3107,13 @@ def test_operations_copilot_corrects_highest_risk_compliance_coverage(
         )
 
     monkeypatch.setattr("api.routers.copilot.call_tool", governed_tool)
+    executive = _ExecutiveSummaryAgent(
+        "Critical CVE exposure requires governance review."
+    )
+    context = _context(tmp_path, coordinator)
+    context.executive_summary_agent_provider = lambda: executive
     response = TestClient(
-        create_app(_context(tmp_path, coordinator)),
+        create_app(context),
         raise_server_exceptions=False,
     ).post(
         "/api/v1/copilot/investigations?subscription=sub-a",
@@ -3091,7 +3138,7 @@ def test_operations_copilot_corrects_highest_risk_compliance_coverage(
     ]
     assert data["synthesis"]["status"] == "synthesized"
     assert data["synthesis"]["coordinator"]["planned"] is True
-    assert len(coordinator.calls) == 3
+    assert len(coordinator.calls) == 2
 
 
 def test_operations_copilot_falls_back_to_complete_highest_risk_compliance_plan(
@@ -3177,8 +3224,13 @@ def test_operations_copilot_falls_back_to_complete_highest_risk_compliance_plan(
         )
 
     monkeypatch.setattr("api.routers.copilot.call_tool", governed_tool)
+    executive = _ExecutiveSummaryAgent(
+        "Governed fallback evidence covers both risk domains."
+    )
+    context = _context(tmp_path, coordinator)
+    context.executive_summary_agent_provider = lambda: executive
     response = TestClient(
-        create_app(_context(tmp_path, coordinator)),
+        create_app(context),
         raise_server_exceptions=False,
     ).post(
         "/api/v1/copilot/investigations?subscription=sub-a",
@@ -3201,7 +3253,7 @@ def test_operations_copilot_falls_back_to_complete_highest_risk_compliance_plan(
     ]
     assert data["synthesis"]["status"] == "synthesized"
     assert data["synthesis"]["coordinator"]["planned"] is False
-    assert len(coordinator.calls) == 3
+    assert len(coordinator.calls) == 2
 
 
 def test_highest_risk_endpoint_retains_ranked_claims_after_conflict_exclusion(

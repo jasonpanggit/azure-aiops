@@ -14,9 +14,26 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Query, Request
 
+from intelligence.governance.campaigns import AccessCampaignStore
+from intelligence.governance.retained_exports import RetainedAuditExportStore
+from intelligence.inventory.exports import InventoryExportStore
+from network.history import NetworkHistoryStore
+from network.intents import NetworkIntentStore
 from onboarding.service import SubscriptionOnboardingService
+from operations.exposure_history import ExposureHistoryStore
+from operations.investigation_jobs import InvestigationJobStore
+from operations.investigation_workspaces import InvestigationWorkspaceStore
+from operations.overview_history import OverviewHistoryStore
+from operations.predeploy_history import PredeployHistoryStore
+from operations.resource_health_history import ResourceHealthHistoryStore
+from operations.saved_views import SavedViewStore
+from operations.service_portfolio import ServicePortfolioStore
+from operations.service_reliability import ServiceObjectiveStore
 from operations.specialist_manifest import LOCKED_SPECIALIST_IDS
 from semantic.semantic_engine import SemanticEngine
+from semantic.twin_history import TwinHistoryStore
+from situations.deadlines import SituationDeadlineStore
+from situations.notes import SituationNotesStore
 
 from .auth import Authenticator
 from .errors import ApiError, ErrorCode
@@ -89,7 +106,27 @@ class ApiContext:
     # Enterprise settings are a user-submitted mutation rather than a snapshot
     # projection, so like risk exceptions they use a direct store handle.
     settings_store: Any | None = None
+    retained_audit_export_store: RetainedAuditExportStore | None = None
+    access_campaign_store: AccessCampaignStore | None = None
     compliance_policy_store: Any | None = None
+    situation_notes_store: SituationNotesStore | None = None
+    situation_deadline_store: SituationDeadlineStore | None = None
+    execution_record_reader: Callable[[], list[dict[str, Any]]] | None = None
+    rollout_store_provider: Callable[[], Any] | None = None
+    inventory_export_store: InventoryExportStore | None = None
+    overview_history_store: OverviewHistoryStore | None = None
+    exposure_history_store: ExposureHistoryStore | None = None
+    service_portfolio_store: ServicePortfolioStore | None = None
+    service_objective_store: ServiceObjectiveStore | None = None
+    service_request_metrics: Callable[[str, int, str], dict[str, Any]] | None = None
+    resource_health_history_store: ResourceHealthHistoryStore | None = None
+    network_intent_store: NetworkIntentStore | None = None
+    network_history_store: NetworkHistoryStore | None = None
+    saved_view_store: SavedViewStore | None = None
+    investigation_workspace_store: InvestigationWorkspaceStore | None = None
+    investigation_job_store: InvestigationJobStore | None = None
+    predeploy_history_store: PredeployHistoryStore | None = None
+    twin_history_store: TwinHistoryStore | None = None
     # The network design policy (rule-based, UI-editable) is likewise a
     # user-submitted mutation, not a snapshot projection, and is applied to
     # every rebuilt NetworkIntelligenceService via the same store handle.

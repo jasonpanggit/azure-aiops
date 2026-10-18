@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from network.review import NetworkReviewReference
+
 from .evidence import CONFIDENCE_LEVELS, FRESHNESS_UNKNOWN
 
 
@@ -308,6 +310,31 @@ class RemediationDecisionRequest(ApiModel):
     )
 
 
+class RolloutTargetRequest(ApiModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    plan_id: str = Field(min_length=1, max_length=200)
+    preview_snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    selected_patch_ids: list[str] = Field(default_factory=list, max_length=1000)
+    wave: int = Field(ge=1, le=5)
+
+
+class RolloutCreateRequest(ApiModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    title: str = Field(min_length=1, max_length=120)
+    window_start: str = Field(min_length=1, max_length=64)
+    window_end: str = Field(min_length=1, max_length=64)
+    require_reconciled_evidence: bool = True
+    targets: list[RolloutTargetRequest] = Field(min_length=1, max_length=20)
+    expected_revision: int = Field(ge=0, le=9007199254740991)
+
+
+class RolloutControlRequest(ApiModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action: Literal["open", "pause", "resume", "retire"]
+    wave: int = Field(default=0, ge=0, le=5)
+    expected_revision: int = Field(ge=0, le=9007199254740991)
+
+
 class SupersedeExecutionRequest(ApiModel):
     """Operator-supplied audit reason for replacing an exhausted execution.
 
@@ -329,9 +356,9 @@ class ChangeAssessmentRequest(ApiModel):
 
     ``payload`` is the raw artifact from the source system (a Terraform JSON
     plan, a Bicep what-if result, an ARM diff, or a pull-request description).
-    It is accepted unvalidated by design: the ingestion layer is defensive and
-    reports what it could not read as declared unknowns, which is more useful
-    to a reviewer than a rejected submission.
+    Intake bounds structure and rejects detected unredacted credentials. Within
+    that boundary the ingestion layer remains defensive: unfamiliar intent is
+    reported as declared unknowns, not mistaken for a fully understood change.
     """
 
     source: str = Field(
@@ -345,6 +372,7 @@ class ChangeAssessmentRequest(ApiModel):
         description="Raw change artifact from the source system"
     )
     change_id: str = Field("", description="Caller-supplied change identifier; generated when omitted")
+    network_review: NetworkReviewReference | None = None
 
 
 # --------------------------------------------------------------------------

@@ -812,6 +812,94 @@ class TestFabricMedallionRouterTask1:
         )
         assert hidden_detail.status_code == 404
 
+    def test_fabric_freshness_budget_is_scoped_and_keeps_authoritative_connection_identity(
+        self, fabric_medallion_client, monkeypatch
+    ):
+        from api.routers import fabric_medallion as routes
+        now = datetime.now(UTC)
+        base = {
+            "source_family": "bronze_resources", "status": "succeeded", "quality": "complete",
+            "row_count": 5, "subscription_id": SUB_A,
+            "requested_scope": {"subscription": [SUB_B], "subscription_connection": ["obsolete"]},
+        }
+        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _: [
+            {**base, "subscription_connection": "one", "ingested_at": (now - timedelta(days=2)).isoformat()},
+            {**base, "subscription_connection": "two", "ingested_at": now.isoformat()},
+            {**base, "subscription_id": SUB_B, "subscription_connection": "hidden", "ingested_at": now.isoformat()},
+        ])
+        response = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/bronze_resources?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["row_count"] == 10
+        assert body["data"]["freshness"] == body["evidence"][0]["freshness"] == "stale"
+        assert body["data"]["freshness_budget"]["source_count"] == 2
+        assert [source["scope"] for source in body["data"]["freshness_budget"]["sources"]] == [
+            {"subscription": [SUB_A], "subscription_connection": ["one"]},
+            {"subscription": [SUB_A], "subscription_connection": ["two"]},
+        ]
+        layers = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/layers?subscription={SUB_A}", headers=_auth(SCOPED_TOKEN),
+        ).json()
+        assert layers["data"]["layers"]["bronze"] == {"healthy": 0, "total": 1}
+        assert layers["evidence"][0]["freshness"] == "stale"
+
+    def test_fabric_cannot_expose_multi_subscription_aggregate_using_only_first_scope_value(
+        self, fabric_medallion_client, monkeypatch
+    ):
+        from api.routers import fabric_medallion as routes
+        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _: [
+            {"source_family": "bronze_resources", "requested_scope": {"subscription": [SUB_A, SUB_B]},
+             "row_count": 42, "ingested_at": datetime.now(UTC).isoformat()},
+        ])
+        response = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/bronze_resources?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert response.status_code == 404
+
+    def test_fabric_declared_contract_requires_authorization_and_registered_scope(self, fabric_medallion_client):
+        assert fabric_medallion_client.get("/api/v1/fabric-medallion/datasets/bronze_resources/contract").status_code == 401
+        hidden = fabric_medallion_client.get(
+            "/api/v1/fabric-medallion/datasets/gold_hidden/contract", headers=_auth(SCOPED_TOKEN),
+        )
+        assert hidden.status_code == 404
+        forbidden = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/bronze_resources/contract?subscription={SUB_B}", headers=_auth(SCOPED_TOKEN),
+        )
+        assert forbidden.status_code == 403
+        response = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/bronze_resources/contract?subscription={SUB_A}", headers=_auth(SCOPED_TOKEN),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["declared_schema"]["status"] == "available"
+        assert body["data"]["declared_schema"]["fields"]
+        assert body["data"]["deployed_schema_validation"] == body["data"]["dataset_dependency_graph"] == "not_collected"
+        assert body["scope"] == {"subscription": [SUB_A]}
+        assert body["evidence"][0]["source_engine"] == "fabric.schema_registry"
+        assert body["evidence"][1]["source_table"] == "metadata_source_status"
+        assert len(body["data"]["source_diagnostics"]) == 1
+        assert body["data"]["source_diagnostics"][0]["lineage_ref"] == "bronze-entity"
+
+    def test_fabric_unknown_clock_stays_unknown_in_evidence_despite_recent_sibling(
+        self, fabric_medallion_client, monkeypatch
+    ):
+        from api.routers import fabric_medallion as routes
+        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _: [
+            {"source_family": "bronze_resources", "subscription_id": SUB_A, "subscription_connection": "one"},
+            {"source_family": "bronze_resources", "subscription_id": SUB_A, "subscription_connection": "two",
+             "ingested_at": datetime.now(UTC).isoformat()},
+        ])
+        body = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/bronze_resources?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        ).json()
+        assert body["data"]["freshness"] == body["evidence"][0]["freshness"] == "unknown"
+        assert body["evidence"][0]["timestamp"] == ""
+
 
 def test_fabric_medallion_reads_live_delta_metadata_when_json_snapshot_is_empty(
     tmp_path, monkeypatch

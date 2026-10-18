@@ -633,6 +633,34 @@ def test_capabilities_route_advertises_supported_sources(client):
     assert "nsg" in data["simulation_domains"]
 
 
+@pytest.mark.parametrize("payload", [
+    {"resource_changes": "not-an-array"},
+    {"resource_changes": [{}] * 501},
+    {"settings": {"password": "fixture-private-value"}},
+])
+def test_assessment_intake_rejects_invalid_or_sensitive_artifacts(client, payload):
+    response = client.post(
+        "/api/v1/changes/assess", headers=_auth(),
+        json={"source": "terraform_plan", "payload": payload},
+    )
+    assert response.status_code == 400
+    assert "fixture-private-value" not in response.text
+
+
+@pytest.mark.parametrize("body", [
+    '{"source":"terraform_plan","payload":{"duplicate":1,"duplicate":2}}',
+    '{"source":"terraform_plan","payload":' + '{"nested":' * 2000 + "null" + "}" * 2000 + "}",
+    '{"source":"terraform_plan","payload":{"x":"' + "x" * (2 * 1024 * 1024 + 16384) + '"}}',
+])
+def test_assessment_rejects_ambiguous_or_unbounded_wire_json(client, body):
+    response = client.post(
+        "/api/v1/changes/assess", headers={**_auth(), "Content-Type": "application/json"},
+        content=body,
+    )
+    assert response.status_code == 400
+    assert len(response.content) < 1000
+
+
 def test_assess_route_returns_a_full_assessment(client):
     response = client.post(
         "/api/v1/changes/assess",

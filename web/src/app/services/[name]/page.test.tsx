@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ScopeProvider } from "@/lib/scope-context";
@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
   risk: vi.fn(),
 }));
 
-vi.mock("@/lib/services", () => ({
+vi.mock("@/lib/services", async importOriginal => ({
+  ...await importOriginal<typeof import("@/lib/services")>(),
   contextApi: {
     businessService: mocks.businessService,
     impact: mocks.impact,
@@ -39,6 +40,38 @@ const envelope = (
   warnings,
 });
 
+describe("Service detail independent degradation", () => {
+it("shows typed facts, object dependencies, separate impact identities and honest readiness", async () => {
+  mocks.businessService.mockResolvedValue(envelope({
+    subject: { entity_type: "BusinessService", name: "Demo", owner: "SRE", support_team: "On call" },
+    sections: {
+      applications: [{ entity_type: "Application", name: "Checkout" }],
+      dependencies: [{ entity_type: "Application", name: "Payments" }, "legacy unknown"],
+    },
+  }, []));
+  mocks.impact.mockResolvedValue(envelope({
+    root: { name: "Demo" }, impacted_resources: [{
+      name: "vm", entity_type: "Resource",
+      resource_id: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm",
+    }],
+  }, []));
+  renderPage();
+  const brief = await screen.findByRole("region", { name: "Typed service brief" });
+  expect(within(brief).getByText("SRE")).toBeInTheDocument();
+  expect(within(brief).getAllByText("Unreported or ambiguous").length).toBeGreaterThan(0);
+  const dependencies = screen.getByRole("region", { name: "Navigable service dependencies" });
+  expect(within(dependencies).getByRole("link", { name: "Payments" })).toHaveAttribute("href", "/investigate?type=Application&value=Payments");
+  expect(within(dependencies).getByRole("link", { name: "vm" })).toHaveAttribute("href", expect.stringContaining("/inventory/assets?resource_id="));
+  expect(within(dependencies).getByText(/4 matching \/ 4 loaded/)).toBeInTheDocument();
+  fireEvent.change(within(dependencies).getByRole("textbox", { name: "Find dependency" }), { target: { value: "Payments" } });
+  expect(within(dependencies).queryByRole("link", { name: "vm" })).not.toBeInTheDocument();
+  expect(within(dependencies).getByText(/1 matching \/ 4 loaded/)).toBeInTheDocument();
+  await waitFor(() => expect(mocks.buildServiceDetailCopilotContext).toHaveBeenLastCalledWith(expect.objectContaining({
+    context: expect.objectContaining({ freshness: "partial" }),
+    dependencies: expect.arrayContaining([expect.objectContaining({ name: "Payments", relation: "dependencies" })]),
+  })));
+});
+
 function renderPage() {
   return render(
     <ScopeProvider>
@@ -47,9 +80,9 @@ function renderPage() {
   );
 }
 
-describe("Service detail independent degradation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState({}, "", "/services/Demo");
     mocks.businessService.mockResolvedValue(envelope({
       subject: {
         entity_type: "BusinessService",

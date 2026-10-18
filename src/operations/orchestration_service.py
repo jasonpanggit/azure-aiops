@@ -36,6 +36,7 @@ from operations.foundry_agent import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+from operations.investigation_jobs import InvestigationExecutionControl
 from operations.investigation_thread_store import (
     OBSERVATION_CURRENT,
     OBSERVATION_HISTORICAL,
@@ -1438,6 +1439,7 @@ class OrchestrationService:
         max_wall_seconds: float | None = None,
         selection_snapshot: EvidenceSnapshotV2 | None = None,
         canonical_selection_snapshot: CanonicalEvidenceSnapshot | None = None,
+        execution_control: InvestigationExecutionControl | None = None,
     ) -> OrchestrationResult:
         """Execute one canonical request and return only the canonical result."""
 
@@ -1451,6 +1453,7 @@ class OrchestrationService:
             max_wall_seconds=max_wall_seconds,
             selection_snapshot=selection_snapshot,
             canonical_selection_snapshot=canonical_selection_snapshot,
+            execution_control=execution_control,
         ).result
 
     def execute_turn(
@@ -1465,6 +1468,7 @@ class OrchestrationService:
         max_wall_seconds: float | None = None,
         selection_snapshot: EvidenceSnapshotV2 | None = None,
         canonical_selection_snapshot: CanonicalEvidenceSnapshot | None = None,
+        execution_control: InvestigationExecutionControl | None = None,
     ) -> OrchestrationTurn:
         """Execute one canonical request after all authorization gates pass."""
 
@@ -1479,6 +1483,8 @@ class OrchestrationService:
             selection_snapshot=selection_snapshot,
             canonical_selection_snapshot=canonical_selection_snapshot,
         )
+        if execution_control is not None:
+            execution_control.checkpoint("canonical_planning")
         if self.telemetry is None:
             api_telemetry = getattr(context, "telemetry", None)
             self.telemetry = getattr(api_telemetry, "orchestration", None)
@@ -1549,10 +1555,14 @@ class OrchestrationService:
             thread_outcome = "created"
         self._record_thread_metric(thread_outcome, thread.durability)
         started = self.clock()
+        if execution_control is not None:
+            execution_control.checkpoint("canonical_candidate")
         candidate, policy_status, fallback_reason = self._resolve_candidate(
             request,
             effective_scope,
         )
+        if execution_control is not None:
+            execution_control.checkpoint("canonical_plan_selected")
         execution_started = self.clock()
         wall_seconds = min(
             candidate.max_wall_seconds if candidate is not None else 5,
@@ -1608,12 +1618,16 @@ class OrchestrationService:
                     budget_exhausted = True
                     break
                 selected_tools.append(call.tool)
+                if execution_control is not None:
+                    execution_control.checkpoint(f"tool:{step.specialist_id}:{call.tool}")
                 result = self.executor(
                     call.tool,
                     call.arguments,
                     context=context,
                     scope=requested_scope,
                 )
+                if execution_control is not None:
+                    execution_control.checkpoint(f"returned:{step.specialist_id}:{call.tool}")
                 if not isinstance(result, ToolResult):
                     raise TypeError("orchestration executor must return ToolResult")
                 tool_statuses.append(result.status)
@@ -1899,6 +1913,8 @@ class OrchestrationService:
             requested_scope,
             evidence_selection_id=evidence_selection_id,
         )
+        if execution_control is not None:
+            execution_control.checkpoint("canonical_synthesis")
         synthesis = self._synthesize(
             request.question,
             tool_results,
@@ -1921,6 +1937,8 @@ class OrchestrationService:
                 if isinstance(entity, AzureEntityRef)
             },
         )
+        if execution_control is not None:
+            execution_control.checkpoint("canonical_synthesis_returned")
         if synthesis.warning:
             uncertainty = [*uncertainty, synthesis.warning]
         uncertainty = self._bounded_uncertainty(uncertainty)
@@ -5114,15 +5132,20 @@ def execute_from_question(
     principal_subject: str,
     rollout_decision: CopilotRolloutDecision,
     session_id: str = "",
+    thread_id: str | None = None,
+    expected_thread_revision: int | None = None,
     hint_tool: str = "",
     hint_arguments: Mapping[str, Any] | None = None,
     max_wall_seconds: float | None = None,
+    execution_control: InvestigationExecutionControl | None = None,
 ) -> OrchestrationResult:
     """Canonical orchestration adapter for question-only legacy routes.
 
     Intent and optional hints select a real manifest page identity before
     deterministic policy validates the candidate. Legacy session IDs map to
     opaque, principal-scoped canonical threads and never become authority.
+    Explicit thread/revision selection bypasses legacy resolution and reset;
+    authorization/conflicts propagate without creating substitute continuity.
     """
 
     def _safe_executor(
@@ -5140,6 +5163,14 @@ def execute_from_question(
                 warning="Tool unavailable in canonical question mode",
             )
 
+    if thread_id is not None:
+        selected = investigation_thread_store().read_snapshot(
+            thread_id, principal_subject, scope,
+            expected_revision=expected_thread_revision,
+        )
+        if not selected["continuation_scope_match"]:
+            raise ThreadNotFound()
+
     page_kind, hinted_specialist = _question_route(
         question,
         hint_tool=hint_tool,
@@ -5147,11 +5178,12 @@ def execute_from_question(
     request = InvestigationRequest(
         question=question,
         requested_scope=scope.to_dict(),
-        thread_id=_legacy_session_thread_for_execution(
+        thread_id=thread_id or _legacy_session_thread_for_execution(
             session_id,
             principal_subject,
             scope,
         ),
+        expected_thread_revision=expected_thread_revision,
         snapshot=EvidenceSnapshotV2(
             page_kind=page_kind,
             page_id="copilot",
@@ -5212,6 +5244,8 @@ def execute_from_question(
         return False
 
     def _execute(active_request: InvestigationRequest) -> OrchestrationResult:
+        if execution_control is not None:
+            execution_control.checkpoint("question_route")
         if invalid_hint_reason:
             return service.unsupported(
                 active_request,
@@ -5245,6 +5279,7 @@ def execute_from_question(
             effective_scope=scope,
             stable_key=principal_subject,
             max_wall_seconds=max_wall_seconds,
+            execution_control=execution_control,
         )
 
     try:
@@ -5252,6 +5287,8 @@ def execute_from_question(
     except ThreadStoreUnavailable:
         raise
     except ThreadNotFound:
+        if thread_id is not None:
+            raise
         _forget_legacy_session_thread(session_id, principal_subject)
         result = _execute(
             request.model_copy(
@@ -5272,11 +5309,12 @@ def execute_from_question(
                 ]
             }
         )
-    _remember_legacy_session_thread(
-        session_id,
-        principal_subject,
-        result.thread_id,
-    )
+    if thread_id is None:
+        _remember_legacy_session_thread(
+            session_id,
+            principal_subject,
+            result.thread_id,
+        )
     return result
 
 

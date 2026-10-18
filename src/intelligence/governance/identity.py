@@ -104,6 +104,7 @@ class PrincipalRisk:
     stale: bool
     last_changed: str
     blast_radius: dict[str, int] = field(default_factory=dict)
+    risk_evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -117,6 +118,7 @@ class PrincipalRisk:
             "stale": self.stale,
             "last_changed": self.last_changed,
             "blast_radius": dict(self.blast_radius),
+            "risk_evidence": dict(self.risk_evidence),
         }
 
 
@@ -201,6 +203,56 @@ class IdentityRiskEngine:
             return ""
         return str(definition.get("roleName") or "")
 
+    def _permission_sets(self, definition: Mapping[str, Any] | None) -> dict[str, list[str]]:
+        if not definition:
+            return {"actions": [], "not_actions": [], "data_actions": [], "not_data_actions": []}
+
+        properties = definition.get("properties")
+        properties = properties if isinstance(properties, Mapping) else {}
+        permissions = definition.get("permissions")
+        if not isinstance(permissions, list):
+            permissions = properties.get("permissions")
+        permission_blocks = (
+            [block for block in permissions if isinstance(block, Mapping)]
+            if isinstance(permissions, list)
+            else []
+        )
+
+        fields = {
+            "actions": ("actions", "actions"),
+            "not_actions": ("notActions", "not_actions"),
+            "data_actions": ("dataActions", "data_actions"),
+            "not_data_actions": ("notDataActions", "not_data_actions"),
+        }
+        result: dict[str, list[str]] = {}
+        for output, (source, normalized) in fields.items():
+            values: list[Any] = []
+            for value in (
+                definition.get(normalized),
+                definition.get(source),
+                properties.get(source),
+                *(
+                    block.get(source)
+                    for block in permission_blocks
+                ),
+            ):
+                if isinstance(value, list):
+                    values.extend(value)
+            result[output] = list(
+                dict.fromkeys(
+                    item.strip()
+                    for item in values
+                    if isinstance(item, str) and item.strip()
+                )
+            )
+        return result
+
+    def _has_permission_evidence(self, definition: Mapping[str, Any] | None) -> bool:
+        if not definition or not str(definition.get("roleName") or "").strip():
+            return False
+        permissions = self._permission_sets(definition)
+        return bool(permissions["actions"] or permissions["data_actions"])
+
     def _is_privileged(self, assignment: Mapping[str, Any]) -> bool:
         name = self._role_name(assignment).strip().lower()
         if name in _PRIVILEGED_ROLE_NAMES:
@@ -210,20 +262,37 @@ class IdentityRiskEngine:
         )
         if not definition:
             return False
-        actions = definition.get("actions")
-        if not isinstance(actions, list):
-            return False
-        return any(str(action).strip().lower() in _PRIVILEGED_ACTIONS for action in actions)
+        actions = self._permission_sets(definition)["actions"]
+        return any(action.strip().lower() in _PRIVILEGED_ACTIONS for action in actions)
+
+    def _age_state(self, assignment: Mapping[str, Any]) -> str:
+        text = str(assignment.get("updatedOn") or assignment.get("createdOn") or "").strip()
+        try:
+            changed = datetime.fromisoformat(text)
+        except ValueError:
+            return "unknown"
+        if changed.tzinfo is None or changed.utcoffset() is None or changed > self._now:
+            return "unknown"
+        return "stale" if (self._now - changed).days > STALE_ACCESS_DAYS else "within_review_window"
 
     def _is_stale(self, assignment: Mapping[str, Any]) -> bool:
-        changed = _parse_timestamp(
-            assignment.get("updatedOn") or assignment.get("createdOn")
-        )
-        # An assignment with no timestamp is not assumed stale -- flagging it
-        # would fill the review queue with noise the reviewer cannot action.
-        if changed is None:
-            return False
-        return (self._now - changed).days > STALE_ACCESS_DAYS
+        return self._age_state(assignment) == "stale"
+
+    def _risk_evidence(self, assignments: list[dict[str, Any]], privileged: bool) -> dict[str, Any]:
+        unresolved = 0
+        for assignment in assignments:
+            definition = self._definitions.get(str(assignment.get("roleDefinitionId") or "").lower())
+            if not self._has_permission_evidence(definition):
+                unresolved += 1
+        states = [self._age_state(assignment) for assignment in assignments]
+        return {
+            "classification": "privileged_signal" if privileged else "incomplete" if unresolved else "no_classified_signal",
+            "unresolved_role_assignments": unresolved,
+            "unknown_age_assignments": states.count("unknown"),
+            "stale_assignments": states.count("stale"),
+            "age_evaluated_at": self._now.isoformat(),
+            "effective_access": "not_evaluated",
+        }
 
     def principals(self) -> list[PrincipalRisk]:
         """One risk record per principal, most privileged and widest first."""
@@ -275,6 +344,7 @@ class IdentityRiskEngine:
                     stale=any(self._is_stale(item) for item in assignments),
                     last_changed=latest.isoformat() if latest else "",
                     blast_radius=blast_radius,
+                    risk_evidence=self._risk_evidence(assignments, privileged),
                 )
             )
 
@@ -308,6 +378,7 @@ class IdentityRiskEngine:
                         assignment.get("createdOn") or assignment.get("updatedOn") or ""
                     ),
                     "stale": self._is_stale(assignment),
+                    "age_state": self._age_state(assignment),
                 }
             )
         owners.sort(key=lambda entry: (entry["subscription_id"], entry["principal_id"]))
@@ -333,6 +404,141 @@ class IdentityRiskEngine:
         ]
         stale.sort(key=lambda entry: (not entry["privileged"], entry["principal_id"]))
         return stale
+
+    def least_privilege_review(self, *, offset: int = 0, limit: int = 50) -> dict[str, Any]:
+        """Return bounded, evidence-based role and scope review candidates.
+
+        This is advisory triage over observed assignments, not an effective
+        permissions calculation or a recommendation to apply a replacement
+        role. Group membership, deny assignments, PIM, conditions, and
+        inherited or data-plane access remain outside the evaluated evidence.
+        """
+        candidates: list[dict[str, Any]] = []
+        resolved_role_count = 0
+        unknown_age_count = 0
+        unknown_scope_count = 0
+        conditional_count = 0
+
+        for assignment in self._assignments:
+            role_id = str(assignment.get("roleDefinitionId") or "")
+            definition = self._definitions.get(role_id.lower())
+            role = self._role_name(assignment)
+            permissions = self._permission_sets(definition)
+            has_role_evidence = bool(role.strip() and self._has_permission_evidence(definition))
+            resolved_role_count += int(has_role_evidence)
+
+            scope = str(assignment.get("assignmentScope") or "")
+            breadth = _scope_breadth(scope)
+            unknown_scope_count += int(breadth == "unknown")
+            age_state = self._age_state(assignment)
+            unknown_age_count += int(age_state == "unknown")
+            properties = assignment.get("properties")
+            properties = properties if isinstance(properties, Mapping) else {}
+            condition_observed = "condition" in assignment or "condition" in properties
+            condition = assignment.get("condition") or properties.get("condition")
+            condition_state = (
+                "present"
+                if isinstance(condition, str) and condition.strip()
+                else "not_present"
+                if condition_observed
+                else "not_collected"
+            )
+            conditional_count += int(condition_state == "present")
+
+            all_patterns = [
+                pattern
+                for values in permissions.values()
+                for pattern in values
+            ]
+            wildcard_count = sum("*" in pattern for pattern in all_patterns)
+            privileged = self._is_privileged(assignment)
+            reasons: list[str] = []
+            if breadth in {"management_group", "subscription"}:
+                reasons.append(f"broad_{breadth}_scope")
+            elif breadth == "unknown":
+                reasons.append("assignment_scope_unknown")
+            if privileged:
+                reasons.append("elevated_role_or_action_heuristic")
+            if wildcard_count:
+                reasons.append("wildcard_permission_patterns")
+            if age_state == "stale":
+                reasons.append("assignment_unchanged_past_review_window")
+            elif age_state == "unknown":
+                reasons.append("assignment_change_age_unknown")
+            if not has_role_evidence:
+                reasons.append("role_definition_or_permissions_unresolved")
+            if not reasons:
+                continue
+
+            def pattern_summary(
+                name: str,
+                permission_sets: Mapping[str, list[str]] = permissions,
+            ) -> dict[str, Any]:
+                values = permission_sets[name]
+                return {
+                    "count": len(values),
+                    "patterns": values[:20],
+                    "truncated": len(values) > 20,
+                }
+
+            candidates.append(
+                {
+                    "assignment_id": str(assignment.get("id") or ""),
+                    "principal_id": str(assignment.get("principalId") or ""),
+                    "principal_type": str(assignment.get("principalType") or "Unknown"),
+                    "role_definition_id": role_id,
+                    "role": role or "Unresolved",
+                    "scope": scope,
+                    "scope_breadth": breadth,
+                    "age_state": age_state,
+                    "last_changed": str(
+                        assignment.get("updatedOn") or assignment.get("createdOn") or ""
+                    ),
+                    "condition_state": condition_state,
+                    "permission_profile": {
+                        "actions": pattern_summary("actions"),
+                        "not_actions": pattern_summary("not_actions"),
+                        "data_actions": pattern_summary("data_actions"),
+                        "not_data_actions": pattern_summary("not_data_actions"),
+                        "wildcard_pattern_count": wildcard_count,
+                    },
+                    "review_reasons": reasons,
+                    "recommendation": (
+                        "Confirm this principal's required operations with the workload owner, "
+                        "then review whether the observed role and scope can be narrowed. "
+                        "Do not change access from this advisory alone."
+                    ),
+                }
+            )
+
+        candidates.sort(
+            key=lambda item: (
+                "elevated_role_or_action_heuristic" not in item["review_reasons"],
+                _BREADTH_RANK[item["scope_breadth"]] * -1,
+                "assignment_unchanged_past_review_window" not in item["review_reasons"],
+                item["principal_id"],
+                item["assignment_id"],
+            )
+        )
+        return {
+            "effective_access": "not_evaluated",
+            "assignment_count": len(self._assignments),
+            "candidate_count": len(candidates),
+            "offset": offset,
+            "limit": limit,
+            "candidates": candidates[offset : offset + limit],
+            "coverage": {
+                "role_definitions_resolved": resolved_role_count,
+                "assignment_age_unknown": unknown_age_count,
+                "assignment_scope_unknown": unknown_scope_count,
+                "conditional_assignments_observed": conditional_count,
+                "group_membership": "not_collected",
+                "deny_assignments": "not_collected",
+                "pim_eligibility": "not_collected",
+                "role_conditions": "presence_only_not_evaluated",
+                "effective_access": "not_evaluated",
+            },
+        }
 
     def non_human_identities(self) -> list[dict[str, Any]]:
         """Service principals and managed identities holding access.

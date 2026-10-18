@@ -24,6 +24,12 @@ describe("inventory CSV serialization", () => {
     expect(escapeCsvCell('say "hello"')).toBe('"say ""hello"""');
   });
 
+  it.each([" =SUM(A1)", "\t=SUM(A1)", "\r@formula", "\n+formula", "  -formula", "\uFEFF=SUM(A1)"])(
+    "neutralizes spreadsheet prefixes hidden behind whitespace: %j", value => {
+      expect(escapeCsvCell(value)).toBe(`"'${value}"`);
+    },
+  );
+
   it("downloads only the supplied serialized rows", () => {
     const createObjectURL = vi.fn(() => "blob:inventory");
     const revokeObjectURL = vi.fn();

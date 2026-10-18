@@ -1,6 +1,7 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -19,8 +20,9 @@ import { useApi } from "@/hooks/useApi";
 import { buildConnectionsCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
+import { scopeToSearchParams } from "@/lib/scope";
 import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
-import { ApiError, type ConnectionCreateRequest, type SubscriptionConnection, type SyncState } from "@/lib/types";
+import { ApiError, type ConnectionCreateRequest, type ConnectionPreflightReport, type SubscriptionConnection, type SyncState } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 import { ConnectionReadiness } from "@/components/ConnectionReadiness";
 
@@ -40,6 +42,20 @@ const EMPTY_FORM = {
   region: "",
   costCenter: "",
 };
+
+function connectionPayload(form: typeof EMPTY_FORM): ConnectionCreateRequest {
+  return {
+    connection_id: form.connectionId.trim().toLowerCase(),
+    name: form.name.trim(), subscription_id: form.subscriptionId.trim(), tenant_id: form.tenantId.trim(),
+    credential: { kind: "service_principal", client_id: form.clientId.trim(), tenant_id: form.tenantId.trim(), client_secret: form.clientSecret },
+    metadata: {
+      business_service: form.businessService.trim(), application: form.application.trim(),
+      environment: form.environment.trim(), project_owner: form.owner.trim(),
+      support_team: form.supportTeam.trim(), criticality: form.criticality,
+      region: form.region.trim(), cost_center: form.costCenter.trim(),
+    },
+  };
+}
 
 const SYNC_POLL_INTERVAL_MS = 1500;
 // Discovery + merge + ontology + Fabric publish can take well past 10 minutes
@@ -81,32 +97,61 @@ function readableSyncStage(stage: string | null | undefined): string {
 
 /** Subscription connections and Fabric Medallion data-confidence operating view. */
 export default function ConnectionsPage() {
+  return <Suspense fallback={null}><ConnectionsPageContent /></Suspense>;
+}
+
+function ConnectionsPageContent() {
   const { scope } = useScope();
+  const params = useSearchParams();
+  const router = useRouter();
+  const requestedTab = params.get("tab");
+  const urlTab = requestedTab === "fabric-medallion" || requestedTab === "ontology-automation" ? requestedTab : "subscriptions";
+  const rawConnectionId = params.get("connection") || "";
+  const hasRequestedConnection = Boolean(rawConnectionId);
+  const requestedConnectionId = rawConnectionId.length <= 256 && !/[\u0000-\u001f\u007f]/.test(rawConnectionId)
+    ? rawConnectionId : "";
   const [refreshKey, setRefreshKey] = useState(0);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
+  const [preflight, setPreflight] = useState<ConnectionPreflightReport | null>(null);
+  const [preflightError, setPreflightError] = useState("");
+  const [checkingPreflight, setCheckingPreflight] = useState(false);
+  const preflightRequest = useRef(0);
   const [actionError, setActionError] = useState("");
   const [actionMessage, setActionMessage] = useState("");
   const [runningAction, setRunningAction] = useState("");
   const [syncProgress, setSyncProgress] = useState<{ connectionId: string; state: SyncState } | null>(null);
-  const [tab, setTab] = useState<"subscriptions" | "fabric-medallion" | "ontology-automation">("subscriptions");
+  const [tab, setTab] = useState<"subscriptions" | "fabric-medallion" | "ontology-automation">(urlTab);
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [fabricRefreshKey, setFabricRefreshKey] = useState(0);
   const [ontologyRefreshKey, setOntologyRefreshKey] = useState(0);
   const [selectedSubscriptionId, setSelectedSubscriptionId] = useState<string>("");
-  const [selectedOntologyConnectionId, setSelectedOntologyConnectionId] = useState("");
-  const [readinessConnectionId, setReadinessConnectionId] = useState("");
+  const [selectedOntologyConnectionId, setSelectedOntologyConnectionId] = useState(requestedConnectionId);
+  const [readinessConnectionId, setReadinessConnectionId] = useState(requestedConnectionId);
   const [ontologyStatus, setOntologyStatus] = useState<OntologyStatusState>({
     data: null,
     error: null,
     loading: false,
   });
-  const connections = useApi(() => connectionsApi.list(scope), [scope, refreshKey]);
-  const rows = useMemo(() => connections.data?.data ?? [], [connections.data]);
+  const scopeKey = JSON.stringify(scope);
+  const currentScope = useRef(scopeKey);
+  currentScope.current = scopeKey;
+  useEffect(() => {
+    preflightRequest.current += 1;
+    setPreflight(null);
+    setPreflightError("");
+    setCheckingPreflight(false);
+    setForm(EMPTY_FORM);
+  }, [scopeKey]);
+  useEffect(() => () => { preflightRequest.current += 1; }, []);
+  const connections = useApi(async () => ({
+    ...await connectionsApi.list(scope), requestedScopeKey: scopeKey,
+  }), [scope, refreshKey]);
+  const rows = useMemo(() => connections.data?.requestedScopeKey === scopeKey ? connections.data.data : [], [connections.data, scopeKey]);
   const activeConnections = useMemo(() => rows.filter((connection) => connection.is_active), [rows]);
   const readinessConnection = activeConnections.find(connection => connection.connection_id === readinessConnectionId)
-    ?? activeConnections[0];
+    ?? (readinessConnectionId || hasRequestedConnection ? undefined : activeConnections[0]);
   const { filteredRows, filters, resetFilters } = useColumnFilters(rows, [
     { id: "health", label: "Health", getValues: (connection) => connection.health_status },
     { id: "sync", label: "Sync", getValues: (connection) => connection.sync_status || "unknown" },
@@ -116,15 +161,41 @@ export default function ConnectionsPage() {
   ]);
   const rowsPaging = useTablePagination(filteredRows);
 
+  function continueWorkflow(nextTab: typeof tab, connectionId: string) {
+    setTab(nextTab);
+    setReadinessConnectionId(connectionId);
+    setSelectedOntologyConnectionId(connectionId);
+    setSelectedSubscriptionId(activeConnections.find(connection => connection.connection_id === connectionId)?.subscription_id ?? "");
+    const next = scopeToSearchParams(scope);
+    if (nextTab !== "subscriptions") next.set("tab", nextTab);
+    if (connectionId) next.set("connection", connectionId);
+    const query = next.toString();
+    router.push(`/connections${query ? `?${query}` : ""}`, { scroll: false });
+  }
+
   useEffect(() => {
-    // Set default subscription when switching to fabric-medallion tab
+    setTab(urlTab);
+    setReadinessConnectionId(requestedConnectionId);
+    setSelectedOntologyConnectionId(requestedConnectionId);
+    setSelectedSubscriptionId("");
+  }, [urlTab, requestedConnectionId]);
+
+  useEffect(() => {
+    if (hasRequestedConnection) {
+      setSelectedSubscriptionId(activeConnections.find(connection => connection.connection_id === requestedConnectionId)?.subscription_id ?? "");
+      return;
+    }
     if (tab === "fabric-medallion" && !selectedSubscriptionId && rows.length > 0) {
       setSelectedSubscriptionId(rows[0].subscription_id);
     }
-  }, [tab, selectedSubscriptionId, rows]);
+  }, [tab, selectedSubscriptionId, rows, requestedConnectionId, activeConnections, hasRequestedConnection]);
 
   useEffect(() => {
     if (tab !== "ontology-automation") return;
+    if (hasRequestedConnection) {
+      setSelectedOntologyConnectionId(activeConnections.some(connection => connection.connection_id === requestedConnectionId) ? requestedConnectionId : "");
+      return;
+    }
     if (
       selectedOntologyConnectionId &&
       !activeConnections.some((connection) => connection.connection_id === selectedOntologyConnectionId)
@@ -135,11 +206,11 @@ export default function ConnectionsPage() {
     if (!selectedOntologyConnectionId && activeConnections.length > 0) {
       setSelectedOntologyConnectionId(activeConnections[0].connection_id);
     }
-  }, [activeConnections, selectedOntologyConnectionId, tab]);
+  }, [activeConnections, selectedOntologyConnectionId, tab, requestedConnectionId, hasRequestedConnection]);
 
   useEffect(() => {
     let cancelled = false;
-    if (tab !== "ontology-automation" || !selectedOntologyConnectionId) {
+    if (tab !== "ontology-automation" || !selectedOntologyConnectionId || !activeConnections.some(connection => connection.connection_id === selectedOntologyConnectionId)) {
       setOntologyStatus({ data: null, error: null, loading: false });
       return () => {
         cancelled = true;
@@ -163,7 +234,7 @@ export default function ConnectionsPage() {
     return () => {
       cancelled = true;
     };
-  }, [ontologyRefreshKey, scope, selectedOntologyConnectionId, tab]);
+  }, [ontologyRefreshKey, scope, selectedOntologyConnectionId, tab, activeConnections]);
 
   /** Polls connection health until the background sync reaches a terminal stage. */
   const pollSyncState = useCallback(async (
@@ -230,36 +301,49 @@ export default function ConnectionsPage() {
   }, [pollSyncState, rows]);
 
   function update(key: keyof typeof form, value: string) {
+    preflightRequest.current += 1;
+    setPreflight(null);
+    setPreflightError("");
+    setCheckingPreflight(false);
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function closeOnboarding() {
+    preflightRequest.current += 1;
+    setPreflight(null);
+    setPreflightError("");
+    setCheckingPreflight(false);
+    setForm(EMPTY_FORM);
+    setShowOnboarding(false);
+  }
+
+  async function previewConnection() {
+    const request = ++preflightRequest.current;
+    const requestedScope = scopeKey;
+    setPreflight(null);
+    setPreflightError("");
+    setCheckingPreflight(true);
+    try {
+      const result = await connectionsApi.preflight(connectionPayload(form));
+      if (request === preflightRequest.current && requestedScope === currentScope.current) setPreflight(result.data);
+    } catch (reason) {
+      if (request === preflightRequest.current && requestedScope === currentScope.current) {
+        setPreflightError(reason instanceof Error ? reason.message : "Connection access preview failed.");
+      }
+    } finally {
+      if (request === preflightRequest.current && requestedScope === currentScope.current) setCheckingPreflight(false);
+    }
   }
 
   async function onboard(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    preflightRequest.current += 1;
+    setPreflight(null);
+    setCheckingPreflight(false);
     setSubmitting(true);
     setActionError("");
     setActionMessage("");
-    const payload: ConnectionCreateRequest = {
-      connection_id: form.connectionId.trim().toLowerCase(),
-      name: form.name.trim(),
-      subscription_id: form.subscriptionId.trim(),
-      tenant_id: form.tenantId.trim(),
-      credential: {
-        kind: "service_principal",
-        client_id: form.clientId.trim(),
-        tenant_id: form.tenantId.trim(),
-        client_secret: form.clientSecret,
-      },
-      metadata: {
-        business_service: form.businessService.trim(),
-        application: form.application.trim(),
-        environment: form.environment.trim(),
-        project_owner: form.owner.trim(),
-        support_team: form.supportTeam.trim(),
-        criticality: form.criticality,
-        region: form.region.trim(),
-        cost_center: form.costCenter.trim(),
-      },
-    };
+    const payload = connectionPayload(form);
     try {
       const result = await connectionsApi.create(payload);
       const { validation, initial_sync: initialSync } = result.data;
@@ -286,8 +370,7 @@ export default function ConnectionsPage() {
           );
         }
       }
-      setForm(EMPTY_FORM);
-      setShowOnboarding(false);
+      closeOnboarding();
       setRefreshKey((value) => value + 1);
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : "Unable to create subscription connection.");
@@ -334,7 +417,7 @@ export default function ConnectionsPage() {
 
   async function runOntologyDiscovery() {
     const scheduler = ontologyStatus.data?.data.scheduler;
-    if (!selectedOntologyConnectionId || !scheduler?.can_run_now) return;
+    if (!selectedOntologyConnectionId || !activeConnections.some(connection => connection.connection_id === selectedOntologyConnectionId) || !scheduler?.can_run_now) return;
     setActionError("");
     setActionMessage("");
     setRunningAction(`ontology-run:${selectedOntologyConnectionId}`);
@@ -425,7 +508,7 @@ export default function ConnectionsPage() {
                 name="subscriptionId"
                 className="form-control"
                 value={selectedSubscriptionId}
-                onChange={(e) => setSelectedSubscriptionId(e.target.value)}
+                onChange={(event) => continueWorkflow(tab, activeConnections.find(connection => connection.subscription_id === event.target.value)?.connection_id ?? "")}
                 disabled={rows.length === 0}
               >
                 <option value="">Select a subscription</option>
@@ -451,7 +534,7 @@ export default function ConnectionsPage() {
                   name="ontologyConnectionId"
                   className="form-control"
                   value={selectedOntologyConnectionId}
-                  onChange={(event) => setSelectedOntologyConnectionId(event.target.value)}
+                  onChange={(event) => continueWorkflow(tab, event.target.value)}
                   disabled={activeConnections.length === 0}
                 >
                   <option value="">Select a connection</option>
@@ -500,7 +583,7 @@ export default function ConnectionsPage() {
           aria-selected={tab === "subscriptions"}
           aria-controls="subscriptions-panel"
           tabIndex={tab === "subscriptions" ? 0 : -1}
-          onClick={() => setTab("subscriptions")}
+          onClick={() => continueWorkflow("subscriptions", readinessConnection?.connection_id ?? selectedOntologyConnectionId)}
         >
           Subscriptions
         </button>
@@ -511,7 +594,7 @@ export default function ConnectionsPage() {
           aria-selected={tab === "fabric-medallion"}
           aria-controls="fabric-medallion-panel"
           tabIndex={tab === "fabric-medallion" ? 0 : -1}
-          onClick={() => setTab("fabric-medallion")}
+          onClick={() => continueWorkflow("fabric-medallion", readinessConnection?.connection_id ?? selectedOntologyConnectionId)}
         >
           Fabric Medallion
         </button>
@@ -522,7 +605,7 @@ export default function ConnectionsPage() {
           aria-selected={tab === "ontology-automation"}
           aria-controls="ontology-automation-panel"
           tabIndex={tab === "ontology-automation" ? 0 : -1}
-          onClick={() => setTab("ontology-automation")}
+          onClick={() => continueWorkflow("ontology-automation", readinessConnection?.connection_id ?? selectedOntologyConnectionId)}
         >
           Ontology automation
         </button>
@@ -530,12 +613,21 @@ export default function ConnectionsPage() {
 
       {tab === "subscriptions" && readinessConnection ? <>
         <label>Connection readiness scope
-          <select value={readinessConnection.connection_id} onChange={event => setReadinessConnectionId(event.target.value)}>
+          <select value={readinessConnection.connection_id} onChange={event => continueWorkflow(tab, event.target.value)}>
             {activeConnections.map(connection => <option key={connection.connection_id} value={connection.connection_id}>{connection.name} - {connection.subscription_id}</option>)}
           </select>
         </label>
         <ConnectionReadiness key={`${JSON.stringify(scope)}:${readinessConnection.connection_id}`} connection={readinessConnection} scope={scope} refreshKey={refreshKey} />
       </> : null}
+
+      {hasRequestedConnection && !connections.loading && !connections.error && !activeConnections.some(connection => connection.connection_id === requestedConnectionId)
+        ? <StatePanel title="Bookmarked connection is unavailable in this scope" message="Select another authorized connection. This bookmark will not silently target a different subscription." /> : null}
+      {tab === "subscriptions" && !readinessConnection && activeConnections.length > 0 ? <label>Connection readiness scope
+        <select value="" onChange={event => continueWorkflow(tab, event.target.value)}>
+          <option value="">Select an authorized connection</option>
+          {activeConnections.map(connection => <option key={connection.connection_id} value={connection.connection_id}>{connection.name} - {connection.subscription_id}</option>)}
+        </select>
+      </label> : null}
 
       {(actionError || actionMessage || syncProgress) && (
         <div className={`callout ${actionError ? "callout-critical" : syncProgress?.state.status.toLowerCase() === "failed" ? "callout-critical" : "callout-info"}`} role="status">
@@ -586,9 +678,23 @@ export default function ConnectionsPage() {
                 <FormField label="Cost center" value={form.costCenter} onChange={(value) => update("costCenter", value)} />
               </div>
               <div className="form-actions">
-                <button type="button" className="button" onClick={() => setShowOnboarding(false)} disabled={submitting}>Close onboarding form</button>
+                <button type="button" className="button" onClick={closeOnboarding} disabled={submitting}>Close onboarding form</button>
+                <button type="button" className="button" disabled={submitting || checkingPreflight} onClick={(event) => {
+                  if (event.currentTarget.form?.reportValidity()) void previewConnection();
+                }}>{checkingPreflight ? "Checking access…" : "Preview connection access"}</button>
                 <button type="submit" className="button button-primary" disabled={submitting}>{submitting ? "Onboarding…" : "Add subscription"}</button>
               </div>
+              <p className="muted">Preview is advisory: it does not store the secret, create a connection, grant roles, or start a sync. Add subscription validates again before queuing work.</p>
+              {preflightError && <StatePanel title="Connection preview unavailable" message={preflightError} tone="error" />}
+              {preflight && <section aria-label="Connection access preview">
+                <h3>{preflight.passed ? "Required access checks passed" : "Required access checks failed"}</h3>
+                <p className="muted">Checked {formatDateTime(preflight.checked_at)} · {preflight.status}. This is not a publication or readiness certificate.</p>
+                <ul>{preflight.checks.map((check) => <li key={check.name}>
+                  <strong>{check.name.replaceAll("_", " ")}: {check.skipped ? "Skipped" : check.passed ? "Passed" : "Failed"}</strong>
+                  {` · ${check.required ? "Required" : "Optional"} · ${check.detail}`}
+                  {!check.passed && check.remediation && <p>{check.remediation}</p>}
+                </li>)}</ul>
+              </section>}
             </div>
           </form>
         )}
@@ -658,7 +764,7 @@ export default function ConnectionsPage() {
         )}
       </section>}
 
-      {tab === "fabric-medallion" && (!selectedSubscriptionId ? (
+      {tab === "fabric-medallion" && (!selectedSubscriptionId || !activeConnections.some(connection => connection.subscription_id === selectedSubscriptionId) ? (
         <section id="fabric-medallion-panel" role="tabpanel" aria-labelledby="fabric-medallion-tab" tabIndex={0}>
           <StatePanel 
             title="Select a subscription" 
@@ -682,7 +788,7 @@ export default function ConnectionsPage() {
             tone="empty"
           />
         </section>
-      ) : !selectedOntologyConnectionId ? (
+      ) : !selectedOntologyConnectionId || !activeConnections.some(connection => connection.connection_id === selectedOntologyConnectionId) ? (
         <section id="ontology-automation-panel" role="tabpanel" aria-labelledby="ontology-automation-tab" tabIndex={0}>
           <StatePanel
             title="Select a connection to view ontology automation"

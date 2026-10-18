@@ -33,7 +33,7 @@ const envelope = <T,>(data: T) => ({
 const snapshot = {
   twin_id: "operational-twin",
   version: "v1",
-  previous_version: "v0",
+  previous_version: null,
   observed_at: "2026-01-01T10:00:00Z",
   scope: {},
   entities: [
@@ -50,10 +50,10 @@ const snapshot = {
   confidence: "medium",
   temporal: {
     current_state_version: "v1",
-    previous_state_version: "v0",
-    change_history: [{ change_type: "vulnerability_observed" }],
+    previous_state_version: null,
+    change_history: [],
     risk_trend: [{ risk_score: 32 }],
-    dependency_evolution: [{ relationship_type: "supports", current_count: 1, previous_count: 0 }],
+    dependency_evolution: [{ relationship_type: "supports", current_count: 1, previous_count: null }],
   },
 };
 
@@ -71,18 +71,24 @@ describe("Operational Digital Twin workspace", () => {
     graph.mockResolvedValue(envelope(snapshot));
     compare.mockResolvedValue(envelope({
       current_version: "v1",
-      previous_version: "v0",
-      added: [snapshot.entities[0]],
+      previous_version: null,
+      comparison_available: false,
+      added: [],
       removed: [],
       changed: [],
-      summary: "4 current entities; prior state retained as v0 for temporal comparison.",
+      summary: "No retained baseline selected. Current observations are not historical differences.",
     }));
     scenario.mockResolvedValue(envelope({
       scenario: "firewall_failure",
       target: "vm-payroll-1",
       version: "v1",
       likely_impact: "Traffic inspection and hub dependencies degrade.",
-      risk_delta: 20,
+      risk_delta: null,
+      analysis_kind: "bounded_topology_review",
+      authority: "none",
+      impacted_total: 30,
+      truncated: true,
+      traversal: { direction: "undirected", max_hops: 3, max_entities: 500 },
       impacted_entities: snapshot.entities,
       assumptions: ["Operator validation required"],
     }));
@@ -100,11 +106,15 @@ describe("Operational Digital Twin workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "Twin model" })).toBeInTheDocument();
     expect(screen.getAllByText("Payroll").length).toBeGreaterThan(0);
-    expect(screen.getByText(/prior state retained/)).toBeInTheDocument();
+    expect(screen.getByText(/No retained baseline selected/)).toBeInTheDocument();
+    expect(screen.getByText("Prior count unavailable")).toBeInTheDocument();
     expect(scenario).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("Resource for impact analysis"), { target: { value: "resource:vm-payroll-1" } });
     expect(await screen.findByText("Traffic inspection and hub dependencies degrade.")).toBeInTheDocument();
     expect(screen.getByText(/Consequence: Payroll -> Payroll API/)).toBeInTheDocument();
+    expect(screen.getByText(/Partial projection: traversal or display bounds reached/)).toHaveTextContent("Showing 4 of 30");
+    expect(screen.getByText("Not established by mapped links")).toBeInTheDocument();
+    expect(screen.getByText("Operator validation required")).toBeInTheDocument();
     expect(screen.getByText("operational-twin-export")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Scenario"), { target: { value: "cve_exploitation" } });
@@ -177,5 +187,15 @@ describe("Operational Digital Twin workspace", () => {
     fireEvent.change(screen.getByLabelText("Resource for impact analysis"), { target: { value: "" } });
     expect(screen.queryByText("Traffic inspection and hub dependencies degrade.")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Scenario")).toBeDisabled();
+  });
+
+  it("connects graph focus to the resource selector only after explicit review intent", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Explore payroll-vm, resource:vm-payroll-1" }));
+    expect(scenario).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Resource for impact analysis")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "Use focused resource for review" }));
+    await waitFor(() => expect(scenario).toHaveBeenCalledWith("firewall_failure", "vm-payroll-1", {}));
+    expect(screen.getByLabelText("Resource for impact analysis")).toHaveValue("resource:vm-payroll-1");
   });
 });

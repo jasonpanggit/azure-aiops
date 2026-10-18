@@ -37,6 +37,7 @@ from storage.fs import is_onelake_uri, resolve_root
 
 from .credentials import (
     CredentialResolver,
+    EnvironmentSecretProvider,
     SecretStorageError,
     SecretWriter,
     redact_mapping,
@@ -111,6 +112,7 @@ class SubscriptionOnboardingService:
         ontology_run_store: OntologyRunStore | None = None,
         ontology_command_intake: CommandIntakeService | None = None,
         clock: Callable[[], datetime] | None = None,
+        preflight_validator_factory: Callable[[CredentialResolver], ConnectionValidator] | None = None,
     ) -> None:
         self.output_dir = resolve_root(str(output_dir))
         self.registry = registry or ConnectionRegistry(self.output_dir)
@@ -126,6 +128,7 @@ class SubscriptionOnboardingService:
         )
         self.ontology_command_intake = ontology_command_intake
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.preflight_validator_factory = preflight_validator_factory
         self._reconcile_orphaned_syncs()
 
     @staticmethod
@@ -291,6 +294,38 @@ class SubscriptionOnboardingService:
         return self.secret_writer.store(
             connection_id=connection_id, secret_value=str(client_secret)
         )
+
+    def preflight(
+        self, *, connection_id: str, tenant_id: str, subscription_id: str,
+        client_id: str, client_secret: str,
+    ) -> dict[str, Any]:
+        """Probe proposed SPN access without persisting a credential or connection."""
+        identifier = _validate_connection_id(connection_id)
+        tenant_id = _validate_guid(tenant_id, "tenant_id")
+        subscription_id = _validate_guid(subscription_id, "subscription_id")
+        client_id = _validate_guid(client_id, "client_id")
+        if not client_secret or len(client_secret) > 16_384:
+            raise OnboardingError("A client secret of 1–16384 characters is required for preflight")
+        if self.preflight_validator_factory is None:
+            raise OnboardingError("Read-only connection preflight is not configured")
+        resolver = CredentialResolver(
+            provider=EnvironmentSecretProvider(env={"AIOPS_PREFLIGHT_SECRET": client_secret}),
+            credential_factory=self.resolver.credential_factory,
+        )
+        connection = SubscriptionConnection(
+            connection_id=identifier, name=identifier, tenant_id=tenant_id,
+            subscription_id=subscription_id,
+            credential=CredentialReference(
+                credential_id=f"{identifier}-preflight", kind="service_principal",
+                client_id=client_id, tenant_id=tenant_id,
+                secret_ref="env://AIOPS_PREFLIGHT_SECRET", scope=f"/subscriptions/{subscription_id}",
+            ),
+        )
+        report = self.preflight_validator_factory(resolver).validate(connection).to_dict()
+        for check in report["checks"]:
+            if not check["passed"]:
+                check["detail"] = "Access probe failed; review the named check and its remediation."
+        return {**report, "advisory_only": True, "persisted": False, "sync_started": False}
 
     def add(
         self,
