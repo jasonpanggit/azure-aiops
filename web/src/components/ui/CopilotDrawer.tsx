@@ -268,9 +268,7 @@ export function CopilotDrawer({
           }),
         );
       setLastSnapshot(submittedSnapshot);
-      const contextualPage = canonicalSnapshot
-        && ["governance", "identity", "finops", "cve_detail"].includes(canonicalSnapshot.page_kind);
-      const envelope = contextualPage ? await investigateCanonical(
+      const envelope = canonicalSnapshot ? await investigateCanonical(
         {
           contract_version: "1",
           question: nextQuestion,

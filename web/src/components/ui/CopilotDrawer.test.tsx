@@ -277,7 +277,52 @@ describe("CopilotDrawer", () => {
     },
   );
 
-  it("keeps the page snapshot local and renders server-grounded citations", async () => {
+  it.each([
+    "overview", "network", "compliance", "exposure", "defender_posture",
+    "inventory", "connections", "connections_fabric", "twin",
+  ] as const)("retains %s context for an unhinted typed follow-up", async (pageKind) => {
+    const pageSnapshot = normalizeCopilotSnapshotV2({
+      ...canonicalSnapshot("azure"), page_kind: pageKind, page_id: pageKind,
+    });
+    investigateCanonical.mockResolvedValue(canonicalResult(
+      "thr-ffffffffffffffffffffffffffffffff", "server:page",
+    ));
+    render(
+      <TestProviders>
+        <CopilotDrawer open onClose={vi.fn()} snapshot={pageSnapshot}
+          requestedScope={{ subscription: ["visible"] }} starterQuestions={[]} />
+      </TestProviders>,
+    );
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Summarize the observed evidence and its limits." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Send$/ }));
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledWith(
+      expect.objectContaining({
+        snapshot: pageSnapshot, requested_scope: { subscription: ["visible"] },
+      }), { subscription: ["visible"] },
+    ));
+    expect(investigateCanonical.mock.calls[0][0]).not.toHaveProperty("hint");
+  });
+
+  it("retains the question-only contract when no page snapshot exists", async () => {
+    investigateCanonical.mockResolvedValue(canonicalResult(
+      "thr-ffffffffffffffffffffffffffffffff", "server:standalone",
+    ));
+    render(
+      <TestProviders>
+        <CopilotDrawer open onClose={vi.fn()} starterQuestions={[]} />
+      </TestProviders>,
+    );
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Summarize current evidence." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Send$/ }));
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalledTimes(1));
+    expect(investigateCanonical.mock.calls[0][0]).not.toHaveProperty("snapshot");
+  });
+
+  it("submits canonical page context and renders server-grounded citations", async () => {
     const result = canonicalResult(
       "thr-ffffffffffffffffffffffffffffffff",
       "server:network",
@@ -321,7 +366,7 @@ describe("CopilotDrawer", () => {
     expect(screen.getByText("server:network")).toBeVisible();
   });
 
-  it("keeps legacy snapshots local and submits retained opaque continuity", async () => {
+  it("normalizes legacy page snapshots and submits exact retained continuity", async () => {
     investigateCanonical.mockClear();
     window.sessionStorage.clear();
     const threadId = "thr-dddddddddddddddddddddddddddddddd";
@@ -366,8 +411,10 @@ describe("CopilotDrawer", () => {
       { subscription: ["sub-a"] },
     ));
     const request = investigateCanonical.mock.calls.at(-1)?.[0];
-    expect(request).not.toHaveProperty("snapshot");
-    expect(request).not.toHaveProperty("expected_thread_revision");
+    expect(request.snapshot).toEqual(normalizeCopilotSnapshotV2({
+      ...snapshot, page_kind: "remediation", page_id: "remediation",
+    }));
+    expect(request.expected_thread_revision).toBe(4);
   });
 
   it("preserves first-turn compatibility by omitting thread CAS fields", async () => {
@@ -395,7 +442,7 @@ describe("CopilotDrawer", () => {
     const request = investigateCanonical.mock.calls.at(-1)?.[0];
     expect(request).not.toHaveProperty("thread_id");
     expect(request).not.toHaveProperty("expected_thread_revision");
-    expect(request).not.toHaveProperty("snapshot");
+    expect(request.snapshot).toEqual(normalizeCopilotSnapshotV2(snapshot));
   });
 
   it("renders a duplicated backend warning only once", async () => {

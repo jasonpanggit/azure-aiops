@@ -29,6 +29,7 @@ const { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrat
 vi.mock("@/lib/services", () => ({
   inventoryExportApi: exportApi,
   inventoryApi: { os, osGroup, software, softwareGroup, paas, paasGroup, resources, narrative, lifecycleReview, confirmLifecycle, mappings, approveMapping, rejectMapping },
+  investigateCanonical: investigate,
   copilotApi: { investigate },
 }));
 
@@ -423,13 +424,13 @@ describe("Inventory OS tracer", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Review visible inventory health/ }));
 
     await waitFor(() => expect(investigate).toHaveBeenCalled());
-    const [question, scope, options] = investigate.mock.calls[0];
-    expect(question).toBe("Review visible inventory health");
+    const [request, scope] = investigate.mock.calls[0];
+    expect(request.question).toBe("Review visible inventory health");
     expect(scope).toEqual({});
-    expect(options).toMatchObject({
-      tool: "inventory_resources",
+    expect(request).toMatchObject({
+      snapshot: { version: "2", page_kind: "inventory" },
+      hint: { tool: "inventory_resources", arguments: {} },
     });
-    expect(options).not.toHaveProperty("snapshot");
   });
 
   it("does not expose Copilot while inventory for a new scope is unresolved", async () => {
@@ -702,7 +703,7 @@ describe("Inventory OS tracer", () => {
     );
   });
 
-  it("keeps the selected raw ARM resource type out of the thin-client request", async () => {
+  it("keeps the selected raw ARM resource type out of reviewed tool arguments", async () => {
     investigate.mockClear();
     render(<ScopeProvider><InventoryPage /></ScopeProvider>);
 
@@ -723,7 +724,9 @@ describe("Inventory OS tracer", () => {
     }));
 
     await waitFor(() => expect(investigate).toHaveBeenCalledTimes(1));
-    expect(investigate.mock.calls[0][2]).not.toHaveProperty("snapshot");
+    const request = investigate.mock.calls[0][0];
+    expect(request.snapshot).toMatchObject({ version: "2", page_kind: "inventory" });
+    expect(request.hint.arguments).not.toHaveProperty("resource_type");
   });
 
   it("renders the drill-down inline beneath the group row it was opened from", async () => {
