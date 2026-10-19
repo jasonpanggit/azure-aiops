@@ -121,9 +121,16 @@
       "purpose": "Investigate scoped ownership, approvals, policy risk, exceptions, and accountability.",
       "intent_examples": ["owner", "owned", "approval", "approver", "governance", "policy", "scope", "exception", "compliance"],
       "dependencies": [],
-      "operations_mcp_tools": ["business_service_context", "application_context", "risk_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+      "operations_mcp_tools": ["governance_summary", "business_service_context", "application_context", "risk_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
       "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry", "fabric_iq"]},
       "page_mappings": ["compliance", "governance", "resource", "remediation", "services"],
+      "page_tool_grants": {
+        "governance": ["governance_summary", "business_service_context", "application_context", "risk_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+        "compliance": ["business_service_context", "application_context", "risk_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+        "resource": ["business_service_context", "application_context", "risk_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+        "remediation": ["business_service_context", "application_context", "risk_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"],
+        "services": ["business_service_context", "application_context", "risk_context", "impact_context", "fabric_iq_relationships", "fabric_iq_topology", "fabric_iq_policy_context"]
+      },
       "output_contract": {
         "schema_version": "1",
         "requires_citations": true,
@@ -202,7 +209,7 @@
       "purpose": "Investigate scoped identities, role assignments, stale privilege, ownership, and access risk without changing access.",
       "intent_examples": ["identity", "access", "rbac", "role assignment", "privilege", "service principal"],
       "dependencies": [],
-      "operations_mcp_tools": ["business_service_context", "application_context", "risk_context", "search"],
+      "operations_mcp_tools": ["identity_summary", "business_service_context", "application_context", "risk_context", "search"],
       "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry"]},
       "page_mappings": ["identity"],
       "output_contract": {
@@ -222,7 +229,7 @@
       "purpose": "Investigate scoped cost, waste, Advisor economics, and business tradeoffs without changing resources.",
       "intent_examples": ["finops", "cost", "spend", "waste", "savings", "advisor economics"],
       "dependencies": [],
-      "operations_mcp_tools": ["business_service_context", "application_context", "risk_context", "search"],
+      "operations_mcp_tools": ["finops_summary", "business_service_context", "application_context", "risk_context", "search"],
       "knowledge_policy": {"mode": "deterministic_first", "optional_sources": ["foundry"]},
       "page_mappings": ["finops"],
       "output_contract": {

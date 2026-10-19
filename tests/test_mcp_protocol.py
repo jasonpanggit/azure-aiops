@@ -62,7 +62,10 @@ def test_initialize_and_exact_read_only_catalog(tmp_path):
         for grants in manifest.operations_mcp_grants().values()
         for tool in grants
     }
-    assert {tool["name"] for tool in listed} == specialist_union
+    assert {tool["name"] for tool in listed} == set(manifest.legacy_operations_mcp_tools)
+    assert specialist_union - {tool["name"] for tool in listed} == {
+        "governance_summary", "identity_summary", "finops_summary",
+    }
     assert all("azure_mcp" not in json.dumps(tool).casefold() for tool in listed)
 
 

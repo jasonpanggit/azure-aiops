@@ -65,6 +65,9 @@ locals {
     risk_context                  = { server = "operations-mcp", purpose = "Read the aggregated governed risk score for a business service, application, or resource." }
     search                        = { server = "operations-mcp", purpose = "Run an intent-driven read-only search across governed operational context when the subject is named but its domain record is not yet identified." }
     inventory_resources           = { server = "operations-mcp", purpose = "List scoped inventory resources (optionally filtered by ARM resource type or inventory family) to establish coverage, completeness, and freshness." }
+    governance_summary            = { server = "operations-mcp", purpose = "Read scoped connection-generation identity, cost and onboarding-credential summaries; never treat them as policy compliance, approval or access-review completion." }
+    identity_summary              = { server = "operations-mcp", purpose = "Read the native scoped role-assignment risk summary; missing identity source data is unknown, not zero privilege." }
+    finops_summary                = { server = "operations-mcp", purpose = "Read native scoped Advisor, Cost Management and waste summaries with unknown spend and mixed-currency limitations preserved." }
     fabric_iq_relationships       = { server = "operations-mcp", purpose = "Traverse Fabric IQ dependency/relationship graph for a resource or service." }
     fabric_iq_topology            = { server = "operations-mcp", purpose = "Retrieve Fabric IQ's modeled topology for a resource, service, or scope." }
     fabric_iq_policy_context      = { server = "operations-mcp", purpose = "Retrieve policy/governance context Fabric IQ has already joined to a resource." }

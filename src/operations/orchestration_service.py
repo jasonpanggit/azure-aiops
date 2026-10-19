@@ -5236,6 +5236,9 @@ def execute_from_question(
 
     def _supports_empty_arguments(specialist: SpecialistDefinition) -> bool:
         for tool in specialist.operations_mcp_tools:
+            if tool == "governance_summary":
+                # Estate summaries cannot identify an unnamed resource's owner.
+                continue
             try:
                 validate_tool_arguments(tool, {})
             except ValueError:

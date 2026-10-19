@@ -38,6 +38,12 @@ from api.exposure_query import (
     ExposureQueryUnavailableError,
     ExposureSort,
 )
+from api.governance_snapshot import (
+    finops_engine,
+    identity_engine,
+    identity_warnings,
+    spn_engine,
+)
 from api.scope import Scope, scope_attributes, subscription_ids_for_scope
 from fabric.dataset_mapper import ONTOLOGY_RELATIONSHIP_TYPES
 from intelligence.vulnerability.exposure_contracts import (
@@ -1750,6 +1756,85 @@ def _tool_inventory_resources(tool_context: ToolContext, args: Mapping[str, Any]
     return _provider_result(tool_context, "inventory_read_port", run)
 
 
+def _native_governance_result(tool_context: ToolContext, kind: str) -> ToolResult:
+    try:
+        snapshot = tool_context.context.governance_snapshot(
+            tool_context.scope, require_generation=True,
+        )
+    except (ApiError, LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        _LOGGER.warning("tool_governance_snapshot_failed kind=%s error=%s", kind, exc)
+        return ToolResult(
+            status=STATUS_UNAVAILABLE,
+            warning="The scoped connection-generation governance evidence is unavailable",
+        )
+
+    payload: dict[str, Any] = {"observed_at": snapshot.observed_at}
+    engines: list[str] = []
+    available = False
+    warnings = list(snapshot.warnings)
+    if kind in {"identity", "governance"}:
+        warnings = identity_warnings(snapshot)
+        has_assignments = bool(snapshot.rows("RoleAssignment"))
+        payload["identity"] = {
+            "status": STATUS_OK if has_assignments else STATUS_UNAVAILABLE,
+            "summary": identity_engine(snapshot).summary() if has_assignments else None,
+        }
+        if has_assignments:
+            identity = identity_engine(snapshot)
+            payload["identity"]["principals"] = [
+                principal.to_dict() for principal in identity.principals()
+            ]
+            available = True
+            engines.append("intelligence.governance.IdentityRiskEngine")
+    if kind in {"finops", "governance"}:
+        has_finops_rows = any(snapshot.rows(name) for name in (
+            "AdvisorRecommendation", "CostActual", "Resource", "VirtualMachine", "ArcServer",
+        ))
+        payload["finops"] = {
+            "status": STATUS_OK if has_finops_rows else STATUS_UNAVAILABLE,
+            "summary": finops_engine(snapshot).summary() if has_finops_rows else None,
+        }
+        if has_finops_rows:
+            finops = finops_engine(snapshot)
+            payload["finops"]["savings_opportunities"] = [
+                item.to_dict() for item in finops.savings_opportunities()
+            ]
+            payload["finops"]["waste"] = [item.to_dict() for item in finops.waste()]
+            available = True
+            engines.append("intelligence.governance.FinOpsEngine")
+        else:
+            warnings.append("No scoped cost, Advisor or resource rows have been synced.")
+    if kind == "governance":
+        summary = spn_engine(snapshot).summary()
+        has_credentials = bool(summary["credential_count"])
+        payload["service_principals"] = {
+            "status": STATUS_OK if has_credentials else STATUS_UNAVAILABLE,
+            "summary": summary if has_credentials else None,
+        }
+        warnings.append(
+            "This is observed identity, cost and onboarding-credential evidence; "
+            "it does not establish policy compliance, approval or access-review completion."
+        )
+        if has_credentials:
+            available = True
+            engines.append("intelligence.governance.SpnGovernanceEngine")
+    warnings.append(_bound_disclosure(payload))
+    return ToolResult(
+        status=STATUS_OK if available else STATUS_EMPTY,
+        data=_bound(payload) if available else None,
+        evidence=tuple(
+            Evidence(
+                source_engine=engine,
+                source_table="connection_generation_entities",
+                timestamp=snapshot.observed_at,
+                confidence=CONFIDENCE_HIGH,
+            )
+            for engine in engines
+        ),
+        warning=" ".join(dict.fromkeys(warning for warning in warnings if warning)),
+    )
+
+
 def _tool_search(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
     query = str(args.get("query") or "").strip()
     if not query:
@@ -2109,6 +2194,27 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
                 "family": "Optional inventory family (e.g. os, paas)",
             },
             handler=_tool_inventory_resources,
+        ),
+        ToolSpec(
+            name="governance_summary",
+            description=(
+                "Scoped generation-backed identity, cost and onboarding-credential "
+                "summaries; not a policy-compliance or approval attestation."
+            ),
+            parameters={},
+            handler=lambda context, args: _native_governance_result(context, "governance"),
+        ),
+        ToolSpec(
+            name="identity_summary",
+            description="Scoped observed role-assignment risk summary, with explicit missing-data limits.",
+            parameters={},
+            handler=lambda context, args: _native_governance_result(context, "identity"),
+        ),
+        ToolSpec(
+            name="finops_summary",
+            description="Scoped Advisor, cost and waste summary; unknown spend and mixed currencies remain explicit.",
+            parameters={},
+            handler=lambda context, args: _native_governance_result(context, "finops"),
         ),
         ToolSpec(
             name="search",

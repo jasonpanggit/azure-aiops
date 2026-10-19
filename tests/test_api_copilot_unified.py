@@ -1998,8 +1998,8 @@ def test_finops_endpoint_returns_exact_cited_service_total_without_semantic(
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["selected_specialists"] == ["finops"]
-    assert data["selected_tools"] == ["business_service_context"]
-    assert calls == ["business_service_context"]
+    assert data["selected_tools"] == ["finops_summary"]
+    assert calls == ["finops_summary"]
     assert data["synthesis"]["status"] == "deterministic"
     assert data["synthesis"]["reason"] == "deterministic_finops_savings"
     claim = data["synthesis"]["claims"][0]
@@ -10580,6 +10580,7 @@ def test_governance_configuration_only_evidence_skips_executive_narration():
                     ToolCallCandidate(
                         tool="business_service_context",
                         arguments={"name": "payments"},
+                        citation_ids=["snapshot:coverage"],
                     )
                 ],
             )
