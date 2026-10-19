@@ -8,11 +8,13 @@ stale/partial refresh landing after a fresher one.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from intelligence.inventory.combine import publish_combined_inventory_snapshot
 from storage.datasets import DatasetStore
+from storage.locking import LeaseLostError
 
 
 def _publish_connection_rows(
@@ -62,6 +64,49 @@ def _os_row(
         "source_id": resource_id,
         "query_version": "inventory-os-v1",
     }
+
+
+@pytest.mark.parametrize("publisher", ["inventory", "entities"])
+def test_combined_publishers_forward_loss_guard_to_actual_promotion(tmp_path, monkeypatch, publisher):
+    from onboarding.activation import publish_combined_snapshot
+
+    source_root = tmp_path / "source"
+    target_root = tmp_path / "target"
+    _publish_connection_rows(source_root, [{"resource_id": "resource", "connection_id": "conn-a"}])
+    target = DatasetStore(target_root)
+    target.publish({"inventory/os_observations": [{"resource_id": "last-good"}]}, {}, {"runId": "old"})
+    generation = target.current_generation()
+    hashes = target.hash_path.read_bytes()
+    original = DatasetStore._write_generation
+    lost = False
+
+    def stage_then_lose(store, *args, **kwargs):
+        nonlocal lost
+        result = original(store, *args, **kwargs)
+        if store.root == target_root:
+            lost = True
+        return result
+
+    def assert_held():
+        if lost:
+            raise LeaseLostError("combined_lease_lost")
+
+    monkeypatch.setattr(DatasetStore, "_write_generation", stage_then_lose)
+    with pytest.raises(LeaseLostError, match="combined_lease_lost"):
+        if publisher == "inventory":
+            publish_combined_inventory_snapshot(
+                {"conn-a": source_root}, target_root, assert_lock_held=assert_held,
+            )
+        else:
+            publish_combined_snapshot(
+                SimpleNamespace(
+                    registry=SimpleNamespace(get=lambda connection_id: connection_id),
+                    sync_coordinator=SimpleNamespace(connection_output_dir=lambda connection: source_root),
+                ),
+                ["conn-a"], target_root, assert_lock_held=assert_held,
+            )
+    assert target.current_generation() == generation
+    assert target.hash_path.read_bytes() == hashes
 
 
 def test_merge_keeps_freshest_observed_at_for_same_identity(tmp_path: Path) -> None:

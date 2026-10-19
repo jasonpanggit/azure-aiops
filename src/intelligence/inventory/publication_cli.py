@@ -9,6 +9,8 @@ from dataclasses import replace
 from api.inventory_orchestration import run_inventory_refresh_all_connections
 from onboarding.config import ConnectorConfig
 from onboarding.runtime import build_onboarding_service
+from storage.locking import RunLock
+from storage.renewing_run import renewing_run_lock
 
 
 def main() -> int:
@@ -18,29 +20,34 @@ def main() -> int:
     missing = [name for name, value in config.items() if not value]
     if missing:
         raise ValueError("Missing inventory publication configuration: " + ", ".join(missing))
+    source_config = ConnectorConfig.load(config["AIOPS_CONFIG_PATH"])
     connector = replace(
-        ConnectorConfig.load(config["AIOPS_CONFIG_PATH"]),
+        source_config,
         output_dir=config["AIOPS_CONNECTION_HOME"],
     )
-    onboarding = build_onboarding_service(connector)
-    connections = onboarding.registry.list(include_disabled=False)
-    if not connections:
-        raise RuntimeError("No active subscription connections are registered")
-    discovery_roots = {}
-    for connection in connections:
-        result = onboarding.sync(connection.connection_id, mode="scheduled")
-        if result.get("status") != "succeeded":
-            raise RuntimeError("Registered-connection discovery failed before publication")
-        discovery_roots[connection.connection_id] = (
-            onboarding.sync_coordinator.connection_output_dir(connection)
+    with renewing_run_lock(RunLock(source_config.output_dir)) as lock:
+        onboarding = build_onboarding_service(connector)
+        connections = onboarding.registry.list(include_disabled=False)
+        if not connections:
+            raise RuntimeError("No active subscription connections are registered")
+        discovery_roots = {}
+        for connection in connections:
+            lock.assert_held()
+            result = onboarding.sync(connection.connection_id, mode="scheduled")
+            if result.get("status") != "succeeded":
+                raise RuntimeError("Registered-connection discovery failed before publication")
+            discovery_roots[connection.connection_id] = (
+                onboarding.sync_coordinator.connection_output_dir(connection)
+            )
+        lock.assert_held()
+        result = run_inventory_refresh_all_connections(
+            config["AIOPS_CONFIG_PATH"],
+            fabric_config_path=config["AIOPS_FABRIC_CONFIG"],
+            registry_root=config["AIOPS_CONNECTION_HOME"],
+            discovery_output_dirs=discovery_roots,
+            require_all_connections=True,
+            assert_lock_held=lock.assert_held,
         )
-    result = run_inventory_refresh_all_connections(
-        config["AIOPS_CONFIG_PATH"],
-        fabric_config_path=config["AIOPS_FABRIC_CONFIG"],
-        registry_root=config["AIOPS_CONNECTION_HOME"],
-        discovery_output_dirs=discovery_roots,
-        require_all_connections=True,
-    )
     publication = result.get("fabric_publication") or {}
     summary = {
         "status": result["status"],

@@ -184,6 +184,61 @@ The retained report must prove:
 The validator rejects credential-like keys and raw payload fields before it
 emits a report.
 
+### Generation-bound acceptance manifest
+
+The validator checks consistency of supplied evidence; a passing synthetic
+fixture is not provider attestation. Collect live receipts with the existing
+Gold/query pipeline and retain their sanitized references. Never fill a missing
+receipt with a test result, historical rollout, or invented operator signature.
+
+`binding.source_run_ids` requires non-empty `aum`, `defender_digest`,
+`container_insights`, `publication`, and `benchmark` run IDs. The corresponding
+source sections carry matching `source_run_id` values; `persistence` and
+`ontology` carry the publication run ID, and `benchmark` carries its run ID.
+The binding generation must match `persistence.generation_id`,
+`ontology.generation_id`, `benchmark.dataset.generation_id`, and
+`phase4.digest_to_workload.generation_id`.
+
+The exact traversal additionally requires positive integer
+`silver_workload_deployments`, `digest_to_deployment_edges`, and
+`deployment_to_application_edges`. Its non-negative integer `represented`,
+`unknown`, and `excluded` counts must sum to `total`, with `represented > 0`.
+Booleans, numeric strings, nulls, and missing counts are not evidence.
+
+Retain the production benchmark output, not just its pass flag: exactly
+100,000 server plus container-image rows; matching returned and unique counts;
+zero duplicate/omission counts; both target-kind p95 measurements strictly
+below 2,000 ms; and bounded `page_size + 1` transfer with no full-table
+materialization or Delta fallback. These fields use the existing benchmark
+script's `dataset`, `full_walk`, `timings`, `query_contract`, and `work` shapes.
+
+`rollout` requires `status: pass`, the binding `generation_id`, matching
+`candidate_generation_id`, and a distinct retained `prior_generation_id`.
+Its `canary` and `rollback` objects each require `status: pass`,
+`observed: true`, a timezone-aware ISO `observed_at`, and distinct non-empty
+`evidence_ref` values. Canary's `active_reader_generation_id` is the candidate.
+Rollback's `from_generation_id` is the candidate and its
+`active_reader_generation_id` is the retained prior generation. Rollback must
+be observed after canary, with `preserve_evidence: true`,
+`destructive_actions: []`, and `post_rollback_health: pass`.
+
+`operator_checkpoint` requires `status: approved`, `operator_authorized: true`,
+`authenticated: true`, the binding `generation_id`, `observed_at` at or after
+rollback, and a non-empty sanitized `evidence_ref`. All eight Plan 28 checklist
+keys must be `pass`: `authenticated_overview`,
+`defender_and_container_evidence`, `cve_kb_detail`,
+`source_completeness_and_freshness`, `exact_workload_traversal`,
+`governed_review_only_container_handoff`, `generation_and_aggregate_match`,
+and `secret_and_raw_payload_absence`. A machine check cannot manufacture this
+operator outcome. Historical nested checkpoint fields are not current approval.
+
+The report separates three gates to avoid a circular deployment prerequisite:
+`automated_preflight_ready` excludes future rollout and operator evidence;
+`operator_checkpoint_ready` additionally requires observed canary/rollback;
+`phase4_ready` requires every check, including the authenticated operator.
+Missing later evidence still produces `status: blocked` and exit 2 with
+`--require-all`; neither preflight flag authorizes a rollout or closes the phase.
+
 ## Promotion order
 
 Advance one lane at a time. Re-run all prerequisites after each new revision.

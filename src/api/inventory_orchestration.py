@@ -10,8 +10,14 @@ from __future__ import annotations
 import dataclasses
 import logging
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 from typing import Any
+
+from onboarding.config import ConnectorConfig
+from storage.locking import RunLock
+from storage.renewing_run import renewing_run_lock
 
 logger = logging.getLogger(__name__)
 
@@ -40,18 +46,46 @@ def run_inventory_refresh_all_connections(
     connection_id: str = "",
     discovery_output_dirs: dict[str, str] | None = None,
     require_all_connections: bool = False,
+    assert_lock_held: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Refresh, merge, and optionally publish registered connections.
 
     Scheduled publishers require every connection to succeed before replacing
     shared datasets; API callers retain the existing partial-refresh behavior.
+    A caller supplying an ownership check must hold the shared publication
+    lease already, including during any preceding discovery.
     """
-    from onboarding.config import ConnectorConfig
+    config = ConnectorConfig.load(config_path)
+    refresh = partial(
+        _run_inventory_refresh_locked,
+        config,
+        fabric_config_path=fabric_config_path,
+        registry_root=registry_root,
+        connection_id=connection_id,
+        discovery_output_dirs=discovery_output_dirs,
+        require_all_connections=require_all_connections,
+    )
+    if assert_lock_held is not None:
+        return refresh(assert_lock_held=assert_lock_held)
+    with renewing_run_lock(RunLock(config.output_dir)) as lock:
+        return refresh(assert_lock_held=lock.assert_held)
+
+
+def _run_inventory_refresh_locked(
+    config: ConnectorConfig,
+    *,
+    fabric_config_path: str,
+    registry_root: str,
+    connection_id: str,
+    discovery_output_dirs: dict[str, str] | None,
+    require_all_connections: bool,
+    assert_lock_held: Callable[[], None],
+) -> dict[str, Any]:
     from onboarding.credentials import CredentialResolver, default_secret_provider
     from onboarding.registry import ConnectionRegistry
     from onboarding.runtime import build_connection_inventory_pipeline
 
-    config = ConnectorConfig.load(config_path)
+    assert_lock_held()
     root = registry_root or str(config.output_dir)
     registry = ConnectionRegistry(root)
     if connection_id:
@@ -138,10 +172,12 @@ def run_inventory_refresh_all_connections(
         republish_combined_snapshot_to_fabric,
     )
 
+    assert_lock_held()
     combined_manifest = publish_combined_inventory_snapshot(
         connection_output_dirs,
         config.output_dir,
         connection_ids=succeeded,
+        assert_lock_held=assert_lock_held,
     )
     inventory_publication: dict[str, Any] | None = None
     fabric_publication: dict[str, Any] | None = None
@@ -157,6 +193,7 @@ def run_inventory_refresh_all_connections(
             config.output_dir,
             fabric_config_path,
             source_run_id=str(combined_manifest["runId"]),
+            assert_lock_held=assert_lock_held,
         )
         fabric_config = FabricRuntimeConfig.load(fabric_config_path)
         from onboarding.activation import publish_combined_snapshot
@@ -190,6 +227,7 @@ def run_inventory_refresh_all_connections(
             succeeded,
             config.output_dir,
             pinned_datasets=pinned_inventory,
+            assert_lock_held=assert_lock_held,
         )
         combined_generation = combined_store.generation_path(
             str(entities_manifest["runId"])
@@ -210,6 +248,7 @@ def run_inventory_refresh_all_connections(
                 if connection.connection_id in succeeded and connection.subscription_id
             }
         )
+        assert_lock_held()
         publication = runtime.service.sync(
             replay_source_run_id=str(entities_manifest["runId"]),
             requested_scope={"subscription": requested_subscriptions},
@@ -226,6 +265,7 @@ def run_inventory_refresh_all_connections(
             "fabricTables": list(publication.tables),
         }
 
+    assert_lock_held()
     return {
         "status": "completed" if len(succeeded) == len(connections) else "partial",
         "connections": connection_results,

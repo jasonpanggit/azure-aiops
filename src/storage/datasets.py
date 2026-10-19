@@ -6,7 +6,7 @@ import os
 import shutil
 import sys
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -400,7 +400,11 @@ class DatasetStore:
         run_metadata: dict[str, Any],
         *,
         ontology: dict[str, Any] | None = None,
+        assert_lock_held: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        """Stage a source generation, checking any caller lease before active writes."""
+        if assert_lock_held is not None:
+            assert_lock_held()
         datasets = dict(datasets)
         if self.retain_raw_queries:
             datasets.update(
@@ -462,11 +466,17 @@ class DatasetStore:
         manifest["integrityHash"] = _manifest_integrity_hash(manifest)
 
         generation = self._write_generation(prepared, ontology, manifest, str(run_metadata.get("runId") or uuid.uuid4()))
+        if assert_lock_held is not None:
+            assert_lock_held()
         self._activate_generation(generation)
+        if assert_lock_held is not None:
+            assert_lock_held()
         if self.is_remote:
             self._write_atomic_remote(self.hash_path, json.dumps(new_hashes, indent=2, sort_keys=True) + "\n")
         else:
             _atomic_text(self.hash_path, json.dumps(new_hashes, indent=2, sort_keys=True) + "\n")
+        if assert_lock_held is not None:
+            assert_lock_held()
         self._cleanup_generations(keep=3)
         return manifest
 

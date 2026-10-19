@@ -972,10 +972,11 @@ def derive_live_benchmark_inputs() -> tuple[ExposureAuthorization, str]:
     root = os.environ.get("AIOPS_HOME", "").strip()
     if not root:
         raise ValueError("AIOPS_HOME is required to derive live benchmark metadata")
+    connection_root = os.environ.get("AIOPS_CONNECTION_HOME", "").strip() or root
     authorization = derive_benchmark_authorization(
-        ConnectionRegistry(root).list(include_disabled=False)
+        ConnectionRegistry(connection_root).list(include_disabled=False)
     )
-    pointer = OneLakeDocumentStore(root).read(EXPOSURE_GOLD_POINTER_DOCUMENT)
+    pointer = OneLakeDocumentStore(root).read_or_raise(EXPOSURE_GOLD_POINTER_DOCUMENT)
     generation_id = str(pointer.get("readable_generation_id") or "").strip()
     if not generation_id:
         raise ValueError(

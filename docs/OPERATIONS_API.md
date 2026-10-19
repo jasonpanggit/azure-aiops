@@ -97,6 +97,61 @@ The router already uses `FabricRuntimeConfig.load`: a valid complete
 does not exist. No alternate loader or obsolete YAML target is used for the
 configured capacity/workspace/lakehouse.
 
+### Additive recorded source and stage receipts
+
+`GET /api/v1/fabric-medallion/datasets/{table_name}` additionally returns
+`recorded_evidence` with `evidence_mode=recorded_metadata`,
+`generation_kind=source_partition`, and `sources[]`. These are source metadata
+receipts, **not serving-product generations or active pointers**. Each source
+retains its authorized `scope`, nullable `partition_key`, metadata `observed_at`,
+and the existing freshness-budget classification; it also exposes
+`recorded_status`, nullable `provider_status`, and an opaque nullable
+`lineage_ref`. No lineage URL, dependency edge, or product identity is invented.
+
+Within each source, `last_attempt` contains the recorded `status`,
+`generation_id` from `attempted_generation`, `attempted_at`, and `reason_code`
+from `safe_error_code`. `last_good` independently contains `generation_id` from
+`effective_generation` and `observed_at` from `last_success_at`; its status is
+`recorded` only when both fields exist, otherwise `unknown`. Its reason is
+`source_last_good_recorded` or `no_recorded_source_last_good`, respectively.
+Optional source fields are JSON null when missing, never substituted from
+ingestion IDs, configuration, the current clock, or a sibling partition.
+`recorded` means the producer retained that source generation, not that the API
+verified it, that it is fresh, or that a serving product was activated.
+The source producer can report `recorded_status=partial` and
+`provider_status=failed` while retaining a last-good generation; consumers must
+show those independently rather than displaying the retained data as a
+successful latest attempt. Raw error text is not included in these receipts.
+
+Receipts use the same conservative latest-per-scope/partition reduction as
+dataset health, after authorization and registration checks. Incomparable
+metadata clocks cannot be dismissed as obsolete successes. Receipt freshness is
+the existing per-source metadata freshness, not a new publication qualification.
+Legacy dataset-success records without partition generation fields retain null
+generation/time fields and unknown last-good evidence.
+
+`GET /api/v1/fabric-medallion/capabilities` additionally exposes
+`readiness_evidence` with these independent closed stage paths and reason codes:
+
+| Stage path | Reason code |
+| --- | --- |
+| `projection_publication` | `no_scoped_publication_recorder` |
+| `native_ontology` | `no_recorded_native_ontology_receipt` |
+| `semantic_model.definition_validation` | `no_recorded_semantic_definition_validation` |
+| `semantic_model.publication` | `no_recorded_semantic_model_publication` |
+| `semantic_model.query_qualification` | `no_recorded_semantic_query_qualification` |
+
+Every stage currently has `status=unknown`, `evidence_mode=not_recorded`, and
+`last_attempt=null`, `last_good=null`. The global ontology-name attempt store
+does not record scope, generation, or last-good history and cannot establish a
+scoped stage receipt. CLI native-definition readback and offline model checks
+are not durable API recorders. A future recorder must independently establish
+each stage for the exact scope and generation; placeholders never promote
+configuration, table publication, candidate validation, or another stage's
+success. Existing compatibility fields, envelopes, and ingestion-history
+outcomes are unchanged. These additive fields introduce no page-read probes,
+publication writes, product catalog, or serving cutover.
+
 ## Identity classification evidence
 
 The existing scoped identity routes remain read-only over authorized connection

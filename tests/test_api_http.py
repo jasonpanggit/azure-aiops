@@ -673,6 +673,139 @@ class TestFabricMedallionRouterTask1:
         }
         assert body["evidence"][0]["source_engine"] == "fabric.medallion_health"
 
+    def test_fabric_dataset_receipts_separate_failed_attempt_from_retained_source(
+        self, fabric_medallion_client, monkeypatch
+    ):
+        from api.routers import fabric_medallion as routes
+
+        now = datetime.now(UTC).replace(microsecond=0)
+        attempted = now.isoformat()
+        previous = (now - timedelta(hours=1)).isoformat()
+        row = {
+            "source_family": "bronze_resources",
+            "subscription_id": SUB_A,
+            "subscription_connection": "conn-a",
+            "partition_key": "partition-a",
+            "requested_scope": {"subscription": [SUB_B]},
+            "status": "partial",
+            "provider_status": "failed",
+            "availability": "degraded",
+            "quality": "incomplete",
+            "ingested_at": attempted,
+            "attempted_at": attempted,
+            "last_success_at": previous,
+            "attempted_generation": "attempt-new",
+            "effective_generation": "retained-old",
+            "safe_error_code": "provider_timeout",
+            "error": "sensitive provider response must not enter receipt",
+            "lineage_ref": "opaque-partition-reference",
+        }
+        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _context: [
+            row,
+            {
+                **row, "partition_key": "partition-b", "effective_generation": "other-retained",
+                "last_success_at": (now - timedelta(hours=2)).isoformat(),
+            },
+            {
+                **row, "subscription_id": SUB_B, "subscription_connection": "conn-hidden",
+                "partition_key": "hidden", "effective_generation": "hidden-generation",
+            },
+        ])
+        response = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/bronze_resources?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["scope"] == {"subscription": [SUB_A]}
+        assert body["evidence"][0]["source_engine"] == "fabric.medallion_health"
+        data = body["data"]
+        recorded = data["recorded_evidence"]
+        assert recorded["evidence_mode"] == "recorded_metadata"
+        assert recorded["generation_kind"] == "source_partition"
+        assert len(recorded["sources"]) == 2
+        source = recorded["sources"][0]
+        assert source == {
+            "scope": {"subscription": [SUB_A], "subscription_connection": ["conn-a"]},
+            "partition_key": "partition-a",
+            "observed_at": attempted,
+            "freshness": data["freshness_budget"]["sources"][0]["state"],
+            "recorded_status": "partial",
+            "provider_status": "failed",
+            "last_attempt": {
+                "status": "partial", "generation_id": "attempt-new",
+                "attempted_at": attempted, "reason_code": "provider_timeout",
+            },
+            "last_good": {
+                "status": "recorded", "generation_id": "retained-old",
+                "observed_at": previous, "reason_code": "source_last_good_recorded",
+            },
+            "lineage_ref": "opaque-partition-reference",
+        }
+        assert recorded["sources"][1]["last_good"]["generation_id"] == "other-retained"
+        serialized = json.dumps(recorded)
+        assert "hidden-generation" not in serialized
+        assert "sensitive provider" not in serialized
+        assert "active_generation" not in serialized
+
+    def test_fabric_dataset_legacy_success_does_not_invent_source_receipts(
+        self, fabric_medallion_client
+    ):
+        response = fabric_medallion_client.get(
+            "/api/v1/fabric-medallion/datasets/bronze_resources", headers=_auth(ADMIN_TOKEN)
+        )
+        assert response.status_code == 200
+        source = response.json()["data"]["recorded_evidence"]["sources"][0]
+        assert source["partition_key"] is None
+        assert source["last_attempt"] == {
+            "status": "succeeded", "generation_id": None, "attempted_at": None, "reason_code": None,
+        }
+        assert source["last_good"] == {
+            "status": "unknown", "generation_id": None,
+            "observed_at": None, "reason_code": "no_recorded_source_last_good",
+        }
+
+    @pytest.mark.parametrize("include_unorderable", [False, True])
+    def test_fabric_dataset_receipts_reuse_conservative_partition_selection(
+        self, fabric_medallion_client, monkeypatch, include_unorderable
+    ):
+        from api.routers import fabric_medallion as routes
+
+        row = {
+            "source_family": "bronze_resources", "subscription_id": SUB_A,
+            "subscription_connection": "conn-a", "partition_key": "partition-a",
+            "status": "succeeded", "ingested_at": "2026-10-19T12:00:00+00:00",
+            "attempted_generation": "obsolete", "effective_generation": "retained",
+            "last_success_at": "2026-10-19T12:00:00+00:00",
+        }
+        newer = {
+            **row, "status": "failed", "ingested_at": "2026-10-19T08:30:00-04:00",
+            "attempted_generation": "latest",
+        }
+        unknown_clock = {
+            **row, "status": "failed", "ingested_at": "invalid-clock",
+            "attempted_generation": "unorderable", "effective_generation": "",
+        }
+        rows = [newer, row] + ([unknown_clock] if include_unorderable else [])
+        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _context: rows)
+        response = fabric_medallion_client.get(
+            "/api/v1/fabric-medallion/datasets/bronze_resources", headers=_auth(ADMIN_TOKEN)
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        sources = data["recorded_evidence"]["sources"]
+        assert len(sources) == data["freshness_budget"]["source_count"] == 1
+        assert sources[0]["last_attempt"]["generation_id"] == (
+            "unorderable" if include_unorderable else "latest"
+        )
+        assert sources[0]["last_attempt"]["status"] == "failed"
+        assert sources[0]["last_good"]["status"] == (
+            "unknown" if include_unorderable else "recorded"
+        )
+        assert sources[0]["freshness"] == data["freshness_budget"]["sources"][0]["state"]
+        if include_unorderable:
+            assert sources[0]["freshness"] == data["freshness"] == "unknown"
+
     def test_fabric_medallion_layers_keeps_sync_generated_scope(
         self, fabric_medallion_client, monkeypatch
     ):
@@ -1462,6 +1595,34 @@ class TestFabricMedallionRouterTask2:
             f"/api/v1/fabric-medallion/capabilities?subscription={SUB_B}",
             headers=_auth(SCOPED_TOKEN),
         ).status_code == 403
+
+    def test_fabric_capability_stage_receipts_stay_independently_unrecorded(
+        self, fabric_medallion_capabilities_client
+    ):
+        response = fabric_medallion_capabilities_client.get(
+            f"/api/v1/fabric-medallion/capabilities?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["scope"] == {"subscription": [SUB_A]}
+        stages = body["data"]["readiness_evidence"]
+        assert set(stages) == {"projection_publication", "native_ontology", "semantic_model"}
+        assert set(stages["semantic_model"]) == {
+            "definition_validation", "publication", "query_qualification",
+        }
+        expected = [
+            (stages["projection_publication"], "no_scoped_publication_recorder"),
+            (stages["native_ontology"], "no_recorded_native_ontology_receipt"),
+            (stages["semantic_model"]["definition_validation"], "no_recorded_semantic_definition_validation"),
+            (stages["semantic_model"]["publication"], "no_recorded_semantic_model_publication"),
+            (stages["semantic_model"]["query_qualification"], "no_recorded_semantic_query_qualification"),
+        ]
+        for stage, reason in expected:
+            assert stage == {
+                "status": "unknown", "evidence_mode": "not_recorded", "reason_code": reason,
+                "last_attempt": None, "last_good": None,
+            }
 
     def test_fabric_medallion_capacity_config_prefers_runtime_config(
         self, tmp_path, monkeypatch

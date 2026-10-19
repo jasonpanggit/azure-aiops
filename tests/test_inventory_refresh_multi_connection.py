@@ -19,6 +19,7 @@ from onboarding.credentials import CredentialResolver, EnvironmentSecretProvider
 from onboarding.registry import ConnectionRegistry
 from onboarding.service import SubscriptionOnboardingService
 from onboarding.sync import ConnectionSyncCoordinator
+from storage.locking import LeaseLostError
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 CLIENT = "33333333-3333-3333-3333-333333333333"
@@ -117,6 +118,45 @@ class FakePipeline:
         return Result(manifest=manifest)
 
 
+def test_refresh_stops_before_combined_promotion_when_outer_lease_is_lost(tmp_path, monkeypatch):
+    from api.inventory_orchestration import run_inventory_refresh_all_connections
+    from storage.datasets import DatasetStore
+
+    _build_registry(tmp_path)
+    combined_root = tmp_path / "compat"
+    store = DatasetStore(combined_root)
+    store.publish({"inventory/os_observations": [{"resource_id": "last-good"}]}, {}, {"runId": "old"})
+    generation = store.current_generation()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f"storage:\n  output_dir: {combined_root}\n")
+    lost = False
+
+    class LosingPipeline(FakePipeline):
+        def refresh(self):
+            nonlocal lost
+            result = super().refresh()
+            lost = True
+            return result
+
+    def build(config, connection, resolver=None):
+        return LosingPipeline(
+            tmp_path / "connections" / connection.connection_id,
+            [{"resource_id": connection.connection_id}],
+        )
+
+    def assert_held():
+        if lost:
+            raise LeaseLostError("outer_lease_lost")
+
+    monkeypatch.setattr("onboarding.runtime.build_connection_inventory_pipeline", build)
+    with pytest.raises(LeaseLostError, match="outer_lease_lost"):
+        run_inventory_refresh_all_connections(
+            str(config_path), registry_root=str(tmp_path), assert_lock_held=assert_held,
+        )
+    assert store.current_generation() == generation
+    assert store.read_dataset("inventory/os_observations") == [{"resource_id": "last-good"}]
+
+
 @pytest.mark.parametrize("require_all_connections", [False, True])
 def test_refresh_all_connections_merges_successful_connections_and_isolates_failure(
     tmp_path: Path, monkeypatch, require_all_connections: bool
@@ -170,7 +210,7 @@ def test_refresh_all_connections_merges_successful_connections_and_isolates_fail
     assert result["connections"]["conn-b"]["status"] == "failed"
     assert "acquisition boom" in result["connections"]["conn-b"]["error"]
     if require_all_connections:
-        assert not (tmp_path / "compat").exists()
+        assert not (tmp_path / "compat" / "current").exists()
         assert "combined_manifest" not in result
         assert "fabric_publication" not in result
         return
@@ -217,7 +257,8 @@ def test_refresh_all_connections_preserves_remote_store_uri(
     def fake_build(config: ConnectorConfig, connection, resolver=None):
         return pipelines[connection.connection_id]
 
-    def fake_combine(connection_output_dirs, _target_root, *, connection_ids=None):
+    def fake_combine(connection_output_dirs, _target_root, *, connection_ids=None, assert_lock_held=None):
+        assert_lock_held()
         captured_roots.update(connection_output_dirs)
         return {
             "runId": "combined-run",
@@ -254,7 +295,7 @@ def test_refresh_rejects_registry_changes_after_discovery(tmp_path: Path) -> Non
             registry_root=str(tmp_path),
             discovery_output_dirs={"conn-a": str(tmp_path / "discovery")},
         )
-    assert not (tmp_path / "compat").exists()
+    assert not (tmp_path / "compat" / "current").exists()
 
 
 @pytest.mark.parametrize("separate_discovery", [False, True])

@@ -485,6 +485,7 @@ def publish_combined_snapshot(
     *,
     reuse_unchanged: bool = False,
     pinned_datasets: Mapping[str, list[dict[str, Any]]] | None = None,
+    assert_lock_held: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Publish one isolated, deduplicated snapshot from synced connections.
 
@@ -637,6 +638,7 @@ def publish_combined_snapshot(
             "sourceRunIds": sorted(source_runs),
         },
         ontology=generate_ontology_metadata(graph.entities),
+        **({"assert_lock_held": assert_lock_held} if assert_lock_held is not None else {}),
     )
 
 

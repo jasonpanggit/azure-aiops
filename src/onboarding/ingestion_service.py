@@ -24,6 +24,7 @@ from intelligence.vulnerability.workload_inventory import (
 from operations.exposure_metrics import ExposureMetrics
 from storage.datasets import DatasetStore as GenerationDatasetStore
 from storage.locking import RunLock
+from storage.renewing_run import renewing_run_lock
 
 from .azure_clients import AzureCliArgClient, AzureMcpClient
 from .config import ConnectorConfig
@@ -580,10 +581,10 @@ class IngestionService:
         self.metrics = metrics or ExposureMetrics()
 
     def run(self) -> dict:
-        with RunLock(self.config.output_dir):
-            return self._run_locked()
+        with renewing_run_lock(RunLock(self.config.output_dir)) as lock:
+            return self._run_locked(assert_lock_held=lock.assert_held)
 
-    def _run_locked(self) -> dict:
+    def _run_locked(self, *, assert_lock_held: Callable[[], None]) -> dict:
         started = self.clock().astimezone(UTC).replace(microsecond=0)
         previous = self.state.load()
         watermark_is_current = previous.get("watermarkVersion") == 2
@@ -741,6 +742,7 @@ class IngestionService:
         _preserve_created_timestamps(graph, self.store)
         _preserve_source_watermarks(graph, self.store)
         change_watermark = _max_change_watermark(previous_watermark, graph.changes)
+        assert_lock_held()
         manifest = self._publish_generation(
             graph,
             query_results,
@@ -760,7 +762,9 @@ class IngestionService:
                     self.store.read_dataset("exposure/source_partition_rows")
                 )
             ),
+            assert_lock_held=assert_lock_held,
         )
+        assert_lock_held()
         self.state.save(
             {
                 "lastSuccessfulRun": _iso(started),
@@ -781,6 +785,7 @@ class IngestionService:
         *,
         workload: WorkloadProjection,
         source_partition_rows: tuple[dict[str, Any], ...] = (),
+        assert_lock_held: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """Publish graph and workload products behind one generation pointer."""
 
@@ -812,6 +817,7 @@ class IngestionService:
             query_results,
             run_metadata,
             ontology=generate_ontology_metadata(graph.entities),
+            assert_lock_held=assert_lock_held,
         )
 
     def _identity_rows_from_inventory(self, subscriptions: list[str]) -> dict[str, list[dict]]:

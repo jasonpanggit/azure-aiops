@@ -404,19 +404,29 @@ def test_coordinator_persists_every_bounded_batch_before_curator_dispatch(
             self.batch_ids: list[str] = []
 
         async def propose(self, claimed: dict, batch: dict) -> dict:
-            persisted = store.list_evidence_batches(run_id=claimed["run_id"])
+            assert claimed == {
+                "source_generation_id": run["source_generation_id"],
+                "scope": batch["scope"],
+            }
+            persisted = store.list_evidence_batches(run_id=run["run_id"])
             assert batch["batch_id"] in {row["batch_id"] for row in persisted}
             assert len(batch["changed_entities"]) <= MAX_CHANGED_ENTITIES
             assert len(batch["candidate_pairs"]) <= MAX_CANDIDATE_PAIRS
             assert len(batch["evidence_records"]) <= MAX_EVIDENCE_RECORDS
             self.batch_ids.append(batch["batch_id"])
-            return {"status": "insufficient_evidence"}
+            return {
+                "batch_id": batch["batch_id"],
+                "status": "insufficient_evidence",
+                "proposals": [],
+                "missing_evidence": [],
+            }
 
     curator = Curator()
     processor = BoundedEvidenceProcessor(
         store=store,
         evidence_provider=Provider(),
         curator=curator,
+        now=lambda: OBSERVED_AT,
     )
     coordinator = OntologyDiscoveryCoordinator(
         store=store,
@@ -456,12 +466,18 @@ def test_batch_replay_is_idempotent_and_malformed_input_gets_safe_checkpoint(
 
     class Curator:
         async def propose(self, _run: dict, _batch: dict) -> dict:
-            return {"status": "insufficient_evidence"}
+            return {
+                "batch_id": _batch["batch_id"],
+                "status": "insufficient_evidence",
+                "proposals": [],
+                "missing_evidence": [],
+            }
 
     processor = BoundedEvidenceProcessor(
         store=store,
         evidence_provider=ReplayProvider(),
         curator=Curator(),
+        now=lambda: OBSERVED_AT,
     )
     asyncio.run(processor.advance(run))
     asyncio.run(processor.advance(run))
@@ -488,6 +504,7 @@ def test_batch_replay_is_idempotent_and_malformed_input_gets_safe_checkpoint(
             store=malformed_store,
             evidence_provider=MalformedProvider(),
             curator=Curator(),
+            now=lambda: OBSERVED_AT,
         ),
         owner="worker-a",
         now=lambda: OBSERVED_AT,

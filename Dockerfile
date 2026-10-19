@@ -75,6 +75,7 @@ COPY src/ /app/src/
 COPY skills/ /app/skills/
 COPY scripts/export_copilot_provider_env.py /app/scripts/export_copilot_provider_env.py
 COPY scripts/benchmark_exposure_read_model.py /app/scripts/benchmark_exposure_read_model.py
+COPY scripts/exposure_mi_collector.py /app/scripts/exposure_mi_collector.py
 COPY scripts/refresh_exposure_enrichment.py /app/scripts/refresh_exposure_enrichment.py
 COPY scripts/validate_exposure_live.py /app/scripts/validate_exposure_live.py
 COPY scripts/validate_ontology_publisher_rbac.py /app/scripts/validate_ontology_publisher_rbac.py

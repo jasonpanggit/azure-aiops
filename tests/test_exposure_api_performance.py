@@ -41,6 +41,7 @@ from scripts.benchmark_exposure_read_model import (
     DeterministicFabricSqlReader,
     DeterministicMemoryAdapter,
     derive_benchmark_authorization,
+    derive_live_benchmark_inputs,
     generate_exposure_rows,
     run_fabric_sql_benchmark,
     run_local_benchmark,
@@ -946,6 +947,83 @@ def test_benchmark_scope_refuses_mixed_tenants_or_empty_live_metadata() -> None:
 
     with pytest.raises(ValueError, match="active connection"):
         derive_benchmark_authorization([])
+
+
+@pytest.mark.parametrize("connection_home", [None, "  ", "separate-connections"])
+def test_live_benchmark_uses_connection_root_and_separate_gold_pointer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    connection_home: str | None,
+) -> None:
+    from onboarding import registry
+    from storage.onelake_documents import OneLakeDocumentStore
+
+    gold_root = str(tmp_path / "gold")
+    monkeypatch.setenv("AIOPS_HOME", gold_root)
+    if connection_home is None:
+        monkeypatch.delenv("AIOPS_CONNECTION_HOME", raising=False)
+    else:
+        monkeypatch.setenv("AIOPS_CONNECTION_HOME", connection_home)
+    roots: list[str] = []
+
+    class Registry:
+        def __init__(self, root: str) -> None:
+            roots.append(root)
+
+        def list(self, *, include_disabled: bool) -> list[SimpleNamespace]:
+            assert include_disabled is False
+            return [
+                SimpleNamespace(
+                    tenant_id="tenant-live",
+                    subscription_id="subscription-live",
+                    connection_id="connection-live",
+                    is_active=True,
+                )
+            ]
+
+    monkeypatch.setattr(registry, "ConnectionRegistry", Registry)
+    OneLakeDocumentStore(gold_root).write(
+        "exposure/gold-generation-pointer.json",
+        {"readable_generation_id": "generation-live"},
+        expected_revision=0,
+    )
+
+    authorization, generation = derive_live_benchmark_inputs()
+
+    assert roots == [(connection_home or "").strip() or gold_root]
+    assert authorization.tenant_id == "tenant-live"
+    assert authorization.connection_ids == ("connection-live",)
+    assert generation == "generation-live"
+
+
+def test_live_benchmark_surfaces_pointer_read_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from onboarding import registry
+    from storage.onelake_documents import OneLakeDocumentStore
+
+    monkeypatch.setenv("AIOPS_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        registry,
+        "ConnectionRegistry",
+        lambda root: SimpleNamespace(
+            list=lambda **kwargs: [
+                SimpleNamespace(
+                    tenant_id="tenant-live",
+                    subscription_id="subscription-live",
+                    connection_id="connection-live",
+                    is_active=True,
+                )
+            ]
+        ),
+    )
+
+    def denied(self: OneLakeDocumentStore, name: str) -> dict[str, Any]:
+        raise PermissionError("pointer read denied")
+
+    monkeypatch.setattr(OneLakeDocumentStore, "read_or_raise", denied)
+    with pytest.raises(PermissionError, match="pointer read denied"):
+        derive_live_benchmark_inputs()
 
 
 def test_qualified_benchmark_requires_100k_total_with_both_target_kinds() -> None:
