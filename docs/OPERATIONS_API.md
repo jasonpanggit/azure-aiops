@@ -69,6 +69,34 @@ health or identify an unverified root cause. Closing, pagination and diagnostic
 review perform no refresh/mutation; retry explicitly repeats only the contract
 read. A response for a different dataset or inconsistent contract is rejected.
 
+## Fabric capability readiness evidence
+
+`GET /api/v1/fabric-medallion/capabilities` preserves its read authorization,
+selected scope, evidence envelope, and existing capability fields.
+`semantic_readiness` returns `status=unknown` with
+`reason=no_recorded_semantic_model_deployment_result`: the existing publication
+attempt records describe ontology projections, not semantic-model definition
+publication, live bindings/queryability, or native Fabric Ontology readiness.
+Projection success, failure, rejection, and missing records cannot establish
+those independent stages. Offline definition validation is not deployment proof.
+Recorded projection outcomes, errors, and retry eligibility remain unchanged in
+`GET /api/v1/fabric-medallion/ingestion-history`; unknown model readiness does not
+erase a failed projection.
+
+`data_agent_readiness.configured` retains the existing scoped configuration
+check. When true, readiness is `status=unknown` with
+`reason=reachability_not_verified`; when false, it is `status=disabled` with
+`reason=not_configured`. Settings do not prove reachability, authorization, or
+successful grounding. These readiness fields add no live probes or publication
+operations, and the envelope's dataset metadata timestamp is not a model or
+Data Agent verification timestamp.
+
+The router already uses `FabricRuntimeConfig.load`: a valid complete
+`AIOPS_FABRIC_CONFIG_JSON` override takes precedence over the YAML selected by
+`AIOPS_FABRIC_CONFIG` (default `fabric.config.yaml`), including when that file
+does not exist. No alternate loader or obsolete YAML target is used for the
+configured capacity/workspace/lakehouse.
+
 ## Identity classification evidence
 
 The existing scoped identity routes remain read-only over authorized connection

@@ -7,12 +7,12 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { StatePanel } from "@/components/ui/StatePanel";
-import { FabricMedallionPanel, FABRIC_LAYER_KEYS } from "@/components/fabric/medallion";
+import { FabricMedallionPanel, FABRIC_LAYER_KEYS, useFabricMedallionHealth } from "@/components/fabric/medallion";
 import { useApi } from "@/hooks/useApi";
 import { buildFabricMedallionCopilotContext } from "@/lib/copilot/page-adapters";
 import { scopedBookmark, ScopeBookmarkError, type ScopeSelection } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
-import { connectionsApi, fabricMedallionApi } from "@/lib/services";
+import { connectionsApi } from "@/lib/services";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 
 /** Per-subscription Fabric medallion workbench. */
@@ -65,14 +65,8 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
   const activeConnection = rows.find((connection) => connection.subscription_id === selectedSubscription);
 
   const [copilotOpen, setCopilotOpen] = useState(false);
-  // Page-level medallion reads feed the read-only Copilot context. The embedded
-  // FabricMedallionPanel owns its own independent reads; this adapter only
-  // explains the already-loaded layer/manifest/governance/readiness evidence
-  // and never gains a mutation path (D-03, D-09).
-  const layerSummary = useApi(() => fabricMedallionApi.layers(fabricScope), [refreshKey, JSON.stringify(fabricScope)]);
-  const manifest = useApi(() => fabricMedallionApi.manifest(fabricScope), [refreshKey, JSON.stringify(fabricScope)]);
-  const governance = useApi(() => fabricMedallionApi.governance(fabricScope), [refreshKey, JSON.stringify(fabricScope)]);
-  const capabilities = useApi(() => fabricMedallionApi.capabilities(fabricScope), [refreshKey, JSON.stringify(fabricScope)]);
+  const health = useFabricMedallionHealth(fabricScope, refreshKey);
+  const { layerSummary, manifest, governance, capabilities } = health;
   const fabricSections = [
     { source: "fabric/medallion-layers", envelope: layerSummary.data },
     { source: "fabric/manifest", envelope: manifest.data },
@@ -168,7 +162,7 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
 
       <CopilotInsights
         snapshot={fabricCopilot.snapshot}
-        ready={!connections.loading}
+        ready={!connections.loading && ![layerSummary, manifest, governance, capabilities].some(section => section.loading)}
         requestedScope={fabricCopilot.requestedScope}
         contextLabel="Fabric medallion"
         onOpenCopilot={() => setCopilotOpen(true)}
@@ -233,7 +227,7 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
         </div>
       </section>
 
-      <FabricMedallionPanel asTabPanel={false} refreshKey={refreshKey} scope={fabricScope} />
+      <FabricMedallionPanel asTabPanel={false} refreshKey={refreshKey} scope={fabricScope} health={health} />
 
       <CopilotDrawer
         open={copilotOpen}

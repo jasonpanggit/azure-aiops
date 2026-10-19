@@ -413,15 +413,13 @@ def _semantic_entities(context: Context) -> dict[str, dict[str, Any]]:
 
 
 def _semantic_readiness(context: Context, scope: Scope) -> dict[str, str]:
-    attempts = _publication_attempt_rows(context, scope)
-    latest = attempts[0] if attempts else None
-    if latest:
-        if str(latest.get("status") or "") == "succeeded":
-            return {"status": "available"}
-        reason = str(latest.get("message") or "") or "no_recorded_semantic_model_deployment_result"
-        return {"status": "deployment-blocked", "reason": reason}
+    """Keep model readiness unknown without model-specific deployment evidence.
+
+    Publication attempts describe ontology projections, not semantic-model
+    definitions or native Ontology readiness; their outcomes remain in history.
+    """
     return {
-        "status": "deployment-blocked",
+        "status": "unknown",
         "reason": "no_recorded_semantic_model_deployment_result",
     }
 
@@ -661,6 +659,7 @@ def medallion_ingestion_history(context: Context, scope: ReadScope) -> dict[str,
 
 @router.get("/capabilities", summary="Fabric medallion platform capabilities snapshot")
 def medallion_capabilities(context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Return scoped capability signals without treating settings as live proof."""
     config = _capacity_config(context, scope)
     source_rows = _scoped_source_rows(context, scope)
     runtime_config = _runtime_config()
@@ -725,15 +724,16 @@ def medallion_capabilities(context: Context, scope: ReadScope) -> dict[str, Any]
     except Exception:  # noqa: BLE001 - no workspace configured
         workspace_lineage_url = ""
 
-    data_agent_ready = bool(gold_grounding_configured(scope))
+    data_agent_configured = bool(gold_grounding_configured(scope))
     capabilities = {
         "capacity": capacity,
         "data_access_roles": role_state,
         "maintenance": maintenance,
         "semantic_readiness": _semantic_readiness(context, scope),
         "data_agent_readiness": {
-            "status": "available" if data_agent_ready else "unknown",
-            "configured": data_agent_ready,
+            "status": "unknown" if data_agent_configured else "disabled",
+            "configured": data_agent_configured,
+            "reason": "reachability_not_verified" if data_agent_configured else "not_configured",
         },
         "lineage": {
             "native_lineage_url": workspace_lineage_url,
