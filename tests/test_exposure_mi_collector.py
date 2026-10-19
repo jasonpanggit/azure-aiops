@@ -2,11 +2,23 @@
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from scripts import exposure_mi_collector as collector
+
+
+def test_fixed_job_entrypoint_is_packaged_in_runtime_image():
+    dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text()
+    runtime = dockerfile.split("FROM python:3.12-slim AS runtime", 1)[1]
+    assert (
+        "COPY scripts/exposure_mi_collector.py /app/scripts/exposure_mi_collector.py"
+        in runtime
+    )
+    assert "COPY scripts/benchmark_exposure_read_model.py " in runtime
+    assert "COPY src/ /app/src/" in runtime
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +95,44 @@ def test_walk_query_budget():
     reader.calls = 6000
     with pytest.raises(ValueError, match="bound"):
         reader.query("SELECT 1", max_rows=1)
+
+
+def test_actual_benchmark_instrumentation_accepts_bounded_reader():
+    from api.exposure_query import ExposureAuthorization
+
+    queries = []
+
+    def query(sql, parameters=(), *, max_rows):
+        queries.append((sql, parameters, max_rows))
+        if "COUNT_BIG" in sql and "GROUP BY" not in sql:
+            return [{"total_count": 0, "freshest_at": "", "all_complete": 1}]
+        return []
+
+    endpoint = collector.SqlEndpoint(**collector.ENDPOINT)
+    reader = collector.BoundedBenchmarkReader(
+        SimpleNamespace(endpoint=endpoint, query=query)
+    )
+    authorization = ExposureAuthorization(
+        subject="collector-instrumentation-regression",
+        tenant_id=collector.TENANT,
+        connection_ids=("connection-live",),
+        scope={"subscription": (collector.SUBSCRIPTION,)},
+    )
+    result = collector.run_fabric_sql_benchmark(
+        reader,
+        authorization,
+        generation_id="generation-live",
+        expected_rows=100_000,
+        page_size=100,
+        warmups=0,
+        measurements=1,
+    )
+    assert reader.endpoint is endpoint
+    assert result["status"] == "fail"
+    assert queries
+    assert reader.calls == len(queries)
+    assert all(sql.startswith("WITH [scoped] AS (SELECT") for sql, _, _ in queries)
+    assert all(max_rows <= 101 for _, _, max_rows in queries)
 
 
 def test_actual_production_compiler_ctes_are_supported():
