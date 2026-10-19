@@ -8,11 +8,12 @@ import json
 import os
 import signal
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from azure.core.exceptions import AzureError
+from azure.core.exceptions import AzureError, HttpResponseError
 from azure.identity import ManagedIdentityCredential
 from azure.storage.filedatalake import FileSystemClient
 
@@ -60,8 +61,14 @@ def validate_runtime(environment: dict[str, str]) -> None:
     if len(release) != 40 or any(c not in "0123456789abcdef" for c in release):
         raise ValueError("immutable_source_revision_missing")
     config = json.loads(environment.get("AIOPS_FABRIC_CONFIG_JSON", "{}"))
+    if not isinstance(config, dict):
+        raise TypeError("runtime_fabric_binding_mismatch")
     fabric = config.get("fabric", {})
+    if not isinstance(fabric, dict):
+        raise TypeError("runtime_fabric_binding_mismatch")
     auth = fabric.get("auth", {})
+    if not isinstance(auth, dict):
+        raise TypeError("runtime_fabric_binding_mismatch")
     if (
         fabric.get("workspace_id") != WORKSPACE
         or fabric.get("lakehouse_id") != LAKEHOUSE
@@ -79,7 +86,7 @@ def read_document(fs: Any, name: str) -> tuple[dict[str, Any], str]:
     if client.get_file_properties().size > MAX_DOCUMENT_BYTES:
         raise ValueError("document_size_bound_exceeded")
     body = client.download_file(
-        length=MAX_DOCUMENT_BYTES + 1, max_concurrency=1
+        offset=0, length=MAX_DOCUMENT_BYTES + 1, max_concurrency=1
     ).readall()
     if len(body) > MAX_DOCUMENT_BYTES:
         raise ValueError("document_size_bound_exceeded")
@@ -250,6 +257,13 @@ def collect(credential: Any, *, benchmark: bool) -> dict[str, Any]:
             }
             continue
         for row in rows:
+            for key, value in row.items():
+                if isinstance(value, date):
+                    row[key] = value.isoformat()
+                elif isinstance(value, Decimal):
+                    if not value.is_finite():
+                        raise ValueError("nonfinite_sql_decimal")
+                    row[key] = str(value)
             for key in (
                 "source_generation_id",
                 "effective_generation",
@@ -263,15 +277,22 @@ def collect(credential: Any, *, benchmark: bool) -> dict[str, Any]:
         counts = report["queries"]["gold_counts"]
         total = sum(int(row["row_count"]) for row in counts.get("rows", []))
         if counts["status"] == "read" and 0 < total <= 100_000:
-            report["benchmark"] = run_fabric_sql_benchmark(
-                BoundedBenchmarkReader(reader),
-                authorization,
-                generation_id=generation,
-                expected_rows=100_000,
-                page_size=100,
-                warmups=5,
-                measurements=20,
-            )
+            try:
+                report["benchmark"] = run_fabric_sql_benchmark(
+                    BoundedBenchmarkReader(reader),
+                    authorization,
+                    generation_id=generation,
+                    expected_rows=100_000,
+                    page_size=100,
+                    warmups=5,
+                    measurements=20,
+                )
+            except pyodbc.Error as exc:
+                failed = True
+                report["benchmark"] = {
+                    "status": "provider_query_failed",
+                    "sqlstate": str(exc.args[0]) if exc.args else "unknown",
+                }
         else:
             report["benchmark"] = {"status": "blocked_corpus_outside_fixed_walk_bound"}
     _, final_pointer_hash = read_document(fs, "exposure/gold-generation-pointer.json")
@@ -311,6 +332,7 @@ def main() -> int:
         validate_runtime(dict(os.environ))
         with ManagedIdentityCredential(client_id=CLIENT) as credential:
             report = collect(credential, benchmark=args.benchmark)
+        output = json.dumps(report, sort_keys=True, separators=(",", ":"))
     except (AzureError, OSError, RuntimeError, ValueError, TypeError) as exc:
         report = {
             "status": "blocked_collection_error",
@@ -318,9 +340,24 @@ def main() -> int:
             "production_certified": False,
             "phase4_ready": False,
         }
+        if isinstance(exc, HttpResponseError):
+            if type(exc.status_code) is int and 400 <= exc.status_code <= 599:
+                report["http_status"] = exc.status_code
+            code = getattr(exc, "error_code", None)
+            if isinstance(code, str) and code in {
+                "AuthenticationFailed",
+                "AuthorizationFailure",
+                "AuthorizationPermissionMismatch",
+                "InsufficientAccountPermissions",
+                "InvalidAuthenticationInfo",
+                "PathNotFound",
+                "FilesystemNotFound",
+            }:
+                report["provider_error_code"] = code
+        output = json.dumps(report, sort_keys=True, separators=(",", ":"))
     finally:
         signal.alarm(0)
-    print(json.dumps(report, sort_keys=True, separators=(",", ":")), flush=True)
+    print(output, flush=True)
     return 0 if report["status"] == "observations_collected" else 2
 
 

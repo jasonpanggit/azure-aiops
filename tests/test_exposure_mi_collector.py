@@ -168,6 +168,53 @@ def test_actual_production_compiler_ctes_are_supported():
     assert len(calls) == 2
 
 
+def test_document_read_uses_real_sdk_range_contract_without_network():
+    from azure.core.credentials import AzureSasCredential
+    from azure.core.pipeline.transport import HttpTransport
+    from azure.storage.filedatalake import DataLakeFileClient
+
+    class RequestCaptured(RuntimeError):
+        pass
+
+    class CaptureTransport(HttpTransport):
+        def __init__(self):
+            self.requests = []
+
+        def open(self):
+            pass
+
+        def close(self):
+            pass
+
+        def __exit__(self, *_args):
+            self.close()
+
+        def send(self, request, **kwargs):
+            self.requests.append(request)
+            raise RequestCaptured("offline transport reached")
+
+    transport = CaptureTransport()
+    with DataLakeFileClient(
+        account_url="https://onelake.dfs.fabric.microsoft.com",
+        file_system_name=collector.WORKSPACE,
+        file_path=f"{collector.LAKEHOUSE}/Files/aiops/exposure/gold-generation-pointer.json",
+        credential=AzureSasCredential("sig=offline-test-no-network"),
+        transport=transport,
+        retry_total=0,
+    ) as sdk_client:
+        client = SimpleNamespace(
+            get_file_properties=lambda: SimpleNamespace(size=100),
+            download_file=sdk_client.download_file,
+        )
+        fs = SimpleNamespace(get_file_client=lambda _path: client)
+        with pytest.raises(RequestCaptured, match="offline transport"):
+            collector.read_document(fs, "exposure/gold-generation-pointer.json")
+    assert len(transport.requests) == 1
+    assert transport.requests[0].headers["x-ms-range"] == (
+        f"bytes=0-{collector.MAX_DOCUMENT_BYTES}"
+    )
+
+
 def test_oversized_document_never_downloaded():
     client = SimpleNamespace(
         get_file_properties=lambda: SimpleNamespace(
@@ -177,6 +224,37 @@ def test_oversized_document_never_downloaded():
     fs = SimpleNamespace(get_file_client=lambda path: client)
     with pytest.raises(ValueError, match="size_bound"):
         collector.read_document(fs, "exposure/gold-generation-pointer.json")
+
+
+@pytest.mark.parametrize(
+    "body", [b'{"revision":1}', b"[]", b"x" * (4 * 1024 * 1024 + 1)]
+)
+def test_document_body_validation_preserves_download_bound(body):
+    requests = []
+
+    def download(**kwargs):
+        requests.append(kwargs)
+        return SimpleNamespace(readall=lambda: body)
+
+    client = SimpleNamespace(
+        get_file_properties=lambda: SimpleNamespace(size=1),
+        download_file=download,
+    )
+    fs = SimpleNamespace(get_file_client=lambda _path: client)
+    if body.startswith(b"{"):
+        payload, digest = collector.read_document(fs, "fixed.json")
+        assert payload == {"revision": 1}
+        assert digest == collector.digest(body)
+    else:
+        with pytest.raises((TypeError, ValueError)):
+            collector.read_document(fs, "fixed.json")
+    assert requests == [
+        {
+            "offset": 0,
+            "length": collector.MAX_DOCUMENT_BYTES + 1,
+            "max_concurrency": 1,
+        }
+    ]
 
 
 def test_delegated_credential_cannot_be_labelled_application_mi():
