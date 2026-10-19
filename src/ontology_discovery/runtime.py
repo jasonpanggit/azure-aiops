@@ -31,6 +31,7 @@ from .command_intake import (
     CoordinatorCommandConsumer,
     scope_receipt,
 )
+from .contracts import Curator
 from .coordinator import (
     BoundedEvidenceProcessor,
     ProposalPolicyCoordinator,
@@ -38,6 +39,7 @@ from .coordinator import (
 from .curator import OntologyCurator
 from .dispatch_store import CoordinatorDispatchView, PublisherDispatchStore
 from .incremental import classify_incremental, normalize_graph_state
+from .planner_capabilities import PlannerSelection, select_planner
 from .policy import ProposalPolicy
 from .store import RUN_FAILED, RUN_SUCCEEDED, OntologyRunStore, RunClaimConflict
 
@@ -534,7 +536,8 @@ class ProductionConnectionProcessor:
         store: OntologyRunStore,
         dispatch: CoordinatorDispatchView,
         connector_config: ConnectorConfig,
-        curator: OntologyCurator,
+        curator: Curator,
+        planner_selection: PlannerSelection | None = None,
         resolver: CredentialResolver | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -542,6 +545,8 @@ class ProductionConnectionProcessor:
         self.dispatch = dispatch
         self.connector_config = connector_config
         self.curator = curator
+        self.planner_selection = planner_selection or select_planner()
+        self.planner_selection.require_supported()
         self.policy = ProposalPolicy(shadow_mode=True)
         self.policy_coordinator = ProposalPolicyCoordinator(
             store=store, policy=self.policy
@@ -633,6 +638,7 @@ class ProductionConnectionProcessor:
             store=self.store,
             evidence_provider=_CollectedEvidence(evidence),
             curator=self.curator,
+            planner_selection=self.planner_selection,
             now=self.now,
         )
         await self.bounded_evidence.advance(run)
@@ -732,6 +738,7 @@ class ProductionCoordinatorRuntime:
         intake: CoordinatorIntakeAdapter,
         scheduler: EligibleConnectionScheduler,
         processor: ProductionConnectionProcessor,
+        owned_curator: OntologyCurator | None = None,
     ) -> None:
         self.config = config
         self.registry = registry
@@ -739,6 +746,7 @@ class ProductionCoordinatorRuntime:
         self.intake = intake
         self.scheduler = scheduler
         self.processor = processor
+        self._owned_curator = owned_curator
 
     async def run_once(self, *, limit: int = 1) -> dict[str, int | bool]:
         intake = self.intake.process_one()
@@ -751,7 +759,8 @@ class ProductionCoordinatorRuntime:
         }
 
     async def aclose(self) -> None:
-        await self.processor.curator.aclose()
+        if self._owned_curator is not None:
+            await self._owned_curator.aclose()
 
 
 class ValidationFixtureLifecycle:
@@ -1066,10 +1075,20 @@ def build_production_runtime(
     *,
     environ: Mapping[str, str] | None = None,
     owner: str,
+    curator: Curator | None = None,
+    planner_selection: PlannerSelection | None = None,
 ) -> ProductionCoordinatorRuntime:
-    """Build the exact coordinator capability graph from explicit roots."""
+    """Build the existing graph, optionally borrowing a protocol-only curator.
+
+    Injection does not relax environment/root validation or hard-shadow policy.
+    The caller owns an injected curator and any external transport it uses.
+    """
 
     config = ProductionRuntimeConfig.from_environ(environ)
+    selection = planner_selection or select_planner(
+        execution_class="live" if curator is None else "provenance_unavailable"
+    )
+    selection.require_supported()
     registry = ConnectionRegistry(config.connection_home)
     documents = OneLakeDocumentStore(config.state_home)
     run_store = OntologyRunStore(
@@ -1079,16 +1098,22 @@ def build_production_runtime(
     commands = CoordinatorCommandConsumer(config.command_home)
     dispatch = PublisherDispatchStore(config.dispatch_home).coordinator()
     connector_config = ConnectorConfig.load(config.connector_config_path)
-    curator = OntologyCurator(
-        project_endpoint=config.foundry_endpoint,
-        agent_name=config.agent_name,
-        agent_version=config.agent_version,
+    owned_curator = (
+        OntologyCurator(
+            project_endpoint=config.foundry_endpoint,
+            agent_name=config.agent_name,
+            agent_version=config.agent_version,
+        )
+        if curator is None else None
     )
+    selected_curator = curator if curator is not None else owned_curator
+    assert selected_curator is not None
     processor = ProductionConnectionProcessor(
         store=run_store,
         dispatch=dispatch,
         connector_config=connector_config,
-        curator=curator,
+        curator=selected_curator,
+        planner_selection=selection,
     )
     source_generation = _source_generation
     intake = CoordinatorIntakeAdapter(
@@ -1114,6 +1139,7 @@ def build_production_runtime(
         intake=intake,
         scheduler=scheduler,
         processor=processor,
+        owned_curator=owned_curator,
     )
 
 

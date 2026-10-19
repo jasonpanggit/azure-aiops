@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,16 @@ REQUIRED_UI_SUITES = (
     "cve",
     "kb",
     "risk_dialog",
+)
+REQUIRED_OPERATOR_CHECKS = (
+    "authenticated_overview",
+    "defender_and_container_evidence",
+    "cve_kb_detail",
+    "source_completeness_and_freshness",
+    "exact_workload_traversal",
+    "governed_review_only_container_handoff",
+    "generation_and_aggregate_match",
+    "secret_and_raw_payload_absence",
 )
 FORBIDDEN_EVIDENCE_KEYS = frozenset(
     {
@@ -65,6 +76,24 @@ def _mapping(value: object) -> Mapping[str, Any]:
 
 def _status_pass(value: object) -> bool:
     return str(_mapping(value).get("status") or "").strip().casefold() == "pass"
+
+
+def _nonempty_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _count(value: object) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _observed_at(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        observed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return observed if observed.utcoffset() is not None else None
 
 
 def _scan_unsafe_keys(value: object, path: tuple[str, ...] = ()) -> None:
@@ -110,11 +139,21 @@ def evaluate_live_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
     benchmark_dataset = _mapping(benchmark.get("dataset"))
     benchmark_walk = _mapping(benchmark.get("full_walk"))
     benchmark_slo = _mapping(benchmark.get("slo"))
+    benchmark_timings = _mapping(benchmark.get("timings"))
+    benchmark_work = _mapping(benchmark.get("work"))
+    benchmark_query = _mapping(benchmark.get("query_contract"))
     phase4 = _mapping(evidence.get("phase4"))
     traversal = _mapping(phase4.get("digest_to_workload"))
     ui_suites = _mapping(evidence.get("ui_suites"))
+    source_runs = _mapping(binding.get("source_run_ids"))
+    rollout = _mapping(evidence.get("rollout"))
+    canary = _mapping(rollout.get("canary"))
+    rollback = _mapping(rollout.get("rollback"))
+    checkpoint = _mapping(evidence.get("operator_checkpoint"))
+    checklist = _mapping(checkpoint.get("checklist"))
 
-    generation = str(binding.get("generation_id") or "")
+    generation_value = binding.get("generation_id")
+    generation = generation_value if isinstance(generation_value, str) else ""
     config_digest = str(binding.get("config_digest") or "")
     active_kid = str(cursor.get("active_kid") or "")
     previous_kid = str(cursor.get("previous_kid") or "")
@@ -122,9 +161,14 @@ def evaluate_live_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
         str(value) for value in governance.get("executable_action_ids") or ()
     )
     target_counts = _mapping(benchmark_dataset.get("target_kind_counts"))
-    benchmark_rows = int(benchmark_dataset.get("row_count") or 0)
-    represented = int(traversal.get("represented") or 0)
-    total = int(traversal.get("total") or 0)
+    benchmark_rows = benchmark_dataset.get("row_count")
+    page_size = benchmark_query.get("page_size")
+    max_rows_fetched = benchmark_work.get("max_rows_fetched_per_query")
+    workload_counts = [
+        traversal.get(name) for name in ("represented", "unknown", "excluded")
+    ]
+    total = traversal.get("total")
+    represented = traversal.get("represented")
 
     exact_phase4 = (
         _status_pass(phase4)
@@ -132,22 +176,85 @@ def evaluate_live_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
         and str(traversal.get("source") or "") == "container_insights"
         and traversal.get("supported") is True
         and traversal.get("round_trip") is True
+        and all(_count(value) for value in (*workload_counts, total))
         and represented > 0
-        and total >= represented
+        and total == sum(workload_counts)
+        and all(
+            _count(traversal.get(name)) and traversal[name] > 0
+            for name in (
+                "silver_workload_deployments",
+                "digest_to_deployment_edges",
+                "deployment_to_application_edges",
+            )
+        )
+    )
+    source_binding = {
+        "aum": (aum,),
+        "defender_digest": (defender,),
+        "container_insights": (workloads,),
+        "publication": (persistence, ontology),
+        "benchmark": (benchmark,),
+    }
+    canary_at = _observed_at(canary.get("observed_at"))
+    rollback_at = _observed_at(rollback.get("observed_at"))
+    checkpoint_at = _observed_at(checkpoint.get("observed_at"))
+    prior_generation = rollout.get("prior_generation_id")
+    rollout_passed = (
+        _status_pass(rollout)
+        and rollout.get("generation_id") == generation
+        and rollout.get("candidate_generation_id") == generation
+        and _nonempty_text(prior_generation)
+        and prior_generation != generation
+        and _status_pass(canary)
+        and canary.get("observed") is True
+        and canary.get("active_reader_generation_id") == generation
+        and _nonempty_text(canary.get("evidence_ref"))
+        and _status_pass(rollback)
+        and rollback.get("observed") is True
+        and rollback.get("from_generation_id") == generation
+        and rollback.get("active_reader_generation_id") == prior_generation
+        and _nonempty_text(rollback.get("evidence_ref"))
+        and rollback.get("evidence_ref") != canary.get("evidence_ref")
+        and rollback.get("preserve_evidence") is True
+        and rollback.get("destructive_actions") == []
+        and rollback.get("post_rollback_health") == "pass"
+        and canary_at is not None
+        and rollback_at is not None
+        and canary_at < rollback_at
     )
     checks = [
         _check(
             "release_binding",
-            bool(binding.get("commit"))
+            _nonempty_text(binding.get("commit"))
             and config_digest.startswith("sha256:")
-            and bool(generation),
+            and _nonempty_text(generation),
             "release_binding_missing",
+        ),
+        _check(
+            "source_run_binding",
+            all(
+                _nonempty_text(source_runs.get(name))
+                and all(
+                    section.get("source_run_id") == source_runs[name]
+                    for section in sections
+                )
+                for name, sections in source_binding.items()
+            ),
+            "source_run_binding_missing_or_mismatched",
+        ),
+        _check(
+            "generation_binding",
+            _nonempty_text(generation)
+            and all(
+                section.get("generation_id") == generation
+                for section in (persistence, ontology, benchmark_dataset, traversal)
+            ),
+            "generation_binding_mismatch",
         ),
         _check("aum_source", _status_pass(aum), "aum_source_not_ready"),
         _check(
             "defender_exact_digest",
-            _status_pass(defender)
-            and defender.get("evidence_kind") == "exact_digest",
+            _status_pass(defender) and defender.get("evidence_kind") == "exact_digest",
             "defender_exact_digest_missing",
         ),
         _check(
@@ -205,6 +312,7 @@ def evaluate_live_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
             and action_ids == REQUIRED_EXECUTABLE_ACTION_IDS
             and governance.get("container_handoff")
             in {"review_handoff", "no_safe_action"}
+            and _count(governance.get("container_operation_calls"))
             and governance.get("container_operation_calls") == 0,
             "container_governance_failed",
         ),
@@ -222,33 +330,88 @@ def evaluate_live_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
             and benchmark_adapter.get("adapter_id") == "fabric_sql"
             and benchmark_adapter.get("production_slo_evidence") is True
             and benchmark_adapter.get("delta_selected") is False
-            and benchmark_rows >= 100_000
-            and int(target_counts.get("server") or 0) > 0
-            and int(target_counts.get("container_image") or 0) > 0
-            and benchmark_walk.get("duplicate_count") == 0
-            and benchmark_walk.get("omission_count") == 0
+            and _count(benchmark_rows)
+            and benchmark_rows == 100_000
+            and all(
+                _count(target_counts.get(kind)) and target_counts[kind] > 0
+                for kind in ("server", "container_image")
+            )
+            and target_counts["server"] + target_counts["container_image"]
+            == benchmark_rows
+            and all(
+                _count(benchmark_walk.get(name)) and benchmark_walk[name] == expected
+                for name, expected in (
+                    ("returned_count", benchmark_rows),
+                    ("unique_count", benchmark_rows),
+                    ("duplicate_count", 0),
+                    ("omission_count", 0),
+                )
+            )
             and benchmark_slo.get("observed_under_target") is True
-            and benchmark_slo.get("production_certified") is True,
+            and benchmark_slo.get("production_certified") is True
+            and benchmark_slo.get("target_p95_ms") == 2_000
+            and all(
+                type(p95 := _mapping(benchmark_timings.get(name)).get("p95_ms"))
+                in (int, float)
+                and 0 <= p95 < 2_000
+                for name in (
+                    "server_cold_warm_count_page",
+                    "container_image_cold_warm_count_page",
+                )
+            )
+            and _count(page_size)
+            and page_size > 0
+            and _count(max_rows_fetched)
+            and 0 < max_rows_fetched <= page_size + 1
+            and all(
+                _count(benchmark_work.get(name)) and benchmark_work[name] == 0
+                for name in ("full_table_materializations", "delta_fallbacks")
+            ),
             "qualified_100k_benchmark_failed",
         ),
         _check("phase4_exact_path", exact_phase4, PHASE4_BLOCKER),
     ]
+    automated_preflight_ready = all(check["status"] == "pass" for check in checks)
+    checks.append(
+        _check(
+            "canary_rollback_transition",
+            rollout_passed,
+            "canary_rollback_transition_unproven",
+        )
+    )
+    operator_checkpoint_ready = automated_preflight_ready and rollout_passed
+    checks.append(
+        _check(
+            "authenticated_operator_acceptance",
+            checkpoint.get("status") == "approved"
+            and checkpoint.get("operator_authorized") is True
+            and checkpoint.get("authenticated") is True
+            and _nonempty_text(generation)
+            and checkpoint.get("generation_id") == generation
+            and _nonempty_text(checkpoint.get("evidence_ref"))
+            and checkpoint_at is not None
+            and rollback_at is not None
+            and rollback_at <= checkpoint_at
+            and all(checklist.get(name) == "pass" for name in REQUIRED_OPERATOR_CHECKS),
+            "authenticated_operator_acceptance_missing",
+        )
+    )
 
     missing = [
-        str(check["reason_code"])
-        for check in checks
-        if check["status"] != "pass"
+        str(check["reason_code"]) for check in checks if check["status"] != "pass"
     ]
     # The exact live traversal is the canonical blocker name, even when the
     # source reported a typed unknown rather than an outright failure.
     if not exact_phase4:
-        missing = [
-            reason for reason in missing if reason != PHASE4_BLOCKER
-        ] + [PHASE4_BLOCKER]
+        missing = [reason for reason in missing if reason != PHASE4_BLOCKER] + [
+            PHASE4_BLOCKER
+        ]
 
     return {
         "schema_version": "1.0.0",
         "status": "pass" if not missing else "blocked",
+        "automated_preflight_ready": automated_preflight_ready,
+        "operator_checkpoint_ready": operator_checkpoint_ready,
         "phase4_ready": not missing and exact_phase4,
         "checks": checks,
         "missing_evidence": missing,
@@ -311,9 +474,7 @@ def _runtime_evidence(config_path: Path) -> dict[str, Any]:
             "fabric_sql": {
                 "status": "pass" if ready else "blocked",
                 "adapter": readiness.get("selected_production_adapter", ""),
-                "driver": "ODBC Driver 18 for SQL Server"
-                if driver_ready
-                else "",
+                "driver": "ODBC Driver 18 for SQL Server" if driver_ready else "",
             }
         },
         "cursor": {

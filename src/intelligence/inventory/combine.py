@@ -13,6 +13,7 @@ reserved for explicitly authorized empty-subscription activation.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ def publish_combined_inventory_snapshot(
     *,
     connection_ids: list[str] | None = None,
     allow_empty: bool = False,
+    assert_lock_held: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Merge each connection's isolated inventory snapshot into one target root.
 
@@ -160,6 +162,7 @@ def publish_combined_inventory_snapshot(
             "sourceRunIds": sorted(source_runs),
         },
         ontology={},
+        **({"assert_lock_held": assert_lock_held} if assert_lock_held is not None else {}),
     )
 
 
@@ -169,6 +172,7 @@ def republish_combined_snapshot_to_fabric(
     *,
     retain_raw_queries: bool = False,
     source_run_id: str = "",
+    assert_lock_held: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Publish the already-merged combined inventory snapshot through Fabric.
 
@@ -239,6 +243,7 @@ def republish_combined_snapshot_to_fabric(
         datasets,
         run_metadata={"runId": manifest_run_id or "inventory-refresh"},
         persist_compatibility=False,
+        **({"assert_lock_held": assert_lock_held} if assert_lock_held is not None else {}),
     )
 
 

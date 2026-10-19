@@ -2,19 +2,28 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from .contracts import (
     CheckpointResult,
     Curator,
+    EvidenceBatch,
     EvidenceProvider,
     RunProcessingFailure,
     RunProcessor,
 )
+from .curator import (
+    HARD_MAX_OUTPUT_TOKENS,
+    CuratorInvalidOutput,
+    estimate_input_tokens,
+    parse_proposal_batch,
+)
 from .incremental import EvidenceBatchRejected, split_evidence_batches
+from .planner_capabilities import PlannerSelection, provider_receipt, select_planner
 from .policy import ProposalPolicy
 from .publisher import OntologyGenerationCandidate
 from .store import (
@@ -183,14 +192,17 @@ class BoundedEvidenceProcessor:
         store: OntologyRunStore,
         evidence_provider: EvidenceProvider,
         curator: Curator,
-        now=None,
+        planner_selection: PlannerSelection | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
         self._evidence_provider = evidence_provider
         self._curator = curator
+        self._planner_selection = planner_selection or select_planner()
         self._now = now or (lambda: datetime.now(UTC))
 
     async def advance(self, run: Mapping[str, Any]) -> CheckpointResult:
+        self._planner_selection.require_supported()
         evidence = await self._evidence_provider.collect(run)
         try:
             batches = split_evidence_batches(
@@ -226,37 +238,69 @@ class BoundedEvidenceProcessor:
 
         dispatched_ids: list[str] = []
         for batch in batches:
-            current = self._store.get(str(run.get("run_id") or ""))
-            if current is None:
-                raise RunProcessingFailure(
-                    failure_class="run_missing",
-                    checkpoint="evidence_dispatch_stopped",
-                )
-            if current.get("cancel_requested"):
-                raise RunProcessingFailure(
-                    failure_class="run_cancelled",
-                    checkpoint="evidence_dispatch_stopped",
-                    payload={"unresolved_batch_ids": [item.batch_id for item in batches]},
-                )
-            if current["source_generation_id"] != batch.source_generation_id:
-                raise RunProcessingFailure(
-                    failure_class="source_generation_changed",
-                    checkpoint="evidence_dispatch_stopped",
-                    payload={"unresolved_batch_ids": [item.batch_id for item in batches]},
-                )
+            current = self._require_current(run, batch)
             persisted = self._store.save_evidence_batch(
                 run_id=current["run_id"],
                 batch=batch.to_dict(),
                 now=self._now(),
             )
             if persisted["status"] != "dispatched":
-                result = await self._curator.propose(run, batch.to_dict())
+                self._planner_selection.require_supported()
+                try:
+                    # Providers receive only scoped advisory context, not lease,
+                    # review, checkpoint, cancellation or publication authority.
+                    document = await self._curator.propose(
+                        {
+                            "source_generation_id": batch.source_generation_id,
+                            "scope": batch.scope,
+                        },
+                        batch.to_dict(),
+                    )
+                    serialized = json.dumps(
+                        document, separators=(",", ":"), allow_nan=False
+                    )
+                    if estimate_input_tokens(serialized) > HARD_MAX_OUTPUT_TOKENS:
+                        raise CuratorInvalidOutput("curator_output_budget_exceeded")
+                    result = parse_proposal_batch(serialized, batch=batch).model_dump(
+                        mode="json"
+                    )
+                except (CuratorInvalidOutput, TypeError, ValueError):
+                    raise RunProcessingFailure(
+                        failure_class="curator_output_invalid",
+                        checkpoint="evidence_dispatch_stopped",
+                        payload={"reason": "curator_output_invalid"},
+                        message="curator_output_invalid",
+                    ) from None
+                except Exception:  # noqa: BLE001 - sanitize arbitrary injected providers
+                    raise RunProcessingFailure(
+                        failure_class="curator_provider_failed",
+                        checkpoint="evidence_dispatch_stopped",
+                        payload={"reason": "curator_provider_failed"},
+                        message="curator_provider_failed",
+                    ) from None
+                # Metadata is appended only AFTER strict document validation.
+                # Store's existing result metadata preserves result.proposals.
+                try:
+                    result["provider_receipt"] = provider_receipt(
+                        selection=self._planner_selection,
+                        curator=self._curator,
+                        result=result,
+                    )
+                except Exception:  # noqa: BLE001 - metadata access is a provider boundary
+                    raise RunProcessingFailure(
+                        failure_class="curator_provider_failed",
+                        checkpoint="evidence_dispatch_stopped",
+                        payload={"reason": "curator_provider_failed"},
+                        message="curator_provider_failed",
+                    ) from None
+                self._require_current(run, batch)
                 self._store.mark_evidence_batch_dispatched(
                     batch.batch_id,
                     expected_revision=persisted["revision"],
                     result=result,
                     now=self._now(),
                 )
+
             dispatched_ids.append(batch.batch_id)
         return CheckpointResult(
             checkpoint="evidence_dispatched",
@@ -266,6 +310,40 @@ class BoundedEvidenceProcessor:
             },
             complete=True,
         )
+
+    def _require_current(
+        self, run: Mapping[str, Any], batch: EvidenceBatch
+    ) -> dict[str, Any]:
+        """Reject late/stale responses before making a result durable."""
+        current = self._store.get(str(run.get("run_id") or ""))
+        reason = ""
+        if current is None:
+            reason = "run_missing"
+        elif current.get("cancel_requested"):
+            reason = "run_cancelled"
+        elif current["source_generation_id"] != batch.source_generation_id:
+            reason = "source_generation_changed"
+        elif self._now() >= datetime.fromisoformat(current["deadline_at"]):
+            reason = "run_deadline_exceeded"
+        elif run.get("fencing_token") and (
+            current.get("fencing_token") != run["fencing_token"]
+            or current.get("lease_owner") != run.get("lease_owner")
+            or current.get("status") != run.get("status")
+            or (
+                current.get("lease_expires_at")
+                and self._now() >= datetime.fromisoformat(current["lease_expires_at"])
+            )
+        ):
+            reason = "run_lease_lost"
+        if reason:
+            raise RunProcessingFailure(
+                failure_class=reason,
+                checkpoint="evidence_dispatch_stopped",
+                payload={"reason": reason, "unresolved_batch_ids": [batch.batch_id]},
+                message=reason,
+            )
+        assert current is not None
+        return current
 
 
 class OntologyDiscoveryCoordinator:

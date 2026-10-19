@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,8 +31,11 @@ class InventoryFabricPublisher:
         query_results: Mapping[str, list[dict[str, Any]]] | None = None,
         run_metadata: Mapping[str, Any] | None = None,
         persist_compatibility: bool = True,
+        assert_lock_held: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """Publish validated inventory tables and optionally update the store."""
+        if assert_lock_held is not None:
+            assert_lock_held()
         logical_datasets = {name: list(rows) for name, rows in datasets.items()}
         published_datasets: dict[str, list[dict[str, Any]]] = {}
         for logical_name, rows in logical_datasets.items():
@@ -42,6 +45,8 @@ class InventoryFabricPublisher:
             contract = INVENTORY_FABRIC_CONTRACTS[logical_name]
             self.fabric_tables[contract.table_name] = list(rows)
             if self.onelake is not None:
+                if assert_lock_held is not None:
+                    assert_lock_held()
                 write = self.onelake.publish_table(contract, rows)
                 self.table_writes[contract.table_name] = {
                     "tableUri": write.table_uri,
@@ -83,6 +88,7 @@ class InventoryFabricPublisher:
             dict(query_results or {}),
             metadata,
             ontology={},
+            **({"assert_lock_held": assert_lock_held} if assert_lock_held is not None else {}),
         )
 
 

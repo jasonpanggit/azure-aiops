@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { FabricFreshnessBudget } from "@/components/fabric/FabricFreshnessBudget";
 import { FabricDatasetContract } from "@/components/fabric/FabricDatasetContract";
+import { FabricRecordedEvidence } from "@/components/fabric/FabricRecordedEvidence";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { StatePanel } from "@/components/ui/StatePanel";
@@ -188,7 +189,8 @@ function FabricLayerSection({
 }) {
   const scopeKey = JSON.stringify(scope);
   const datasets = useApi(() => loadLayerDatasets(tableNames, scope), [refreshKey, tableNames.join("|"), scopeKey]);
-  const rows = useMemo(() => datasets.data ?? [], [datasets.data]);
+  const rows = useMemo(() => datasets.data?.datasets ?? [], [datasets.data]);
+  const failures = datasets.data?.failures ?? [];
   const { filteredRows, filters, resetFilters } = useColumnFilters(rows, [
     { id: "status", label: "Status", getValues: (dataset) => dataset.availability || "unknown" },
     { id: "freshness", label: "Freshness", getValues: (dataset) => dataset.freshness || "unknown" },
@@ -210,6 +212,18 @@ function FabricLayerSection({
         <StatusBadge label={formatHealthCount(counts)} tone={statusTone(!counts || counts.total === 0 ? "unknown" : counts.healthy === counts.total ? "healthy" : "degraded")} />
       </div>
       <div className="card-body">
+        {failures.length > 0 && (
+          <div role="status" aria-label={`${label} dataset read failures`}>
+            <StatePanel
+              title={rows.length ? `${label} layer health is partial` : `${label} layer health is unavailable`}
+              message={`${rows.length} of ${tableNames.length} registered dataset responses available. Refresh Fabric health to retry failed reads. Layer counts are reported independently.`}
+              tone="error"
+            />
+            <ul>
+              {failures.map(failure => <li key={failure.tableName}><strong>{failure.tableName}</strong>: {failure.message}</li>)}
+            </ul>
+          </div>
+        )}
         {datasets.error ? (
           <StatePanel
             title={`${label} layer health is unavailable`}
@@ -220,7 +234,7 @@ function FabricLayerSection({
           <StatePanel title={`Loading ${label.toLowerCase()} layer health`} message="Checking dataset freshness, quality, row counts, and lineage." tone="loading" />
         ) : registrationUnavailable ? (
           <StatePanel title={`${label} dataset registration unavailable`} message="Refresh Fabric health to retry the layer and capability sources. Missing registration evidence is not an empty layer." tone="error" />
-        ) : rows.length === 0 ? (
+        ) : rows.length === 0 && failures.length > 0 ? null : rows.length === 0 ? (
           <StatePanel title={`No ${label} datasets registered`} message="No datasets are registered for this layer in the current scope." />
         ) : (
           <>
@@ -252,6 +266,7 @@ function FabricLayerSection({
                     </div>
                   </dl>
                   <FabricFreshnessBudget budget={dataset.freshness_budget} />
+                  <FabricRecordedEvidence tableName={dataset.table_name} evidence={dataset.recorded_evidence} />
                   <button type="button" className="button" aria-expanded={selectedContract === dataset.table_name}
                     aria-controls={`${layer}-dataset-contract`} onClick={event => {
                       contractTrigger.current = event.currentTarget;
@@ -451,11 +466,36 @@ function FabricReadinessPanel({ capabilities }: { capabilities: { data: Envelope
   }
   const coverage = fabricCoverage(data);
   return (
+    <>
     <section className="metric-grid">
       <MetricCard label="Semantic model" value={datasetStatusLabel(data.semantic_readiness.status)} detail={semanticReadinessCopy(data.semantic_readiness)} tone={readinessTone(data.semantic_readiness.status)} size="text" />
       <MetricCard label="Data Agent grounding" value={datasetStatusLabel(data.data_agent_readiness.status)} detail={`${data.data_agent_readiness.configured ? "Gold grounding is configured" : "Gold grounding is not configured"}; configuration alone does not prove evaluation or query success.`} tone={readinessTone(data.data_agent_readiness.status)} size="text" />
       <MetricCard label="Recorded capability signals" value="Independent statuses" detail={Object.entries(coverage).map(([key, value]) => `${key}: ${datasetStatusLabel(value)}`).join(" · ")} tone="default" size="text" />
     </section>
+    <section className="card" aria-label="Independent Fabric readiness evidence">
+      <div className="card-header"><div><h2>Independent readiness stages</h2><p>Dataset publication, native ontology, and semantic validation, publication, and query qualification require separate recorded evidence.</p></div></div>
+      <div className="card-body">
+        {!data.readiness_evidence ? (
+          <StatePanel title="Readiness stage evidence unavailable" message="This response does not supply independent stage receipts. Existing capability status is not stage verification." />
+        ) : (
+          <dl>
+            {[
+              { label: "Scoped projection publication", stage: data.readiness_evidence.projection_publication },
+              { label: "Native ontology", stage: data.readiness_evidence.native_ontology },
+              { label: "Semantic definition validation", stage: data.readiness_evidence.semantic_model.definition_validation },
+              { label: "Semantic model publication", stage: data.readiness_evidence.semantic_model.publication },
+              { label: "Semantic query qualification", stage: data.readiness_evidence.semantic_model.query_qualification },
+            ].map(({ label, stage }) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{datasetStatusLabel(stage.status)} · {stage.evidence_mode === "not_recorded" ? "Not recorded" : "Unsupported receipt mode"} · {stage.reason_code}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+      </div>
+    </section>
+    </>
   );
 }
 
@@ -474,17 +514,24 @@ function FabricCapabilityCallouts({ capabilities, error }: { capabilities?: Fabr
   );
 }
 
-async function loadLayerDatasets(tableNames: string[], scope: ScopeSelection): Promise<FabricDataset[]> {
-  if (tableNames.length === 0) return [];
+async function loadLayerDatasets(tableNames: string[], scope: ScopeSelection): Promise<{
+  datasets: FabricDataset[];
+  failures: { tableName: string; message: string }[];
+}> {
   const results = await Promise.allSettled(tableNames.map((tableName) => fabricMedallionApi.dataset(tableName, scope)));
   const datasets: FabricDataset[] = [];
-  for (const result of results) {
+  const failures: { tableName: string; message: string }[] = [];
+  results.forEach((result, index) => {
     if (result.status === "rejected") {
-      throw result.reason instanceof Error ? result.reason : new Error(String(result.reason));
+      failures.push({
+        tableName: tableNames[index],
+        message: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    } else {
+      datasets.push(result.value.data);
     }
-    datasets.push(result.value.data);
-  }
-  return datasets;
+  });
+  return { datasets, failures };
 }
 
 export function tableNamesByLayer(

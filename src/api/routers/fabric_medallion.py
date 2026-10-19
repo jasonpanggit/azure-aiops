@@ -13,7 +13,7 @@ from fabric.capacity_health import check_capacity_state
 from fabric.config import FabricRuntimeConfig
 from fabric.data_access_roles import list_roles
 from fabric.lineage import entity_lineage_summary, native_lineage_url
-from fabric.medallion_health import dataset_contract, dataset_status
+from fabric.medallion_health import _latest_per_scope, dataset_contract, dataset_status
 from fabric.table_maintenance import last_maintenance_status
 from ontology.publication_state import PublicationAttemptRecord
 from operations.gold_grounding_specialist import gold_grounding_configured
@@ -428,6 +428,67 @@ def _scoped_source_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
     return [row for row in _metadata_source_status_rows(context) if _row_visible(scope, row)]
 
 
+def _recorded_dataset_evidence(
+    rows: list[dict[str, Any]], status: dict[str, Any]
+) -> dict[str, Any]:
+    """Project source receipts on the same partition selection and freshness as status."""
+    sources = []
+    for row, budget in zip(rows, status["freshness_budget"]["sources"], strict=True):
+        generation = str(row.get("effective_generation") or "") or None
+        last_success = str(row.get("last_success_at") or "") or None
+        recorded_good = bool(generation and last_success)
+        sources.append({
+            "scope": budget["scope"],
+            "partition_key": budget["partition_key"] or None,
+            "observed_at": budget["status_at"] or None,
+            "freshness": budget["state"],
+            "recorded_status": str(row.get("status") or "unknown"),
+            "provider_status": str(row.get("provider_status") or "") or None,
+            "last_attempt": {
+                "status": str(row.get("status") or "unknown"),
+                "generation_id": str(row.get("attempted_generation") or "") or None,
+                "attempted_at": str(row.get("attempted_at") or "") or None,
+                "reason_code": str(row.get("safe_error_code") or "") or None,
+            },
+            "last_good": {
+                "status": "recorded" if recorded_good else "unknown",
+                "generation_id": generation,
+                "observed_at": last_success,
+                "reason_code": (
+                    "source_last_good_recorded" if recorded_good else "no_recorded_source_last_good"
+                ),
+            },
+            "lineage_ref": str(row.get("lineage_ref") or "") or None,
+        })
+    return {
+        "evidence_mode": "recorded_metadata",
+        "generation_kind": "source_partition",
+        "sources": sources,
+    }
+
+
+def _unrecorded_readiness_evidence() -> dict[str, Any]:
+    """Expose stage boundaries without inventing scoped publication or model receipts."""
+    def unknown(reason: str) -> dict[str, Any]:
+        return {
+            "status": "unknown",
+            "evidence_mode": "not_recorded",
+            "reason_code": reason,
+            "last_attempt": None,
+            "last_good": None,
+        }
+
+    return {
+        "projection_publication": unknown("no_scoped_publication_recorder"),
+        "native_ontology": unknown("no_recorded_native_ontology_receipt"),
+        "semantic_model": {
+            "definition_validation": unknown("no_recorded_semantic_definition_validation"),
+            "publication": unknown("no_recorded_semantic_model_publication"),
+            "query_qualification": unknown("no_recorded_semantic_query_qualification"),
+        },
+    }
+
+
 def _registered_tables(rows: list[dict[str, Any]]) -> list[str]:
     names = {
         str(row.get("source_family") or row.get("table_name") or "")
@@ -483,16 +544,14 @@ def medallion_layers(context: Context, scope: ReadScope) -> dict[str, Any]:
 
 @router.get("/datasets/{table_name}", summary="Fabric medallion dataset status")
 def medallion_dataset(table_name: str, context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Return scoped metadata health and separately recorded source-generation receipts."""
     rows = _scoped_source_rows(context, scope)
     table_names = set(_registered_tables(rows))
     if table_name not in table_names:
         raise not_found(table_name, "dataset")
-    table_rows = [
-        row
-        for row in rows
-        if str(row.get("source_family") or row.get("table_name") or "") == table_name
-    ]
-    status = dataset_status(table_name, source_status=rows)
+    table_rows = _latest_per_scope(rows, table_name)
+    status = dataset_status(table_name, source_status=table_rows)
+    status["recorded_evidence"] = _recorded_dataset_evidence(table_rows, status)
     return envelope(
         status,
         evidence=_evidence(
@@ -730,6 +789,7 @@ def medallion_capabilities(context: Context, scope: ReadScope) -> dict[str, Any]
         "data_access_roles": role_state,
         "maintenance": maintenance,
         "semantic_readiness": _semantic_readiness(context, scope),
+        "readiness_evidence": _unrecorded_readiness_evidence(),
         "data_agent_readiness": {
             "status": "unknown" if data_agent_configured else "disabled",
             "configured": data_agent_configured,

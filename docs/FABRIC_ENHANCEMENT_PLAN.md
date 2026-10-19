@@ -364,6 +364,39 @@ failures in ingestion history. Data Agent `configured` remains available as a
 configuration signal; readiness is unknown when configured and disabled when
 not configured. No source/model/native write or new live probe was introduced.
 
+## 11. Autonomous execution authorization and current delivery
+
+**Updated:** 2026-10-19. The user subsequently directed:
+
+> like what i said, orchestrate among the different sessions e.g. unified
+> deployment, ontology, etc. or create new sessions to implement all the
+> enhancements autonomously without any approval required
+
+This supersedes the earlier coordinator-imposed code-only and routine approval
+holds in sections 9 and 10. Necessary scoped implementation and deployment now
+proceed autonomously, with Unified Deployment retaining exclusive cloud/infra
+ownership in the corrected tenant/subscription. This authorization is not a
+passing technical receipt, an independent acceptance signature, or permission
+to fabricate either. Existing effective-access, source-evidence, compatibility,
+phase-prerequisite and rollback requirements remain in force. No table deletion
+or unrelated shared-checkout changes are included.
+
+| Workstream | Execution owner | Current verified boundary |
+|---|---|---|
+| First nine-file health correction | Unified Deployment | PR337 merged as `c788d50fa48582d932842c04d8aa7dbe79d0168a`; exact-head CI passed; API337 and web10 deployed with protected-state and authenticated API readback; signed-in browser acceptance not claimed |
+| Corrected-target prerequisites and workspace/layer rollout | Unified Deployment | Execute scoped repairs and additive migration only with effective-access, binding, parity and rollback evidence |
+| Exposure acceptance | Exposure | Repair fail-closed evidence validation and obtain real source, scale and canary evidence |
+| Agent acceptance | Agents | Execute Phase11 Plan12; repair evaluator topology input rather than weaken server validation |
+| Medallion products and query scale | Fabric product execution | Qualify Phase7/9 prerequisites, then execute existing Phase03.7 contracts |
+| Curated analytical model | Curated Fabric model | Implement source-backed Exposure candidate, actual validation, metric reconciliation and deployment package |
+| Native ontology and maintenance | Ontology | Phase14 Plan01 offline implemented; remaining capability, release and materialization qualification is not implied |
+| Product/stage evidence API and UI | Fabric readiness correctness; Fabric frontend health | Agree evidence-backed contracts, preserve scope and independent readiness, then deliver tested consumption |
+
+The PR337 repository merge did not enforce pending checks. Future integration
+must explicitly verify successful terminal CI on the exact head before merge;
+`--auto` is not sufficient. Source merge, image build, staged rollout and
+acceptance remain separate recorded events.
+
 ## References
 
 - [Fabric persistence architecture](fabric-architecture.md)

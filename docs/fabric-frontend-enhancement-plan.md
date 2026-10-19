@@ -90,9 +90,12 @@ deployment success/failure; its existing `{status, reason}` contract is sufficie
 Use independently recoverable sections: a governance failure must not blank valid
 dataset evidence, and a capability failure must not turn missing registration into
 an empty layer. Continue to use the layer endpoint's table registration as fallback.
-Within-layer per-dataset partial recovery is a future small change: today's
-all-settled loader still reports a layer unavailable if any dataset read fails.
-Do not expand this correction into a new global request/cache framework.
+Within-layer per-dataset partial recovery is delivered in the next additive
+frontend wave: successful dataset cards remain inspectable when another dataset
+read fails. Failed table names and errors remain explicit, with loaded/registered
+counts and refresh guidance. If all reads fail the layer is unavailable, not
+empty. Independent layer-summary counts are not recomputed from successful
+requests. No new global request/cache framework or backend contract is required.
 
 Copilot remains read-only and grounded in the displayed effective scope and loaded
 envelopes. The shared reads remove duplicate section traffic and page/panel drift,
@@ -125,7 +128,37 @@ mixed generations, incomplete lineage, disabled features, unauthorized scope and
 one failed source among healthy peers. Native/model/query acceptance additionally
 requires approved live evidence; mocked UI fixtures cannot close those gates.
 
-Frontend-only implementation requires no new endpoint fields. The companion backend
+The first frontend wave required no new endpoint fields. The companion backend
 readiness correction is needed for truthful semantic status; this frontend does not
 independently verify a model or Data Agent. No cloud mutation, deployment, commit,
 push or pull request is part of this worktree handoff.
+
+## Next additive wave: recorded source evidence
+
+The product/backend owners verified that no scoped serving-product or model receipt
+recorder exists at this baseline. This wave therefore does not implement product
+generation cards or inferred model qualification. The agreed additive contracts are:
+
+- `/fabric-medallion/datasets/{table}` optionally supplies `recorded_evidence` with
+  `evidence_mode=recorded_metadata`, `generation_kind=source_partition`, and scoped
+  source records. Each has recorded/provider status, metadata observation/freshness,
+  partition identity, last attempted generation/time/safe reason code, distinct
+  last-good retention generation/time/reason, and a recorded lineage reference.
+- `/fabric-medallion/capabilities` optionally supplies `readiness_evidence` for scoped
+  projection publication, native ontology, semantic definition validation, semantic
+  publication and semantic query qualification. Every current stage is explicitly
+  unknown/not-recorded, with no attempt or last-good receipt; compatibility
+  capabilities do not override that missing proof.
+
+Dataset cards expose paginated source-partition evidence through keyboard-accessible
+native disclosure controls, using the already loaded, scoped dataset response.
+Generations remain per partition, never aggregated into a product pointer. Null
+last-good evidence remains unknown, never borrowed from a newer failed attempt.
+Lineage references remain text, not arbitrary navigation URLs or a claimed DAG.
+Legacy responses render missing receipt evidence explicitly. No browser credentials,
+publication actions, cloud probes, or gate changes are introduced.
+
+Copilot continues to cite the existing page section envelopes and readiness fields.
+These source-partition details are not silently promoted into serving-product
+evidence or appended to its closed snapshot contract; that would require a separate
+coordinated adapter change and generation-binding evidence.

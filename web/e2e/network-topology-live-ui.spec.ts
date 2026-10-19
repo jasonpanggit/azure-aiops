@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { Core } from "cytoscape";
 
 const SUBSCRIPTION = "00000000-0000-0000-0000-000000000001";
 const HUB =
@@ -323,6 +324,16 @@ test.describe("Phase 12 network topology live-review acceptance", () => {
       failedRequests.push(`${request.method()} ${request.url()}`);
     });
     await mockNetworkApis(page);
+    await page.route("**/api/v1/copilot/investigate-context*", (route) =>
+      route.fulfill({
+        status: 503,
+        json: {
+          error: {
+            code: "provider_unavailable",
+            message: "Automatic narration is unavailable during this controlled replay.",
+          },
+        },
+      }));
     await page.route("**/api/v1/copilot/investigations*", async (route) => {
       const request = route.request().postDataJSON() as Record<string, unknown>;
       copilotRequests.push(request);
@@ -389,14 +400,35 @@ test.describe("Phase 12 network topology live-review acceptance", () => {
     });
 
     await page.goto("/network");
+    await page.getByRole("tab", { name: "Topology", exact: true }).click();
+    const canvas = page.locator(".topology-canvas");
+    await expect(canvas).toBeVisible();
+    await canvas.scrollIntoViewIfNeeded();
+    await expect.poll(() => canvas.evaluate((element, id) => {
+      const registry = (element as HTMLElement & { _cyreg?: { cy?: Core } })._cyreg;
+      return registry?.cy?.nodes().filter((node) =>
+        node.id().toLowerCase() === id.toLowerCase()).length ?? 0;
+    }, HUB)).toBe(1);
+    const hubPosition = await canvas.evaluate((element, id) => {
+      const registry = (element as HTMLElement & { _cyreg?: { cy?: Core } })._cyreg;
+      const node = registry?.cy?.nodes().filter((candidate) =>
+        candidate.id().toLowerCase() === id.toLowerCase());
+      if (!node?.length) throw new Error("Expected the visible hub node");
+      return node.renderedPosition();
+    }, HUB);
+    await canvas.click({ position: hubPosition });
+    await expect(page.getByRole("dialog", { name: "Topology element details" })
+      .getByRole("heading", { name: "demo-vnet", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Ask Copilot about network paths" }).click();
     const drawer = page.getByRole("dialog", { name: "Operations Copilot" });
     await expect(drawer).toBeVisible();
-    await drawer.getByRole("button", { name: "What depends on demo-vnet?" }).click();
+    await drawer.getByRole("textbox").fill("What depends on demo-vnet?");
+    await drawer.getByRole("button", { name: "Send" }).click();
 
     await expect(
       drawer.getByText("demo-vnet has one direct dependent: app-vnet."),
     ).toBeVisible();
+    await drawer.getByRole("button", { name: "Citations (1)", exact: true }).click();
     await expect(
       drawer.getByText("network:hub:demo-vnet", { exact: true }),
     ).toBeVisible();
@@ -408,13 +440,13 @@ test.describe("Phase 12 network topology live-review acceptance", () => {
     await expect.poll(() => copilotRequests.length).toBe(1);
     expect(copilotRequests[0]).toMatchObject({
       question: "What depends on demo-vnet?",
-      snapshot: { page_kind: "network", page_id: "network-topology" },
-      hint: {
-        specialist_id: "network",
-        tool: "hub_dependents",
-        arguments: { vnet_id: HUB.toLowerCase() },
+      snapshot: {
+        page_kind: "network",
+        page_id: "network-topology",
+        selected_entities: [{ type: "azure", resource_id: HUB.toLowerCase() }],
       },
     });
+    expect(copilotRequests[0]).not.toHaveProperty("hint");
 
     await drawer.getByRole("textbox").fill("What depends on unselected-vnet?");
     await drawer.getByRole("button", { name: "Send" }).click();
@@ -440,7 +472,7 @@ test.describe("Phase 12 network topology live-review acceptance", () => {
     });
     await mockNetworkApis(page);
     await page.goto("/network");
-    await page.getByRole("tab", { name: "Topology" }).click();
+    await page.getByRole("tab", { name: "Topology", exact: true }).click();
 
     await expect(
       page.getByText(
@@ -468,7 +500,7 @@ test.describe("Phase 12 network topology live-review acceptance", () => {
   }) => {
     await mockNetworkApis(page, { slowFullDetail: true });
     await page.goto("/network");
-    await page.getByRole("tab", { name: "Topology" }).click();
+    await page.getByRole("tab", { name: "Topology", exact: true }).click();
     await expect(page.getByText("Rendering 2 of 14 nodes at summary detail.")).toBeVisible();
 
     await page.getByRole("button", { name: "Full detail" }).click();
@@ -493,7 +525,7 @@ test.describe("Phase 12 network topology live-review acceptance", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await mockNetworkApis(page);
     await page.goto("/network");
-    await page.getByRole("tab", { name: "Topology" }).click();
+    await page.getByRole("tab", { name: "Topology", exact: true }).click();
     await expect.poll(() => canvasHasInk(page)).toBe(true);
 
     await page.setViewportSize({ width: 390, height: 844 });

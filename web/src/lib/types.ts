@@ -1421,6 +1421,33 @@ export interface FabricFreshnessBudget {
   }>;
 }
 
+/** Recorded source retention only; these generations do not identify a serving product. */
+export interface FabricRecordedEvidence {
+  evidence_mode: "recorded_metadata";
+  generation_kind: "source_partition";
+  sources: Array<{
+    scope: Record<string, string[]>;
+    partition_key: string | null;
+    observed_at: string | null;
+    freshness: "fresh" | "stale" | "unknown";
+    recorded_status: string;
+    provider_status: string | null;
+    last_attempt: {
+      status: string;
+      generation_id: string | null;
+      attempted_at: string | null;
+      reason_code: string | null;
+    };
+    last_good: {
+      status: "recorded" | "unknown";
+      generation_id: string | null;
+      observed_at: string | null;
+      reason_code: string;
+    };
+    lineage_ref: string | null;
+  }>;
+}
+
 export interface FabricDataset {
   table_name: string;
   availability: string;
@@ -1434,6 +1461,7 @@ export interface FabricDataset {
   error: string;
   lineage_ref: string;
   freshness_budget?: FabricFreshnessBudget;
+  recorded_evidence?: FabricRecordedEvidence;
 }
 
 /** Registry declarations and scoped metadata references, not verified deployed schema or dataset edges. */
@@ -1524,12 +1552,30 @@ export interface FabricLineageSummary {
   lineage: Record<string, unknown>;
 }
 
+/** No durable stage recorder exists in this contract; no receipt is implied. */
+export interface FabricUnrecordedStage {
+  status: "unknown";
+  evidence_mode: "not_recorded";
+  reason_code: string;
+  last_attempt: null;
+  last_good: null;
+}
+
 export interface FabricCapabilities {
   capacity: FabricCapacityStatus;
   data_access_roles: FabricRoleSummary;
   maintenance: FabricMaintenanceStatus;
   semantic_readiness: { status: string; reason?: string };
   data_agent_readiness: { status: string; configured: boolean };
+  readiness_evidence?: {
+    projection_publication: FabricUnrecordedStage;
+    native_ontology: FabricUnrecordedStage;
+    semantic_model: {
+      definition_validation: FabricUnrecordedStage;
+      publication: FabricUnrecordedStage;
+      query_qualification: FabricUnrecordedStage;
+    };
+  };
   lineage: {
     native_lineage_url: string;
     datasets: FabricLineageSummary[];

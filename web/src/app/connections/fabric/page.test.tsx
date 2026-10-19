@@ -340,6 +340,43 @@ describe("Per-subscription Fabric medallion page", () => {
     expect(within(screen.getByRole("region", { name: "Fabric section evidence" })).getByText("Request failed · Freshness: Unknown")).toBeInTheDocument();
   });
 
+  it("retains successful datasets within a partially failed layer and recovers on refresh", async () => {
+    searchParams.current = new URLSearchParams({ subscription: connections[0].subscription_id });
+    fabricCapabilities.mockResolvedValue(envelope({
+      ...capabilitySnapshot,
+      lineage: { native_lineage_url: "", datasets: [{ table_name: "bronze_resources" }, { table_name: "bronze_alerts" }] },
+    }));
+    fabricDataset.mockImplementation((tableName: string) => tableName === "bronze_alerts"
+      ? Promise.reject(new Error("Recorded alerts read failure"))
+      : Promise.resolve(envelope({ table_name: tableName, availability: "healthy", row_count: 5, freshness: "fresh" })));
+    renderPage();
+    const failure = await screen.findByRole("status", { name: "Bronze dataset read failures" });
+    expect(within(failure).getByText("Bronze layer health is partial")).toBeInTheDocument();
+    expect(within(failure).getByText(/1 of 2 registered dataset responses available/)).toBeInTheDocument();
+    expect(within(failure).getByText(/Recorded alerts read failure/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Inspect contract and diagnostics for bronze_resources" })).toBeInTheDocument();
+    expect(screen.queryByText("No Bronze datasets registered")).not.toBeInTheDocument();
+    expect(fabricDataset).toHaveBeenCalledWith("bronze_alerts", { subscription: [connections[0].subscription_id] });
+
+    fabricDataset.mockImplementation((tableName: string) => Promise.resolve(envelope({
+      table_name: tableName, availability: "healthy", row_count: 5, freshness: "fresh",
+    })));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Fabric health" }));
+    expect(await screen.findByRole("button", { name: "Inspect contract and diagnostics for bronze_alerts" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Bronze dataset read failures" })).not.toBeInTheDocument();
+  });
+
+  it("keeps every dataset failure visible without reporting an empty registered layer", async () => {
+    fabricDataset.mockRejectedValue(new Error("Recorded dataset failure"));
+    renderPage();
+    const failure = await screen.findByRole("status", { name: "Bronze dataset read failures" });
+    expect(within(failure).getByText("Bronze layer health is unavailable")).toBeInTheDocument();
+    expect(within(failure).getByText(/0 of 1 registered dataset responses available/)).toBeInTheDocument();
+    expect(within(failure).getByText("bronze_resources")).toBeInTheDocument();
+    expect(screen.queryByText("No Bronze datasets registered")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Inspect contract and diagnostics for bronze_resources/ })).not.toBeInTheDocument();
+  });
+
   it.each([
     ["unknown", "metric-default"],
     ["disabled", "metric-default"],
@@ -376,6 +413,37 @@ describe("Per-subscription Fabric medallion page", () => {
     expect(await screen.findByText("Semantic model deployment blocked — capacity_paused")).toBeInTheDocument();
     expect(await screen.findByText("No ingestion attempts reported")).toBeInTheDocument();
     expect(screen.queryByText(/All ingestion runs succeeded|definition validated/)).not.toBeInTheDocument();
+  });
+
+  it("renders separately unrecorded readiness stages without promoting configuration to proof", async () => {
+    const stage = (reason_code: string) => ({
+      status: "unknown", evidence_mode: "not_recorded", reason_code, last_attempt: null, last_good: null,
+    });
+    fabricCapabilities.mockResolvedValue(envelope({
+      ...capabilitySnapshot,
+      readiness_evidence: {
+        projection_publication: stage("no_scoped_publication_recorder"),
+        native_ontology: stage("no_recorded_native_ontology_receipt"),
+        semantic_model: {
+          definition_validation: stage("no_recorded_semantic_definition_validation"),
+          publication: stage("no_recorded_semantic_model_publication"),
+          query_qualification: stage("no_recorded_semantic_query_qualification"),
+        },
+      },
+    }));
+    renderPage();
+    const region = await screen.findByRole("region", { name: "Independent Fabric readiness evidence" });
+    await waitFor(() => expect(within(region).getByText("Unknown · Not recorded · no_recorded_semantic_query_qualification")).toBeInTheDocument());
+    expect(within(region).getByText("Unknown · Not recorded · no_recorded_native_ontology_receipt")).toBeInTheDocument();
+    expect(within(region).getAllByText(/Unknown · Not recorded/)).toHaveLength(5);
+    expect(within(region).queryByText(/Succeeded|Ready|Available/)).not.toBeInTheDocument();
+  });
+
+  it("keeps legacy capability responses explicitly without independent stage evidence", async () => {
+    renderPage();
+    expect(await screen.findByText("Readiness stage evidence unavailable")).toBeInTheDocument();
+    fireEvent.click(await screen.findByText("Inspect recorded source evidence for bronze_resources"));
+    expect(screen.getByText("Recorded source evidence unavailable")).toBeVisible();
   });
 
   it("preserves standalone tab embedding and its independent scoped reads", async () => {

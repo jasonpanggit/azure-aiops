@@ -259,10 +259,13 @@ def test_container_apps_wires_only_non_secret_rollout_controls() -> None:
     ):
         assert f'name  = "{name}"' in container_apps
     assert 'variable "exposure_rollout_authorized"' in variables
-    assert 'default     = false' in variables
-    assert "secret_name" not in container_apps.split(
-        'name  = "AIOPS_EXPOSURE_ROLLOUT_AUTHORIZED"', 1
-    )[1].split("}", 1)[0]
+    assert "default     = false" in variables
+    assert (
+        "secret_name"
+        not in container_apps.split('name  = "AIOPS_EXPOSURE_ROLLOUT_AUTHORIZED"', 1)[
+            1
+        ].split("}", 1)[0]
+    )
 
 
 def test_rollout_code_preserves_remediation_lifecycle_guards() -> None:
@@ -284,15 +287,24 @@ def _complete_live_evidence() -> dict[str, object]:
             "commit": "abcdef12",
             "config_digest": "sha256:" + ("a" * 64),
             "generation_id": "generation-live",
+            "source_run_ids": {
+                "aum": "aum-run",
+                "defender_digest": "defender-run",
+                "container_insights": "workload-run",
+                "publication": "publication-run",
+                "benchmark": "benchmark-run",
+            },
         },
         "sources": {
-            "aum": {"status": "pass"},
+            "aum": {"status": "pass", "source_run_id": "aum-run"},
             "defender_digest": {
                 "status": "pass",
+                "source_run_id": "defender-run",
                 "evidence_kind": "exact_digest",
             },
             "container_insights": {
                 "status": "pass",
+                "source_run_id": "workload-run",
                 "supported": True,
                 "deployment_match": "exact",
             },
@@ -305,10 +317,12 @@ def _complete_live_evidence() -> dict[str, object]:
         "persistence": {
             "status": "pass",
             "generation_id": "generation-live",
+            "source_run_id": "publication-run",
         },
         "ontology": {
             "status": "pass",
             "generation_id": "generation-live",
+            "source_run_id": "publication-run",
         },
         "scope_identity": {
             "status": "pass",
@@ -352,6 +366,7 @@ def _complete_live_evidence() -> dict[str, object]:
         },
         "benchmark": {
             "status": "pass",
+            "source_run_id": "benchmark-run",
             "adapter": {
                 "adapter_id": "fabric_sql",
                 "production_slo_evidence": True,
@@ -366,8 +381,20 @@ def _complete_live_evidence() -> dict[str, object]:
                 },
             },
             "full_walk": {
+                "returned_count": 100_000,
+                "unique_count": 100_000,
                 "duplicate_count": 0,
                 "omission_count": 0,
+            },
+            "query_contract": {"page_size": 50},
+            "timings": {
+                "server_cold_warm_count_page": {"p95_ms": 100},
+                "container_image_cold_warm_count_page": {"p95_ms": 150},
+            },
+            "work": {
+                "max_rows_fetched_per_query": 51,
+                "full_table_materializations": 0,
+                "delta_fallbacks": 0,
             },
             "slo": {
                 "target_p95_ms": 2_000,
@@ -378,12 +405,60 @@ def _complete_live_evidence() -> dict[str, object]:
         "phase4": {
             "status": "pass",
             "digest_to_workload": {
+                "generation_id": "generation-live",
+                "silver_workload_deployments": 1,
+                "digest_to_deployment_edges": 1,
+                "deployment_to_application_edges": 1,
                 "evidence_kind": "exact_digest",
                 "source": "container_insights",
                 "supported": True,
                 "round_trip": True,
                 "represented": 1,
                 "total": 1,
+                "unknown": 0,
+                "excluded": 0,
+            },
+        },
+        "rollout": {
+            "status": "pass",
+            "generation_id": "generation-live",
+            "candidate_generation_id": "generation-live",
+            "prior_generation_id": "generation-prior",
+            "canary": {
+                "status": "pass",
+                "observed": True,
+                "active_reader_generation_id": "generation-live",
+                "observed_at": "2026-10-19T10:00:00Z",
+                "evidence_ref": "sha256:" + "c" * 64,
+            },
+            "rollback": {
+                "status": "pass",
+                "observed": True,
+                "from_generation_id": "generation-live",
+                "active_reader_generation_id": "generation-prior",
+                "observed_at": "2026-10-19T10:01:00Z",
+                "evidence_ref": "sha256:" + "d" * 64,
+                "preserve_evidence": True,
+                "destructive_actions": [],
+                "post_rollback_health": "pass",
+            },
+        },
+        "operator_checkpoint": {
+            "status": "approved",
+            "operator_authorized": True,
+            "authenticated": True,
+            "generation_id": "generation-live",
+            "observed_at": "2026-10-19T10:02:00Z",
+            "evidence_ref": "sha256:" + "e" * 64,
+            "checklist": {
+                "authenticated_overview": "pass",
+                "defender_and_container_evidence": "pass",
+                "cve_kb_detail": "pass",
+                "source_completeness_and_freshness": "pass",
+                "exact_workload_traversal": "pass",
+                "governed_review_only_container_handoff": "pass",
+                "generation_and_aggregate_match": "pass",
+                "secret_and_raw_payload_absence": "pass",
             },
         },
     }
@@ -411,10 +486,7 @@ def test_alerts_can_reuse_existing_action_group_without_email_receivers() -> Non
     assert 'variable "existing_alert_action_group_id"' in variables
     assert "local.alerting_enabled" in alerting
     assert "local.alert_action_group_id" in alerting
-    assert (
-        'count               = local.create_alert_action_group ? 1 : 0'
-        in alerting
-    )
+    assert "count               = local.create_alert_action_group ? 1 : 0" in alerting
     assert alerting.count("local.alerting_enabled ? 1 : 0") == 11
     assert alerting.count("skip_query_validation = true") == 8
     assert "[local.alert_action_group_id]" in alerting
@@ -443,8 +515,7 @@ def test_api_image_contains_live_validator_and_benchmark() -> None:
         "/app/scripts/benchmark_exposure_read_model.py"
     ) in dockerfile
     assert (
-        "COPY scripts/validate_exposure_live.py "
-        "/app/scripts/validate_exposure_live.py"
+        "COPY scripts/validate_exposure_live.py /app/scripts/validate_exposure_live.py"
     ) in dockerfile
     assert "msodbcsql18 libgssapi-krb5-2" in dockerfile
 
@@ -470,6 +541,7 @@ def test_typed_unknown_digest_to_workload_evidence_blocks_phase4() -> None:
     phase4 = dict(evidence["phase4"])
     phase4["status"] = "blocked"
     phase4["digest_to_workload"] = {
+        **phase4["digest_to_workload"],
         "evidence_kind": "typed_unknown",
         "source": "container_insights",
         "supported": True,
@@ -502,3 +574,285 @@ def test_live_validator_rejects_secret_or_raw_payload_fields(
 
     with pytest.raises(ValueError, match="unsafe evidence field"):
         evaluate_live_evidence(evidence)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "reason"),
+    [
+        ("binding.source_run_ids", {}, "source_run_binding_missing_or_mismatched"),
+        ("binding.source_run_ids.aum", " ", "source_run_binding_missing_or_mismatched"),
+        (
+            "sources.defender_digest.source_run_id",
+            "old-run",
+            "source_run_binding_missing_or_mismatched",
+        ),
+        ("persistence.source_run_id", None, "source_run_binding_missing_or_mismatched"),
+        (
+            "ontology.source_run_id",
+            "old-run",
+            "source_run_binding_missing_or_mismatched",
+        ),
+        (
+            "benchmark.source_run_id",
+            "old-run",
+            "source_run_binding_missing_or_mismatched",
+        ),
+        (
+            "phase4.digest_to_workload.generation_id",
+            "old-generation",
+            "generation_binding_mismatch",
+        ),
+        (
+            "benchmark.dataset.generation_id",
+            "old-generation",
+            "generation_binding_mismatch",
+        ),
+        (
+            "rollout.generation_id",
+            "old-generation",
+            "canary_rollback_transition_unproven",
+        ),
+        (
+            "phase4.digest_to_workload.silver_workload_deployments",
+            0,
+            "exact_supported_defender_digest_to_container_insights_workload_round_trip",
+        ),
+        (
+            "phase4.digest_to_workload.digest_to_deployment_edges",
+            None,
+            "exact_supported_defender_digest_to_container_insights_workload_round_trip",
+        ),
+        (
+            "phase4.digest_to_workload.deployment_to_application_edges",
+            True,
+            "exact_supported_defender_digest_to_container_insights_workload_round_trip",
+        ),
+        (
+            "phase4.digest_to_workload.unknown",
+            -1,
+            "exact_supported_defender_digest_to_container_insights_workload_round_trip",
+        ),
+        (
+            "phase4.digest_to_workload.excluded",
+            None,
+            "exact_supported_defender_digest_to_container_insights_workload_round_trip",
+        ),
+        (
+            "phase4.digest_to_workload.total",
+            2,
+            "exact_supported_defender_digest_to_container_insights_workload_round_trip",
+        ),
+        (
+            "phase4.digest_to_workload.represented",
+            "1",
+            "exact_supported_defender_digest_to_container_insights_workload_round_trip",
+        ),
+        ("benchmark.dataset.row_count", 100_001, "qualified_100k_benchmark_failed"),
+        (
+            "benchmark.dataset.target_kind_counts.server",
+            79_999,
+            "qualified_100k_benchmark_failed",
+        ),
+        (
+            "benchmark.full_walk.returned_count",
+            99_999,
+            "qualified_100k_benchmark_failed",
+        ),
+        ("benchmark.full_walk.unique_count", None, "qualified_100k_benchmark_failed"),
+        (
+            "benchmark.full_walk.duplicate_count",
+            False,
+            "qualified_100k_benchmark_failed",
+        ),
+        (
+            "benchmark.timings.server_cold_warm_count_page.p95_ms",
+            2_000,
+            "qualified_100k_benchmark_failed",
+        ),
+        (
+            "benchmark.timings.container_image_cold_warm_count_page.p95_ms",
+            float("nan"),
+            "qualified_100k_benchmark_failed",
+        ),
+        ("benchmark.timings", {}, "qualified_100k_benchmark_failed"),
+        ("benchmark.query_contract.page_size", "50", "qualified_100k_benchmark_failed"),
+        (
+            "benchmark.work.max_rows_fetched_per_query",
+            52,
+            "qualified_100k_benchmark_failed",
+        ),
+        ("benchmark.work.delta_fallbacks", 1, "qualified_100k_benchmark_failed"),
+        (
+            "benchmark.work.full_table_materializations",
+            1,
+            "qualified_100k_benchmark_failed",
+        ),
+        ("rollout", {}, "canary_rollback_transition_unproven"),
+        (
+            "rollout.prior_generation_id",
+            "generation-live",
+            "canary_rollback_transition_unproven",
+        ),
+        ("rollout.canary.observed", False, "canary_rollback_transition_unproven"),
+        (
+            "rollout.canary.active_reader_generation_id",
+            "generation-prior",
+            "canary_rollback_transition_unproven",
+        ),
+        (
+            "rollout.rollback.active_reader_generation_id",
+            "generation-live",
+            "canary_rollback_transition_unproven",
+        ),
+        (
+            "rollout.rollback.from_generation_id",
+            "old-generation",
+            "canary_rollback_transition_unproven",
+        ),
+        (
+            "rollout.rollback.observed_at",
+            "2026-10-19T09:59:00Z",
+            "canary_rollback_transition_unproven",
+        ),
+        (
+            "rollout.rollback.observed_at",
+            "not-a-time",
+            "canary_rollback_transition_unproven",
+        ),
+        ("rollout.rollback.evidence_ref", "", "canary_rollback_transition_unproven"),
+        (
+            "rollout.rollback.destructive_actions",
+            ["delete_history"],
+            "canary_rollback_transition_unproven",
+        ),
+        (
+            "rollout.rollback.preserve_evidence",
+            False,
+            "canary_rollback_transition_unproven",
+        ),
+        (
+            "rollout.rollback.post_rollback_health",
+            "fail",
+            "canary_rollback_transition_unproven",
+        ),
+        ("operator_checkpoint", {}, "authenticated_operator_acceptance_missing"),
+        (
+            "operator_checkpoint.status",
+            "blocked",
+            "authenticated_operator_acceptance_missing",
+        ),
+        (
+            "operator_checkpoint.status",
+            "verification_unavailable",
+            "authenticated_operator_acceptance_missing",
+        ),
+        (
+            "operator_checkpoint.authenticated",
+            False,
+            "authenticated_operator_acceptance_missing",
+        ),
+        (
+            "operator_checkpoint.operator_authorized",
+            False,
+            "authenticated_operator_acceptance_missing",
+        ),
+        (
+            "operator_checkpoint.generation_id",
+            "old-generation",
+            "authenticated_operator_acceptance_missing",
+        ),
+        (
+            "operator_checkpoint.observed_at",
+            "2026-10-19T09:59:00Z",
+            "authenticated_operator_acceptance_missing",
+        ),
+        (
+            "operator_checkpoint.checklist.exact_workload_traversal",
+            "not_verified",
+            "authenticated_operator_acceptance_missing",
+        ),
+    ],
+)
+def test_acceptance_rejects_missing_mismatched_or_malformed_evidence(
+    path: str,
+    value: object,
+    reason: str,
+) -> None:
+    from scripts.validate_exposure_live import evaluate_live_evidence
+
+    evidence = _complete_live_evidence()
+    parent = evidence
+    parts = path.split(".")
+    for key in parts[:-1]:
+        child = parent[key]
+        assert isinstance(child, dict)
+        parent = child
+    parent[parts[-1]] = value
+
+    report = evaluate_live_evidence(evidence)
+
+    assert report["status"] == "blocked"
+    assert report["phase4_ready"] is False
+    assert reason in report["missing_evidence"]
+
+
+def test_automated_preflight_does_not_require_future_rollout_or_human_approval() -> (
+    None
+):
+    from scripts.validate_exposure_live import evaluate_live_evidence
+
+    evidence = _complete_live_evidence()
+    evidence.pop("rollout")
+    evidence.pop("operator_checkpoint")
+
+    report = evaluate_live_evidence(evidence)
+
+    assert report["automated_preflight_ready"] is True
+    assert report["operator_checkpoint_ready"] is False
+    assert report["phase4_ready"] is False
+    assert report["status"] == "blocked"
+
+
+def test_operator_checkpoint_preflight_requires_observed_rollout() -> None:
+    from scripts.validate_exposure_live import evaluate_live_evidence
+
+    evidence = _complete_live_evidence()
+    evidence.pop("operator_checkpoint")
+
+    report = evaluate_live_evidence(evidence)
+
+    assert report["operator_checkpoint_ready"] is True
+    assert report["phase4_ready"] is False
+
+
+def test_exact_traversal_retains_unknown_and_excluded_coverage() -> None:
+    from scripts.validate_exposure_live import evaluate_live_evidence
+
+    evidence = _complete_live_evidence()
+    traversal = evidence["phase4"]["digest_to_workload"]
+    traversal.update({"represented": 1, "unknown": 2, "excluded": 3, "total": 6})
+
+    report = evaluate_live_evidence(evidence)
+
+    assert report["status"] == "pass"
+
+
+def test_cli_requires_full_acceptance_even_when_automated_preflight_passes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    from scripts.validate_exposure_live import main
+
+    evidence = _complete_live_evidence()
+    evidence.pop("operator_checkpoint")
+    path = tmp_path / "synthetic-contract-evidence.json"
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    assert main(["--evidence", str(path), "--require-all", "--json"]) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["automated_preflight_ready"] is True
+    assert report["operator_checkpoint_ready"] is True
+    assert report["phase4_ready"] is False
+    assert report["missing_evidence"] == ["authenticated_operator_acceptance_missing"]

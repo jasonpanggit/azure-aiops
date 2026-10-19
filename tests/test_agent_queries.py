@@ -4,7 +4,11 @@ import json
 from datetime import UTC
 from pathlib import Path
 
+import pytest
+
+from api.scope import Scope
 from onboarding.agent_queries import ContextQueryService, _failed
+from onboarding.inventory_read_adapter import InventoryReadAdapter
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mock_arg_responses.json"
 
@@ -39,6 +43,83 @@ def test_success_error_envelope_is_not_a_patch_failure() -> None:
         "errorDetails": {"code": "Success", "message": "0 error/s reported", "details": []},
     }
     assert not _failed(assessment)
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected"),
+    [
+        ({"subscription": ["sub-a"]}, ["vm-a"]),
+        ({"environment": ["prod"]}, ["vm-a"]),
+        ({"owner": ["team-a"]}, ["vm-a"]),
+        ({"subscription_connection": ["connection-a"]}, ["vm-a"]),
+        ({"subscription": ["sub-missing"]}, []),
+        ({"business_service": ["unknown"]}, []),
+    ],
+)
+def test_legacy_identity_adapter_enforces_effective_scope(
+    tmp_path: Path, scope: dict[str, list[str]], expected: list[str]
+) -> None:
+    entity_dir = tmp_path / "current/entities"
+    entity_dir.mkdir(parents=True)
+    rows = [
+        {
+            "id": f"/subscriptions/sub-{suffix}/vm-{suffix}",
+            "name": f"vm-{suffix}",
+            "subscriptionId": f"sub-{suffix}",
+            "environment": environment,
+            "owner": f"team-{suffix}",
+            "connectionId": f"connection-{suffix}",
+        }
+        for suffix, environment in (("a", "prod"), ("b", "dev"))
+    ]
+    (entity_dir / "VirtualMachine.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+
+    result = ContextQueryService(
+        tmp_path, scope=Scope.from_mapping(scope)
+    ).answer("show me all vms")
+
+    assert [row["name"] for row in result["items"]] == expected
+
+
+def test_patch_failures_join_only_authorized_identity() -> None:
+    class ScopedPort:
+        def list_resources(self, scope, *, limit):
+            assert scope == Scope.from_mapping({"subscription": ["sub-a"]})
+            return {
+                "resources": [
+                    {
+                        "family": "os",
+                        "resource_id": "/subscriptions/sub-a/vm-a",
+                        "resource_name": "vm-a",
+                    }
+                ]
+            }
+
+    rows = [
+        {"id": "allowed", "targetResourceId": "/SUBSCRIPTIONS/SUB-A/VM-A", "status": "Failed"},
+        {"id": "denied", "targetResourceId": "/subscriptions/sub-b/vm-b", "status": "Failed"},
+        {"id": "unknown", "targetResourceId": "/subscriptions/sub-a/missing", "status": "Failed"},
+        {"id": "unbound", "status": "Failed"},
+        {"id": "succeeded", "targetResourceId": "/subscriptions/sub-a/vm-a", "status": "Succeeded"},
+    ]
+    service = ContextQueryService(
+        inventory_adapter=InventoryReadAdapter(ScopedPort()),
+        scope=Scope.from_mapping({"subscription": ["sub-a"]}),
+        patch_reader=lambda: rows,
+    )
+
+    result = service.answer("show patch failures")
+
+    assert [row["id"] for row in result["items"]] == ["allowed"]
+
+
+def test_legacy_identity_adapter_requires_effective_scope(tmp_path: Path) -> None:
+    adapter = InventoryReadAdapter(None, str(tmp_path), legacy=True)
+
+    with pytest.raises(TypeError, match="server-derived effective scope"):
+        adapter.resources(None)
 
 
 def test_unknown_zero_patch_assessment_is_not_non_compliant(tmp_path: Path) -> None:

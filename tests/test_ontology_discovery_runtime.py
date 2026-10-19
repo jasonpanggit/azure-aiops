@@ -527,6 +527,16 @@ def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
         _valid_ontology_entity("vm-a", "VirtualMachine"),
         _valid_ontology_entity("app-a", "Application"),
     ]
+    relationship = {
+        **_valid_ontology_entity("relationship-a", "Application"),
+        "subject_id": "app-a",
+        "subject_type": "Application",
+        "predicate": "hosted_on",
+        "object_id": "vm-a",
+        "object_type": "VirtualMachine",
+        "source": "resource_tag",
+        "confidence": 1.0,
+    }
 
     class FakeStore:
         is_remote = False
@@ -544,7 +554,7 @@ def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
         def load(self, *_args, **_kwargs):
             return {
                 "ontology_entities": entities,
-                "ontology_relationships": [],
+                "ontology_relationships": [relationship],
             }
 
     class FakeCurator:
@@ -553,7 +563,8 @@ def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
 
         async def propose(self, _run, _batch):
             return {
-                "status": "proposed",
+                "batch_id": _batch["batch_id"],
+                "status": "proposals",
                 "proposals": [
                     {
                         "subject_id": "vm-a",
@@ -561,10 +572,15 @@ def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
                         "predicate": "member_of",
                         "object_id": "app-a",
                         "object_type": "Application",
-                        "evidence_refs": ["opaque-missing-evidence"],
+                        "evidence_refs": [_batch["evidence_records"][0]["evidence_id"]],
+                        "observed_at": NOW.isoformat(),
+                        "rationale": "The cited inventory observation links the endpoints.",
                         "confidence": 0.99,
+                        "uncertainty": [],
+                        "disposition": "propose",
                     }
                 ],
+                "missing_evidence": [],
             }
 
         async def aclose(self):
@@ -591,7 +607,7 @@ def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
     assert run_store.list_evidence_batches(run_id=runs[0]["run_id"])
     registry_scope = "tenant-a:subscription-connection-a:connection-a"
     assert run_store.list_proposals(scope=registry_scope)
-    assert dispatches[0]["candidate"]["relationships"] == []
+    assert dispatches[0]["candidate"]["relationships"] == [relationship]
     assert dispatches[0]["candidate"]["decision_lineage"][0].endswith(
         ":shadow-excluded"
     )

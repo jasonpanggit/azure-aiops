@@ -13,6 +13,7 @@ from intelligence.vulnerability.acquisition import (
 )
 from storage.datasets import DatasetStore
 from storage.locking import RunLock
+from storage.renewing_run import renewing_run_lock
 
 from .fabric_publication import InventoryFabricPublisher
 from .models import SoftwareObservation
@@ -56,10 +57,10 @@ class InventoryPipeline:
         self.publisher = publisher or InventoryFabricPublisher(self.store)
 
     def refresh(self) -> InventoryRefreshResult:
-        with RunLock(self.config.output_dir):
-            return self._refresh_locked()
+        with renewing_run_lock(RunLock(self.config.output_dir)) as lock:
+            return self._refresh_locked(assert_lock_held=lock.assert_held)
 
-    def _refresh_locked(self) -> InventoryRefreshResult:
+    def _refresh_locked(self, *, assert_lock_held: Callable[[], None]) -> InventoryRefreshResult:
         started = self.clock().astimezone(UTC).replace(microsecond=0)
         subscriptions = list(getattr(self.config, "subscriptions", ()))
         if not subscriptions:
@@ -124,6 +125,7 @@ class InventoryPipeline:
             run_id=run_id,
         )
 
+        assert_lock_held()
         manifest = self.publisher.publish(
             {
                 "inventory/os_observations": os_rows,
@@ -140,6 +142,7 @@ class InventoryPipeline:
                 "queryVersion": "1.0.0",
                 "status": "completed",
             },
+            assert_lock_held=assert_lock_held,
         )
         return InventoryRefreshResult(manifest=manifest, fabric_tables=self.publisher.fabric_tables)
 

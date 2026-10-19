@@ -2,6 +2,7 @@
 
 Identity comes exclusively from ``InventoryReadPort``. Patch assessments remain
 patch-domain evidence and are joined to the identity projection by resource ID.
+Failure queries use the same authorized identity join as compliance/EOL queries.
 """
 
 from __future__ import annotations
@@ -53,7 +54,13 @@ class ContextQueryService:
         elif intent == "show servers approaching os eol":
             items = self._eol_servers()
         elif intent == "show patch failures":
-            items = [_public_assessment(row) for row in self._patch_rows() if _failed(row)]
+            servers = self._servers_by_id()
+            items = [
+                _public_assessment(row)
+                for row in self._patch_rows()
+                if str(row.get("targetResourceId") or "").casefold() in servers
+                and _failed(row)
+            ]
         else:
             raise ValueError("Supported questions: " + "; ".join(self.SUPPORTED))
         return {
@@ -76,7 +83,7 @@ class ContextQueryService:
 
     def _servers_by_id(self) -> dict[str, dict[str, Any]]:
         return {
-            str(row.get("resource_id") or ""): row
+            str(row.get("resource_id") or "").casefold(): row
             for row in self._servers()
             if row.get("resource_id")
         }
@@ -108,7 +115,7 @@ class ContextQueryService:
                 assessment.get("errorDetails")
             ):
                 server = dict(
-                    servers.get(str(assessment.get("targetResourceId") or ""), {})
+                    servers.get(str(assessment.get("targetResourceId") or "").casefold(), {})
                 )
                 if server:
                     server["patchStatus"] = assessment.get("status")
@@ -122,7 +129,7 @@ class ContextQueryService:
         for recommendation in self._adapter.recommendations():
             text = f"{recommendation.get('problem', '')} {recommendation.get('solution', '')}".lower()
             if any(term in text for term in ("end of support", "end-of-support", "end of life", "eol", "retire")):
-                server = dict(servers.get(str(recommendation.get("targetResourceId") or ""), {}))
+                server = dict(servers.get(str(recommendation.get("targetResourceId") or "").casefold(), {}))
                 if server:
                     server["advisorProblem"] = recommendation.get("problem")
                     server["advisorSolution"] = recommendation.get("solution")

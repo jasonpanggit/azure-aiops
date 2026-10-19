@@ -40,6 +40,9 @@ class InventoryReadAdapter:
 
         The adapter owns the old graph-shaped storage translation. Consumers
         still receive an InventoryReadPort and never open a dataset themselves.
+        When only a legacy graph exists, reads enforce scope on its stored
+        attributes before projecting identity; missing constrained attributes
+        do not match.
         """
         from intelligence.inventory.service import InventoryService
         from storage.datasets import DatasetStore
@@ -62,6 +65,11 @@ class InventoryReadAdapter:
         self.legacy = legacy
 
     def resources(self, scope: Any) -> list[dict[str, Any]]:
+        """Return identity rows restricted to the caller's effective scope."""
+        from api.scope import scope_attributes
+
+        if scope is None or not hasattr(scope, "matches") or not hasattr(scope, "to_dict"):
+            raise TypeError("InventoryReadAdapter requires a server-derived effective scope")
         if self.port is None:
             if not self.legacy or not self.output_dir:
                 return []
@@ -81,6 +89,7 @@ class InventoryReadAdapter:
                     "observed_at": row.get("lastObservedTimestamp", ""),
                 }
                 for row in rows
+                if scope.matches(scope_attributes(row))
             ]
         return list(self.port.list_resources(scope, limit=10_000)["resources"])
 

@@ -26,11 +26,77 @@ until durable readback is verified. Keep Fabric IQ/Data Agent grounding off
 unless separately validated; `enable_fabric_ontology_item` controls only the
 separate Fabric Ontology item, not deterministic ontology table publication.
 
+The inventory Job and API inventory refresh share the existing `state/run.lock`
+at the configured combined `storage.output_dir`. The Job holds it across
+discovery, acquisition, merge and publication; API refresh acquires the same
+lock rather than relying on Job replica parallelism. Connection-scoped runs
+retain their independent root locks. Remote leases renew every 20 seconds
+(the service lease lasts 60 seconds), and renewal stops and joins before
+release. Known lease loss fails publication and prevents ingestion watermark
+advancement. Caller ownership checks also reject an expired monotonic validity
+deadline while renewal is blocked. Deadlines start before acquisition/renewal
+requests, so network latency is not added to confirmed validity; a late renewal
+success cannot revive an expired caller. Optional ownership checks also run after source staging and
+before active-generation promotion; they do not replace the authoritative
+ontology ETag/fence protocol or provide a new storage-side CAS guarantee.
+
+Before enabling recurrence, use the exact immutable candidate image for a
+bounded manual run longer than one lease lifetime. Verify successful renewal,
+rejection of a second overlapping execution, terminal publication success,
+new scoped source generation and actual provider watermark advancement.
+Retain the previous good snapshot and capture API readback without mixing
+API revisions. A 60-second lock, `parallelism = 1`, or a started Job alone
+does not qualify overlap safety. Keep the schedule Manual if these checks fail.
+
+For read-only comparison, `scripts/collect_inventory_evidence.py` accepts an
+explicit API origin, tenant, subscription, audience, expected generation,
+revision and image digest. `--snapshot-root` adds source/read-port comparison;
+`--browser-receipt` compares a receipt captured by
+`scripts/collect_inventory_browser.mjs` from an already authenticated loopback
+CDP session. Neither collector refreshes data or imports CLI tokens into the
+browser. PaaS group totals are compared through group-detail identity sets,
+not equated to resource-observation counts. Software with no discovered
+`Microsoft-ConfigurationData` DCR destination is unavailable, not healthy
+empty; an unrelated Container Insights workspace is not that prerequisite.
+Browser, refresh/last-good, graph viability and provider-watermark acceptance
+remain unproved until their respective real operations are executed.
+
 Phase 13 operates only in **shadow mode**. Model-derived relationships may be
 reviewed and measured, but they must remain absent from authoritative
 candidates, immutable stages, the active generation, exports, and all
 consumers. There is no release, canary, allowlist, or activation option in the
 live validator.
+
+## Agent-led maintenance preparation
+
+Phase 14 builds on this shadow runtime; it does not enable model admission.
+`build_production_runtime` accepts a borrowed `Curator` implementation for
+controlled integration. The default remains the version-pinned Foundry curator.
+The runtime closes its own default client, but callers must close injected
+clients. Injection does not relax required environment values, distinct storage
+roots, or the hard-shadow policy.
+
+Every provider response is checked against the complete proposal schema and
+trusted batch references before it becomes a dispatched result. Results retain
+a bounded `provider_receipt` with requested/selected provider, execution
+classification and hashes. Missing provider metadata is explicitly unavailable;
+simulated/imported output is not live native-agent evidence. Cancellation,
+generation changes, expired deadlines and lost leases reject late responses.
+
+Native Fabric Ontology Agent unattended proposal authoring remains unestablished
+on current supported-interface and identity evidence. Selecting native raises
+`UnsupportedPlannerCapability` before transport; an explicit Foundry fallback is
+attributed as Foundry with the native denial reason. No browser cookies, private
+conversation endpoints, Act operations or definition credentials are introduced.
+Native UI/MCP query success is not unattended authoring acceptance.
+
+The executable path is recorded in
+`.planning/phases/14-agent-led-ontology-maintenance/`: source corroboration and
+incremental baselines, separate schema/format review, prerequisite-bound
+admission, candidate-bound materialization/recovery, and governed rollout.
+Legacy JSON publication must not be retargeted at the TMDL copy without the
+separate compatibility/migration gates. Offline review/replay passing does not
+qualify deployment or enable automatic ontology changes.
 
 ## Credentialed validation
 
