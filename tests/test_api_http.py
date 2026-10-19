@@ -1323,14 +1323,6 @@ class TestFabricMedallionRouterTask2:
         )
         monkeypatch.setattr(
             fabric_medallion_router,
-            "_semantic_readiness",
-            lambda _context, _scope: {
-                "status": "deployment-blocked",
-                "reason": "definition_validated_not_deployed",
-            },
-        )
-        monkeypatch.setattr(
-            fabric_medallion_router,
             "gold_grounding_configured",
             lambda _scope: True,
         )
@@ -1385,14 +1377,91 @@ class TestFabricMedallionRouterTask2:
         ]
         assert all("principal" not in role for role in data["data_access_roles"]["roles"])
         assert data["maintenance"]["status"] == "healthy"
-        assert data["semantic_readiness"]["status"] == "deployment-blocked"
-        assert data["data_agent_readiness"]["status"] == "available"
+        assert data["semantic_readiness"] == {
+            "status": "unknown",
+            "reason": "no_recorded_semantic_model_deployment_result",
+        }
+        assert data["data_agent_readiness"] == {
+            "status": "unknown",
+            "configured": True,
+            "reason": "reachability_not_verified",
+        }
         assert data["lineage"]["native_lineage_url"].endswith("/workspace-abc")
         assert any(
             row["table_name"] == "gold_operational_context"
             and row["lineage"]["upstream_count"] == 1
             for row in data["lineage"]["datasets"]
         )
+
+    @pytest.mark.parametrize("publication_status", ["succeeded", "failed", "unavailable", "unknown", None])
+    def test_fabric_readiness_does_not_promote_projection_publication_evidence(
+        self, fabric_medallion_capabilities_client, monkeypatch, publication_status
+    ):
+        from api.routers import fabric_medallion as routes
+
+        rows = [] if publication_status is None else [{
+            "projection_name": "ontology_entities",
+            "status": publication_status,
+            "attempted_at": "2026-10-19T12:00:00Z",
+            "attempts": 2,
+            "retry_eligible": publication_status == "failed",
+            "message": "projection publication failed" if publication_status == "failed" else "",
+            "source": "publication-state",
+        }]
+        monkeypatch.setattr(routes, "_publication_attempt_rows", lambda _context, _scope: rows)
+
+        response = fabric_medallion_capabilities_client.get(
+            f"/api/v1/fabric-medallion/capabilities?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["scope"] == {"subscription": [SUB_A]}
+        assert body["evidence"][0]["source_engine"] == "fabric.medallion_capabilities"
+        assert body["data"]["semantic_readiness"] == {
+            "status": "unknown",
+            "reason": "no_recorded_semantic_model_deployment_result",
+        }
+
+        history = fabric_medallion_capabilities_client.get(
+            f"/api/v1/fabric-medallion/ingestion-history?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert history.status_code == 200
+        history_body = history.json()
+        assert history_body["scope"] == body["scope"]
+        assert history_body["evidence"][0]["source_engine"] == "onboarding.sync"
+        assert [
+            row for row in history_body["data"]["runs"] if row["source"] == "publication-state"
+        ] == rows
+
+    @pytest.mark.parametrize("configured", [True, False])
+    def test_fabric_data_agent_settings_do_not_verify_reachability(
+        self, fabric_medallion_capabilities_client, monkeypatch, configured
+    ):
+        from api.routers import fabric_medallion as routes
+
+        monkeypatch.setattr(routes, "gold_grounding_configured", lambda _scope: configured)
+        response = fabric_medallion_capabilities_client.get(
+            "/api/v1/fabric-medallion/capabilities", headers=_auth(ADMIN_TOKEN),
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["data_agent_readiness"] == {
+            "status": "unknown" if configured else "disabled",
+            "configured": configured,
+            "reason": "reachability_not_verified" if configured else "not_configured",
+        }
+
+    def test_fabric_readiness_capabilities_preserve_authorization(
+        self, fabric_medallion_capabilities_client
+    ):
+        assert fabric_medallion_capabilities_client.get(
+            "/api/v1/fabric-medallion/capabilities",
+        ).status_code == 401
+        assert fabric_medallion_capabilities_client.get(
+            f"/api/v1/fabric-medallion/capabilities?subscription={SUB_B}",
+            headers=_auth(SCOPED_TOKEN),
+        ).status_code == 403
 
     def test_fabric_medallion_capacity_config_prefers_runtime_config(
         self, tmp_path, monkeypatch
@@ -1429,6 +1498,38 @@ fabric:
             "capacity_name": "cap-config",
             "workspace_id": "workspace-config",
             "lakehouse_id": "lakehouse-config",
+        }
+
+    @pytest.mark.parametrize("file_exists", [True, False])
+    def test_fabric_medallion_uses_canonical_json_override(
+        self, tmp_path, monkeypatch, file_exists
+    ):
+        from api.routers import fabric_medallion as routes
+
+        config_path = tmp_path / "fabric.yaml"
+        if file_exists:
+            config_path.write_text(
+                "fabric:\n  workspace_id: obsolete-workspace\n  lakehouse_id: obsolete-lakehouse\n"
+            )
+        monkeypatch.setenv("AIOPS_FABRIC_CONFIG", str(config_path))
+        monkeypatch.setenv("FABRIC_WORKSPACE_ID", "obsolete-env-workspace")
+        monkeypatch.setenv("AIOPS_FABRIC_CONFIG_JSON", json.dumps({
+            "fabric": {
+                "workspace_id": "effective-workspace",
+                "lakehouse_id": "effective-lakehouse",
+                "capacity": {
+                    "subscription_id": "effective-subscription",
+                    "resource_group": "effective-group",
+                    "capacity_name": "effective-capacity",
+                },
+            },
+        }))
+        assert routes._capacity_config(object(), Scope()) == {
+            "subscription_id": "effective-subscription",
+            "resource_group": "effective-group",
+            "capacity_name": "effective-capacity",
+            "workspace_id": "effective-workspace",
+            "lakehouse_id": "effective-lakehouse",
         }
 
     def test_fabric_capacity_probe_uses_configured_user_assigned_identity(

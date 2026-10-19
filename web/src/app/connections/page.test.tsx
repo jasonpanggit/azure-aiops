@@ -1179,7 +1179,7 @@ describe("Connections page Fabric Medallion tab", () => {
     renderConnectionsPage();
     fireEvent.click(await screen.findByRole("tab", { name: "Fabric Medallion" }));
 
-    expect(await screen.findByText("Ingestion failed — 3 of 3 attempts exhausted · last error: warehouse timeout")).toBeInTheDocument();
+    expect(await screen.findByText("Ingestion failed — 3 recorded attempts · last error: warehouse timeout")).toBeInTheDocument();
     expect(screen.getByText("Source unavailable — Fabric capacity or workspace could not be reached")).toBeInTheDocument();
     expect(screen.getByText("Retry via subscription sync")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /retry ingestion/i })).not.toBeInTheDocument();

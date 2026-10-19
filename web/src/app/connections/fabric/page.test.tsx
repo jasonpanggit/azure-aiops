@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 import type { ScopeSelection } from "@/lib/scope";
-import { FabricMedallionPanel } from "@/components/fabric/medallion";
+import type { Envelope } from "@/lib/types";
+import { FabricMedallionPanel, fabricEvidenceFreshness } from "@/components/fabric/medallion";
 
 const {
   fabricCapabilities,
@@ -100,9 +101,9 @@ const connections = [
 function envelope<T>(
   data: T,
   sourceEngine = "fabric.medallion_health",
-  freshness: "fresh" | "aging" | "stale" = "fresh",
+  freshness: "fresh" | "aging" | "stale" | "unknown" = "fresh",
   timestamp = "2026-01-01T00:00:00Z",
-) {
+): Envelope<T> {
   return {
     data,
     evidence: [{
@@ -124,6 +125,15 @@ function renderPage(initialScope: ScopeSelection = {}) {
     </ScopeProvider>
   );
 }
+
+const capabilitySnapshot = {
+  capacity: { status: "active", capacity_name: "cap" },
+  data_access_roles: { status: "available" },
+  maintenance: { status: "available" },
+  lineage: { native_lineage_url: "https://fabric.microsoft.com/workspace/abc", datasets: [{ table_name: "bronze_resources" }] },
+  semantic_readiness: { status: "available" },
+  data_agent_readiness: { status: "available", configured: true },
+};
 
 describe("Per-subscription Fabric medallion page", () => {
   beforeEach(() => {
@@ -154,14 +164,7 @@ describe("Per-subscription Fabric medallion page", () => {
     fabricLayers.mockResolvedValue(envelope({
       layers: { bronze: { healthy: 1, total: 1 }, silver: { healthy: 1, total: 1 }, gold: { healthy: 1, total: 1 } },
     }));
-    fabricCapabilities.mockResolvedValue(envelope({
-      capacity: { status: "active", capacity_name: "cap" },
-      data_access_roles: { status: "available" },
-      maintenance: { status: "available" },
-      lineage: { native_lineage_url: "https://fabric.microsoft.com/workspace/abc", datasets: [{ table_name: "bronze_resources" }] },
-      semantic_readiness: { status: "available" },
-      data_agent_readiness: { status: "available", configured: true },
-    }));
+    fabricCapabilities.mockResolvedValue(envelope(capabilitySnapshot));
     fabricManifest.mockResolvedValue(envelope(
       { entries: [] },
       "ontology.publication_manifest",
@@ -277,6 +280,114 @@ describe("Per-subscription Fabric medallion page", () => {
     });
   });
 
+  it("shares each section read between the page and panel, including refresh", async () => {
+    renderPage();
+    await screen.findByText("No ingestion attempts reported");
+    for (const read of [fabricLayers, fabricManifest, fabricGovernance, fabricIngestionHistory, fabricCapabilities]) {
+      expect(read).toHaveBeenCalledTimes(1);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Fabric health" }));
+    await waitFor(() => {
+      for (const read of [fabricLayers, fabricManifest, fabricGovernance, fabricIngestionHistory, fabricCapabilities]) {
+        expect(read).toHaveBeenCalledTimes(2);
+      }
+    });
+  });
+
+  it("does not infer freshness from successful responses with no evidence", async () => {
+    fabricLayers.mockResolvedValue({ ...envelope({ layers: { bronze: { healthy: 1, total: 1 }, silver: { healthy: 0, total: 0 }, gold: { healthy: 0, total: 0 } } }), evidence: [] });
+    fabricManifest.mockResolvedValue({ ...envelope({ entries: [] }), evidence: [] });
+    fabricGovernance.mockResolvedValue({ ...envelope({ ownership_gap_count: 0, tag_gap_count: 0, referential_integrity_blockers: 0, gaps: [] }), evidence: [] });
+    fabricCapabilities.mockResolvedValue({ ...envelope(capabilitySnapshot), evidence: [] });
+    renderPage();
+    await waitFor(() => {
+      const input = buildFabricMedallionCopilotContext.mock.calls.at(-1)?.[0];
+      expect(input).toMatchObject({ available: true, freshness: "partial" });
+      expect(input.sourceStatuses).toHaveLength(4);
+      expect(input.sourceStatuses.every((status: { freshness: string }) => status.freshness === "unknown")).toBe(true);
+    });
+    const evidence = screen.getByRole("region", { name: "Fabric section evidence" });
+    expect(within(evidence).getAllByText("Response received · Freshness: Unknown")).toHaveLength(4);
+  });
+
+  it("keeps a stale layer visible despite HTTP success and fresh capability evidence", async () => {
+    fabricLayers.mockResolvedValue(envelope({
+      layers: { bronze: { healthy: 0, total: 1 }, silver: { healthy: 0, total: 0 }, gold: { healthy: 0, total: 0 } },
+    }, "fabric.medallion_health", "stale"));
+    fabricManifest.mockResolvedValue(envelope({ entries: [] }));
+    fabricDataset.mockResolvedValue(envelope({ table_name: "bronze_resources", availability: "degraded", row_count: 5, freshness: "stale" }));
+    renderPage();
+    expect(await screen.findByText("At least one source clock is past target")).toBeInTheDocument();
+    await waitFor(() => expect(buildFabricMedallionCopilotContext.mock.calls.at(-1)?.[0]).toMatchObject({
+      available: true, freshness: "stale",
+      sourceStatuses: expect.arrayContaining([expect.objectContaining({ source: "fabric/medallion-layers", freshness: "stale" })]),
+    }));
+  });
+
+  it("keeps independent sections available when governance fails", async () => {
+    fabricGovernance.mockRejectedValue(new Error("Synthetic governance failure"));
+    renderPage();
+    expect(await screen.findByText("Governance gaps are unavailable")).toBeInTheDocument();
+    expect(await screen.findByText("bronze_resources")).toBeInTheDocument();
+    expect(await screen.findByText("No ingestion attempts reported")).toBeInTheDocument();
+    await waitFor(() => expect(buildFabricMedallionCopilotContext.mock.calls.at(-1)?.[0]).toMatchObject({
+      available: false,
+      sourceStatuses: expect.arrayContaining([
+        { source: "fabric/governance", availability: "unavailable", freshness: "unknown" },
+        expect.objectContaining({ source: "fabric/medallion-layers", availability: "available", freshness: "fresh" }),
+      ]),
+    }));
+    expect(within(screen.getByRole("region", { name: "Fabric section evidence" })).getByText("Request failed · Freshness: Unknown")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["unknown", "metric-default"],
+    ["disabled", "metric-default"],
+    ["stale", "metric-warning"],
+    ["degraded", "metric-warning"],
+    ["failed", "metric-critical"],
+  ])("renders %s readiness without a healthy fallback", async (status, tone) => {
+    fabricCapabilities.mockResolvedValue(envelope({
+      ...capabilitySnapshot,
+      semantic_readiness: { status, reason: "no_recorded_semantic_model_deployment_result" },
+      data_agent_readiness: { status, configured: status !== "disabled", reason: "reachability_not_verified" },
+      maintenance: { status: "failed" },
+    }));
+    renderPage();
+    const semantic = await screen.findByLabelText("Semantic model value");
+    await waitFor(() => expect(semantic).toHaveTextContent(status.charAt(0).toUpperCase() + status.slice(1)));
+    expect(semantic.closest("article")).toHaveClass(tone);
+    expect(screen.getByLabelText("Data Agent grounding value").closest("article")).toHaveClass(tone);
+    expect(screen.getByText(/configuration alone does not prove evaluation or query success/)).toBeInTheDocument();
+    expect(screen.getByText(/maintenance: Failed/)).toBeInTheDocument();
+    expect(screen.queryByText(/definition validated/)).not.toBeInTheDocument();
+    await waitFor(() => expect(buildFabricMedallionCopilotContext.mock.calls.at(-1)?.[0]).toMatchObject({
+      semanticReadiness: { status, reason: "no_recorded_semantic_model_deployment_result" },
+      dataAgentReadiness: { status, configured: status !== "disabled" },
+    }));
+  });
+
+  it("does not infer semantic validation from a blocked deployment or an empty history", async () => {
+    fabricCapabilities.mockResolvedValue(envelope({
+      ...capabilitySnapshot,
+      semantic_readiness: { status: "deployment-blocked", reason: "capacity_paused" },
+    }));
+    renderPage();
+    expect(await screen.findByText("Semantic model deployment blocked — capacity_paused")).toBeInTheDocument();
+    expect(await screen.findByText("No ingestion attempts reported")).toBeInTheDocument();
+    expect(screen.queryByText(/All ingestion runs succeeded|definition validated/)).not.toBeInTheDocument();
+  });
+
+  it("preserves standalone tab embedding and its independent scoped reads", async () => {
+    render(<FabricMedallionPanel refreshKey={0} scope={{ environment: ["prod"] }} subscriptionId="sub-a" />);
+    await screen.findByText("bronze_resources");
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "fabric-medallion-tab");
+    for (const read of [fabricLayers, fabricManifest, fabricGovernance, fabricIngestionHistory, fabricCapabilities]) {
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read).toHaveBeenCalledWith({ environment: ["prod"], subscription: ["sub-a"] });
+    }
+  });
+
     it("blocks a bookmarked subscription outside global scope before any Fabric reads", async () => {
       searchParams.current = new URLSearchParams({ subscription: connections[1].subscription_id });
       renderPage({ subscription: [connections[0].subscription_id] });
@@ -285,6 +396,22 @@ describe("Per-subscription Fabric medallion page", () => {
       expect(fabricDataset).not.toHaveBeenCalled();
       expect(fabricCapabilities).not.toHaveBeenCalled();
       expect(list).not.toHaveBeenCalled();
+    });
+
+    describe("Fabric evidence freshness", () => {
+      it("keeps missing and unknown evidence unknown, even with a timestamp", () => {
+        expect(fabricEvidenceFreshness(null)).toBe("unknown");
+        expect(fabricEvidenceFreshness({ evidence: [] })).toBe("unknown");
+        expect(fabricEvidenceFreshness(envelope({}, "test", "unknown"))).toBe("unknown");
+      });
+
+      it("does not let a fresh item hide stale, aging or unknown evidence", () => {
+        const fresh = envelope({}).evidence;
+        expect(fabricEvidenceFreshness({ evidence: [...fresh, ...envelope({}, "test", "stale").evidence] })).toBe("stale");
+        expect(fabricEvidenceFreshness({ evidence: [...fresh, ...envelope({}, "test", "aging").evidence] })).toBe("aging");
+        expect(fabricEvidenceFreshness({ evidence: [...fresh, ...envelope({}, "test", "unknown").evidence] })).toBe("unknown");
+        expect(fabricEvidenceFreshness({ evidence: fresh })).toBe("fresh");
+      });
     });
 
     it("also blocks an embedded subscription that would broaden its caller's scope", () => {

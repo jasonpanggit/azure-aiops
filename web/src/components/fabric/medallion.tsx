@@ -30,7 +30,7 @@ export const FABRIC_LAYER_LABELS: Record<FabricLayerKey, string> = {
 export const FABRIC_LAYER_DESCRIPTIONS: Record<FabricLayerKey, string> = {
   bronze: "Raw source-aligned datasets published from subscription ingestion.",
   silver: "Normalized operational datasets with quality and freshness objectives.",
-  gold: "Curated products used by semantic models, Data Agent grounding, and operator workflows.",
+  gold: "Curated products for downstream consumers. Semantic model and Data Agent readiness are reported separately.",
 };
 
 export const EMPTY_FABRIC_COUNTS: Record<FabricLayerKey, FabricLayerCounts> = {
@@ -45,7 +45,19 @@ type FabricPanelProps = {
   scope: ScopeSelection;
   subscriptionId?: string;
   asTabPanel?: boolean;
+  health?: ReturnType<typeof useFabricMedallionHealth>;
 };
+
+/** Loads independent scoped sections once for the panel and read-only page context. */
+export function useFabricMedallionHealth(scope: ScopeSelection, refreshKey: number) {
+  const scopeKey = JSON.stringify(scope);
+  const layerSummary = useApi(() => fabricMedallionApi.layers(scope), [refreshKey, scopeKey]);
+  const manifest = useApi(() => fabricMedallionApi.manifest(scope), [refreshKey, scopeKey]);
+  const governance = useApi(() => fabricMedallionApi.governance(scope), [refreshKey, scopeKey]);
+  const ingestionHistory = useApi(() => fabricMedallionApi.ingestionHistory(scope), [refreshKey, scopeKey]);
+  const capabilities = useApi(() => fabricMedallionApi.capabilities(scope), [refreshKey, scopeKey]);
+  return { scopeKey, layerSummary, manifest, governance, ingestionHistory, capabilities };
+}
 
 /** Applies an embedded subscription selector only when it preserves global constraints. */
 export function FabricMedallionPanel(props: FabricPanelProps) {
@@ -58,7 +70,15 @@ export function FabricMedallionPanel(props: FabricPanelProps) {
     if (!(error instanceof ScopeBookmarkError)) throw error;
     return props.hidden ? null : <StatePanel title="Fabric selection is outside the current scope" message={error.message} tone="error" />;
   }
-  return <FabricMedallionPanelContent key={JSON.stringify(scope)} {...props} scope={scope} />;
+  const scopeKey = JSON.stringify(scope);
+  return props.health?.scopeKey === scopeKey
+    ? <FabricMedallionPanelContent key={scopeKey} {...props} scope={scope} health={props.health} />
+    : <FabricMedallionPanelLoader key={scopeKey} {...props} scope={scope} />;
+}
+
+function FabricMedallionPanelLoader(props: FabricPanelProps) {
+  const health = useFabricMedallionHealth(props.scope, props.refreshKey);
+  return <FabricMedallionPanelContent {...props} health={health} />;
 }
 
 function FabricMedallionPanelContent({
@@ -66,14 +86,10 @@ function FabricMedallionPanelContent({
   refreshKey,
   scope,
   asTabPanel = true,
-}: FabricPanelProps) {
+  health,
+}: FabricPanelProps & { health: ReturnType<typeof useFabricMedallionHealth> }) {
   const subscriptionScope = scope;
-  const scopeKey = JSON.stringify(subscriptionScope);
-  const layerSummary = useApi(() => fabricMedallionApi.layers(subscriptionScope), [refreshKey, scopeKey]);
-  const manifest = useApi(() => fabricMedallionApi.manifest(subscriptionScope), [refreshKey, scopeKey]);
-  const governance = useApi(() => fabricMedallionApi.governance(subscriptionScope), [refreshKey, scopeKey]);
-  const ingestionHistory = useApi(() => fabricMedallionApi.ingestionHistory(subscriptionScope), [refreshKey, scopeKey]);
-  const capabilities = useApi(() => fabricMedallionApi.capabilities(subscriptionScope), [refreshKey, scopeKey]);
+  const { layerSummary, manifest, governance, ingestionHistory, capabilities } = health;
   const counts = layerSummary.data?.data.layers;
   const tableNames = useMemo(
     () => tableNamesByLayer(capabilities.data?.data, layerSummary.data?.data.tables),
@@ -102,7 +118,7 @@ function FabricMedallionPanelContent({
       <div className="metric-grid">
         <MetricCard label="Bronze tables" value={formatHealthCount(counts?.bronze)} detail="Raw dataset health and source freshness" tone={fabricMetricTone(counts?.bronze)} />
         <MetricCard label="Silver tables" value={formatHealthCount(counts?.silver)} detail="Normalized dataset health and quality" tone={fabricMetricTone(counts?.silver)} />
-        <MetricCard label="Gold tables" value={formatHealthCount(counts?.gold)} detail="Curated semantic and Data Agent products" tone={fabricMetricTone(counts?.gold)} />
+        <MetricCard label="Gold tables" value={formatHealthCount(counts?.gold)} detail="Curated products; downstream readiness checked separately" tone={fabricMetricTone(counts?.gold)} />
         <MetricCard
           label="Governed relationships"
           value={governance.data ? governance.data.data.referential_integrity_blockers : "—"}
@@ -110,6 +126,24 @@ function FabricMedallionPanelContent({
           tone={!governance.data ? "default" : governance.data.data.referential_integrity_blockers ? "critical" : "success"}
         />
       </div>
+
+      <section className="card" aria-label="Fabric section evidence">
+        <div className="card-header"><div><h2>Reported evidence freshness</h2><p>A successful request does not prove fresh datasets or downstream readiness.</p></div></div>
+        <div className="card-body compliance-list">
+          {[
+            { label: "Layer health", section: layerSummary },
+            { label: "Publication manifest", section: manifest },
+            { label: "Governance", section: governance },
+            { label: "Ingestion history", section: ingestionHistory },
+            { label: "Capabilities", section: capabilities },
+          ].map(({ label, section }) => (
+            <div key={label} className="compliance-row">
+              <strong>{label}</strong>
+              <span>{section.error ? "Request failed" : section.loading ? "Loading" : "Response received"} · Freshness: {datasetStatusLabel(fabricEvidenceFreshness(section.data))}</span>
+            </div>
+          ))}
+        </div>
+      </section>
 
       {layerSummary.error && <StatePanel title="Fabric layer counts unavailable" message={layerSummary.error.message} tone="error" />}
       <FabricCapabilityCallouts capabilities={capabilities.data?.data} error={capabilities.error} />
@@ -388,7 +422,7 @@ function FabricIngestionPanel({ ingestionHistory }: { ingestionHistory: { data: 
         ) : ingestionHistory.loading ? (
           <StatePanel title="Loading ingestion history" message="Reading source-status and publication-state attempts." tone="loading" />
         ) : runs.length === 0 ? (
-          <StatePanel title="All ingestion runs succeeded in the current window" message="No failed or unavailable Fabric ingestion runs are reported for the current scope." />
+          <StatePanel title="No ingestion attempts reported" message="An empty history does not establish successful ingestion or publication for this scope." />
         ) : (
           <div className="compliance-list">
             {runs.map((run) => (
@@ -418,9 +452,9 @@ function FabricReadinessPanel({ capabilities }: { capabilities: { data: Envelope
   const coverage = fabricCoverage(data);
   return (
     <section className="metric-grid">
-      <MetricCard label="Semantic model" value={datasetStatusLabel(data.semantic_readiness.status)} detail={semanticReadinessCopy(data.semantic_readiness)} tone={statusTone(data.semantic_readiness.status) === "critical" ? "critical" : statusTone(data.semantic_readiness.status) === "warning" ? "warning" : "success"} size="text" />
-      <MetricCard label="Data Agent grounding" value={datasetStatusLabel(data.data_agent_readiness.status)} detail={data.data_agent_readiness.configured ? "Gold grounding evaluation is configured" : "Gold grounding evaluation is not configured"} tone={data.data_agent_readiness.status === "available" ? "success" : "warning"} size="text" />
-      <MetricCard label="Fabric preview coverage" value={Object.values(coverage).filter((value) => value === "available").length + "/" + Object.keys(coverage).length} detail={Object.entries(coverage).map(([key, value]) => `${key}: ${value}`).join(" · ")} tone={Object.values(coverage).every((value) => value === "available") ? "success" : "warning"} size="text" />
+      <MetricCard label="Semantic model" value={datasetStatusLabel(data.semantic_readiness.status)} detail={semanticReadinessCopy(data.semantic_readiness)} tone={readinessTone(data.semantic_readiness.status)} size="text" />
+      <MetricCard label="Data Agent grounding" value={datasetStatusLabel(data.data_agent_readiness.status)} detail={`${data.data_agent_readiness.configured ? "Gold grounding is configured" : "Gold grounding is not configured"}; configuration alone does not prove evaluation or query success.`} tone={readinessTone(data.data_agent_readiness.status)} size="text" />
+      <MetricCard label="Recorded capability signals" value="Independent statuses" detail={Object.entries(coverage).map(([key, value]) => `${key}: ${datasetStatusLabel(value)}`).join(" · ")} tone="default" size="text" />
     </section>
   );
 }
@@ -549,7 +583,7 @@ function missingResourceCopy(count: number, kind: "ownership" | "tags"): string 
 
 function ingestionRunCopy(run: FabricIngestionRun): string {
   if (run.status === "failed") {
-    return `Ingestion failed — ${run.attempts} of ${run.attempts} attempts exhausted · last error: ${run.message || "unknown"}`;
+    return `Ingestion failed — ${run.attempts} recorded attempt${run.attempts === 1 ? "" : "s"} · last error: ${run.message || "unknown"}`;
   }
   if (run.status === "unavailable") {
     return "Source unavailable — Fabric capacity or workspace could not be reached";
@@ -559,15 +593,30 @@ function ingestionRunCopy(run: FabricIngestionRun): string {
 
 function semanticReadinessCopy(readiness: { status: string; reason?: string }): string {
   if (readiness.status === "deployment-blocked") {
-    return `Semantic model definition validated, not yet deployed — ${readiness.reason || "deployment status unavailable"}`;
+    return `Semantic model deployment blocked — ${readiness.reason || "cause not reported"}`;
   }
   return readiness.reason || "Semantic model readiness is reported by the Fabric medallion API.";
 }
 
-function fabricCoverage(capabilities: FabricCapabilities): Record<string, "available" | "unknown"> {
+function fabricCoverage(capabilities: FabricCapabilities): Record<string, string> {
   return {
-    roles: capabilities.data_access_roles.status === "available" ? "available" : "unknown",
-    maintenance: capabilities.maintenance.status && capabilities.maintenance.status !== "unknown" ? "available" : "unknown",
-    lineage: capabilities.lineage.native_lineage_url ? "available" : "unknown",
+    roles: capabilities.data_access_roles.status || "unknown",
+    maintenance: capabilities.maintenance.status || "unknown",
+    "lineage reference": capabilities.lineage.native_lineage_url ? "reference reported (not lineage validation)" : "unknown",
   };
+}
+
+function readinessTone(status: string): "default" | "critical" | "warning" | "success" {
+  if (status === "available" || status === "ready") return "success";
+  const tone = statusTone(status);
+  if (tone === "critical" || tone === "warning") return tone;
+  return "default";
+}
+
+/** Summarizes reported evidence only; transport success and timestamps cannot establish freshness. */
+export function fabricEvidenceFreshness(envelope?: Pick<Envelope<unknown>, "evidence"> | null): "fresh" | "aging" | "stale" | "unknown" {
+  const evidence = envelope?.evidence ?? [];
+  if (evidence.some(item => item.freshness === "stale")) return "stale";
+  if (!evidence.length || evidence.some(item => !["fresh", "aging"].includes(item.freshness))) return "unknown";
+  return evidence.some(item => item.freshness === "aging") ? "aging" : "fresh";
 }
