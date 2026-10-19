@@ -23,6 +23,28 @@ current_phase_name: Domain Coverage and Operational Twin
 **Current Plan:** Not planned
 **Status:** Ready for Phase 4 planning — Phase 03.1 is closed with 23 plans executed and Plans 19-20 accepted with explicit Phase 4 deferrals; all 25 summaries are present. Gold publication and the authenticated Exposure page are live; exact supported digest-to-workload traversal, the qualified 100k benchmark, and the canary/rollback exercise remain Phase 4 entry gates.
 
+## Phase 13 prerequisite repair handoff (2026-10-19)
+
+The user directed unified deployment to integrate the Ontology lane's ordered
+selection-history, partial-resume and process-identity repairs. Only actual
+dirty hunks were copied from its older checkout; newer native publication,
+runtime and operations documentation remain intact.
+
+Completed selections retain ordered cursor/attempt/outcome/worker/authorization
+receipts in durable epoch state. The collector exports closed fields and hashes.
+Resume validation requires an exact history prefix and replays from cursor zero;
+aggregate attempts, revisions or worker sets cannot substitute for ordering.
+Legacy epochs load without invented history. Default CLI owners are unique
+hostname:UUID values; explicit overrides are passed unchanged and must not be
+fixed when qualifying restart evidence.
+
+This is implementation evidence only. Plan 20 deployed lifecycle remains FAIL
+at `coordinator_retry_rotation_unavailable`; Plan 21 and Phases 03.7/03.8 remain
+gated. Deployment does not close acceptance: use fresh governed fixed-template
+lifecycle evidence, never backfill historical epochs. The handoff's existing
+coordinator/collector target is distinct from the Insights deployment environment.
+No native Fabric definition, schedule, active pointer or gate was changed.
+
 ## Completed Plans (This Session)
 
 - **13-19** COMPLETE — Exact production API/coordinator/publisher roots, fixed coordinator-UAI fixture Jobs, isolated Fabric capabilities, immutable integrated images, zero-destroy apply, and sanitized live template/RBAC proof

@@ -171,6 +171,31 @@ evaluation state prefix.
 
 ## Reading the report
 
+Coordinator epochs retain ordered `selection_history` alongside member state.
+Each completed selection records its cursor transition, attempt, outcome,
+worker, and reauthorization receipt in the same durable state write. The
+read-only collector exports only hashes and closed cursor/attempt/outcome
+fields. A resumed lifecycle validator uses this history to prove that another
+member progressed between a retry and its next attempt, with unchanged epoch
+and snapshot lineage across workers.
+The default coordinator CLI owner includes a fresh process-invocation nonce,
+so separate fixed Job executions produce distinct hashed worker identities
+even if the underlying container hostname is reused. Explicit `--owner` remains
+an operator override and must not be set to a stable value for restart proofs.
+
+A partial-drain resume validates the complete history from the epoch's initial
+zero cursor, not from the resumed snapshot's current cursor. The resumed
+snapshot must match an exact prefix of that history, including its member
+attempts, outcomes and cursor. Rewritten or truncated prefixes fail closed;
+newly observed selections cannot substitute for missing earlier history.
+
+Attempt totals, epoch revisions, and sets of worker hashes alone do not prove
+selection order. Older epochs without this history still load, but cannot be
+used to infer fairness: retain their failure evidence and run a new governed
+validation lifecycle after deploying the repaired coordinator and collector.
+Local regression results are not deployed acceptance and do not unblock
+Phase 03.7 or native Phase 03.8.
+
 A successful validator execution has:
 
 - top-level `status: PASS`;

@@ -226,6 +226,17 @@ def test_lifecycle_documents_reduce_to_closed_hashes_counts_and_states() -> None
                 "epoch_id": "ODE-RAW",
                 "status": "active",
                 "cursor": 2,
+                "selection_history": [
+                    {
+                        "connection_id": "ontology-fixture-a-head-change",
+                        "cursor_before": 0,
+                        "cursor_after": 1,
+                        "attempt": 1,
+                        "outcome": "pending",
+                        "actor": "raw-worker",
+                        "authorization_receipt": "raw-authorization",
+                    }
+                ],
                 "member_order": [
                     "ontology-fixture-a-head-change",
                     "ontology-fixture-a-retry-rotation",
@@ -267,6 +278,13 @@ def test_lifecycle_documents_reduce_to_closed_hashes_counts_and_states() -> None
     assert facts["registry"]["active_fixture_count"] == 3
     assert facts["epoch"]["active_epoch_count"] == 1
     assert facts["epoch"]["cursor"] == 2
+    history = facts["epoch"]["selection_history"]
+    assert len(history) == 1
+    assert history[0]["outcome"] == "retrying"
+    assert history[0]["process_hash"].startswith("sha256:")
+    assert history[0]["authorization_hash"].startswith("sha256:")
+    assert history[0]["epoch_hash"] == facts["epoch"]["epoch_hash"]
+    assert history[0]["snapshot_hash"] == facts["epoch"]["snapshot_hash"]
     assert [row["outcome"] for row in facts["epoch"]["members"]] == [
         "duplicate",
         "pending",
@@ -280,8 +298,16 @@ def test_lifecycle_documents_reduce_to_closed_hashes_counts_and_states() -> None
         "ODE-RAW",
         "ontology-fixture-a-head-change",
         "raw-time",
+        "raw-worker",
+        "raw-authorization",
     ):
         assert raw not in rendered
+
+    state["eligible_epochs"][0]["selection_history"][0]["attempt"] = "raw-attempt"
+    with pytest.raises(EvidenceCollectionError, match="selection_history_invalid"):
+        summarize_lifecycle_documents(
+            fixture=fixture, registry=registry, state=state,
+        )
 
 
 def test_closed_record_accepts_only_sanitized_lifecycle_facts() -> None:

@@ -348,6 +348,7 @@ class EligibleConnectionScheduler:
         if reason:
             return self._exclude(epoch["epoch_id"], connection_id, reason, moment, counts)
 
+        authorization = scope_receipt(connection, "ontology.discovery.run")
         source_generation_id = self.source_generation(connection)
         run, created = self.run_store.get_or_create_run(
             connection_id=connection.connection_id,
@@ -362,6 +363,8 @@ class EligibleConnectionScheduler:
                 connection_id,
                 outcome="duplicate",
                 reason_code="logical_run_already_completed",
+                actor=self.owner,
+                authorization_receipt=authorization,
                 now=moment,
             )
             counts["duplicates"] = 1
@@ -373,6 +376,8 @@ class EligibleConnectionScheduler:
                 connection_id,
                 outcome="exhausted_failure",
                 reason_code="logical_run_attempts_exhausted",
+                actor=self.owner,
+                authorization_receipt=authorization,
                 now=moment,
             )
             counts["failed"] = 1
@@ -393,6 +398,8 @@ class EligibleConnectionScheduler:
                 outcome="pending",
                 reason_code="run_claim_contended",
                 next_attempt_at=moment + timedelta(seconds=1),
+                actor=self.owner,
+                authorization_receipt=authorization,
                 now=moment,
             )
             counts["retrying"] = 1
@@ -422,6 +429,8 @@ class EligibleConnectionScheduler:
                     else moment
                     + timedelta(seconds=self.run_store.retry_base_seconds)
                 ),
+                actor=self.owner,
+                authorization_receipt=authorization,
                 now=moment,
             )
             counts["failed" if exhausted else "retrying"] = 1
@@ -446,6 +455,8 @@ class EligibleConnectionScheduler:
             connection_id,
             outcome="succeeded",
             reason_code=str(completed["checkpoint"]["name"])[:96],
+            actor=self.owner,
+            authorization_receipt=authorization,
             now=moment,
         )
         counts["processed"] = 1
@@ -489,6 +500,16 @@ class EligibleConnectionScheduler:
             connection_id,
             outcome="excluded",
             reason_code=reason,
+            actor=self.owner,
+            authorization_receipt=_hash_json(
+                {
+                    "connection_id": connection_id,
+                    "environment": self.environment,
+                    "action": "ontology.discovery.run",
+                    "outcome": "denied",
+                    "reason_code": reason,
+                }
+            ),
             now=moment,
         )
         counts["excluded"] = 1

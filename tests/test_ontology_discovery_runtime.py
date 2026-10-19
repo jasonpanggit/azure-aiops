@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -251,6 +252,150 @@ def test_eligible_epoch_rotates_retrying_head_and_survives_every_restart(tmp_pat
         for connection_id in ("connection-b", "connection-c", "connection-d")
     } == {"succeeded"}
     assert len(epoch["member_order"]) == len(set(epoch["member_order"])) == 4
+    history = epoch["selection_history"]
+    assert [row["connection_id"] for row in history] == selected
+    assert [row["outcome"] for row in history] == [
+        "pending", "succeeded", "succeeded", "succeeded", "exhausted_failure",
+    ]
+    assert [row["cursor_before"] for row in history] == [0, 1, 2, 3, 0]
+    assert [row["cursor_after"] for row in history] == [1, 2, 3, 0, 1]
+    assert [row["actor"] for row in history] == [
+        f"worker-{index}" for index in range(5)
+    ]
+    assert all(row["authorization_receipt"] for row in history)
+    assert [row["attempt"] for row in history] == [1, 1, 1, 1, 2]
+
+
+def test_legacy_epoch_loads_without_inventing_selection_history(tmp_path):
+    state_path = tmp_path / "runs.json"
+    store = OntologyRunStore(state_path)
+    store.ensure_eligible_epoch(
+        member_ids=["connection-a"], registry_revision=1,
+        registry_hash="registry-snapshot", now=NOW,
+    )
+    document = json.loads(state_path.read_text())
+    del document["eligible_epochs"][0]["selection_history"]
+    state_path.write_text(json.dumps(document))
+    epoch = OntologyRunStore(state_path).active_or_latest_epoch()
+    assert epoch["selection_history"] == []
+    assert epoch["members"]["connection-a"]["attempt_count"] == 0
+
+
+def test_deleted_member_retains_closed_exclusion_receipt(tmp_path):
+    registry = _registry(tmp_path / "connections", "connection-a")
+    store = OntologyRunStore(tmp_path / "runs.json")
+    store.ensure_eligible_epoch(
+        member_ids=["connection-a"], registry_revision=registry.revision(),
+        registry_hash="registry-snapshot", now=NOW,
+    )
+    registry.delete("connection-a")
+
+    async def unexpected_process(*_args):
+        pytest.fail("excluded connection must not reach the processor")
+
+    scheduler = EligibleConnectionScheduler(
+        registry=registry, run_store=store, processor=unexpected_process,
+        source_generation=lambda _connection: pytest.fail("excluded source lookup"),
+        owner="worker-a", now=lambda: NOW,
+    )
+    result = asyncio.run(scheduler.run_once(limit=1))
+    assert result["excluded"] == 1
+    history = store.active_or_latest_epoch()["selection_history"]
+    assert len(history) == 1
+    assert history[0]["outcome"] == "excluded"
+    assert history[0]["actor"] == "worker-a"
+    assert history[0]["authorization_receipt"]
+    assert history[0]["cursor_before"] == history[0]["cursor_after"] == 0
+
+
+def test_restarted_scheduler_history_reaches_sanitized_drain_validator(tmp_path):
+    from scripts.collect_ontology_evidence import (
+        sanitize_closed_record,
+        summarize_lifecycle_documents,
+    )
+    from scripts.validate_ontology_discovery_live import derive_drain_evidence
+
+    ids = [f"ontology-fixture-example-{letter}" for letter in ("a", "b", "c")]
+    registry = ConnectionRegistry(str(tmp_path / "connections"))
+    for connection_id in ids:
+        connection = _connection(connection_id)
+        connection.metadata.update({
+            "environment": "validation",
+            "fixture_owner_hash": "owner",
+            "fixture_drill_hash": "drill",
+            "fixture_fence": 1,
+        })
+        registry.add(connection)
+    state_path = tmp_path / "state" / "runs.json"
+    store = OntologyRunStore(state_path, max_attempts=2, retry_base_seconds=1)
+    epoch = store.ensure_eligible_epoch(
+        member_ids=ids, registry_revision=registry.revision(),
+        registry_hash="registry-snapshot", now=NOW,
+    )
+    fixture = {"drills": [{
+        "drill_hash": "drill", "owner_hash": "owner", "fence": 1,
+        "status": "prepared", "connection_ids": ids, "epoch_id": epoch["epoch_id"],
+        "prepared_at": NOW.isoformat(),
+        "expires_at": (NOW + timedelta(hours=2)).isoformat(),
+        "receipts": [{"event": "prepared", "at": NOW.isoformat()}],
+    }]}
+    registry_document = {
+        "revision": registry.revision(),
+        "connections": [connection.to_dict() for connection in registry.list()],
+    }
+
+    def snapshot():
+        return {"facts": summarize_lifecycle_documents(
+            fixture=fixture, registry=registry_document,
+            state=json.loads(state_path.read_text()),
+        )}
+
+    prepared = snapshot()
+    resumed_snapshots = []
+
+    async def process(connection, _run):
+        if connection.connection_id == ids[1]:
+            raise RuntimeError("retryable")
+        return {"status": "succeeded"}
+
+    for index in range(4):
+        scheduler = EligibleConnectionScheduler(
+            registry=ConnectionRegistry(str(tmp_path / "connections")),
+            run_store=OntologyRunStore(
+                state_path, max_attempts=2, retry_base_seconds=1,
+            ),
+            processor=process,
+            source_generation=lambda connection: f"source-{connection.connection_id}",
+            owner=f"worker-{index}",
+            environment="validation",
+            now=lambda index=index: NOW + timedelta(seconds=index * 2),
+        )
+        asyncio.run(scheduler.run_once(limit=1))
+        if index < 3:
+            resumed_snapshots.append(snapshot())
+
+    final_snapshot = snapshot()
+    assert sanitize_closed_record(final_snapshot) == final_snapshot
+    result = derive_drain_evidence(
+        preflight={"contract": {"validation_connection_root_hash": "sha256:" + "a" * 64}},
+        prepared=prepared, receipts=[], final_snapshot=final_snapshot,
+    )
+    assert result["retry_rotated"] is True
+    assert result["durable_rotation_proof"] is True
+    assert result["later_member_progress"] is True
+    assert len(result["selection_receipts"]) == 4
+    assert len(result["process_hashes"]) == 4
+    assert all(connection_id not in json.dumps(result) for connection_id in ids)
+    for resumed in resumed_snapshots:
+        resumed_result = derive_drain_evidence(
+            preflight={
+                "contract": {
+                    "validation_connection_root_hash": "sha256:" + "a" * 64,
+                },
+            },
+            prepared=resumed, receipts=[], final_snapshot=final_snapshot,
+        )
+        assert resumed_result == result
 
 
 def test_production_config_requires_all_roots_and_agent_version(monkeypatch):
@@ -292,7 +437,10 @@ def test_production_config_requires_all_roots_and_agent_version(monkeypatch):
         ProductionRuntimeConfig.from_environ(invalid)
 
 
-def test_cli_main_uses_production_runtime_and_closes_it(monkeypatch, capsys):
+@pytest.mark.parametrize("explicit_owner", ["test-worker", ""])
+def test_cli_main_uses_production_runtime_and_closes_it(
+    monkeypatch, capsys, explicit_owner
+):
     events: list[str] = []
 
     class Runtime:
@@ -306,12 +454,38 @@ def test_cli_main_uses_production_runtime_and_closes_it(monkeypatch, capsys):
     monkeypatch.setattr(
         cli,
         "build_production_runtime",
-        lambda *, owner: Runtime(),
+        lambda *, owner: events.append(f"owner:{owner}") or Runtime(),
     )
 
-    assert cli.main(["run-once", "--limit", "1", "--owner", "test-worker"]) == 0
-    assert events == ["run:1", "closed"]
+    assert cli.main(["run-once", "--limit", "1", "--owner", explicit_owner]) == 0
+    assert events == [f"owner:{explicit_owner}", "run:1", "closed"]
     assert capsys.readouterr().out == '{"processed": 1, "selected": 1}\n'
+
+
+def test_cli_default_owner_is_unique_per_process_invocation(monkeypatch, capsys):
+    owners: list[str] = []
+
+    class Runtime:
+        async def run_once(self, *, limit):
+            assert limit == 1
+            return {"selected": 0}
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "coordinator-host")
+    monkeypatch.setattr(
+        cli,
+        "build_production_runtime",
+        lambda *, owner: owners.append(owner) or Runtime(),
+    )
+
+    assert cli.main(["run-once"]) == 0
+    assert cli.main(["run-once"]) == 0
+    assert len(owners) == 2
+    assert all(owner.startswith("coordinator-host:") for owner in owners)
+    assert owners[0] != owners[1]
+    assert capsys.readouterr().out == '{"selected": 0}\n{"selected": 0}\n'
 
 
 def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
