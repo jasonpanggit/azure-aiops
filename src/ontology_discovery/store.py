@@ -742,6 +742,7 @@ class OntologyRunStore:
                 "revision": 0,
                 "created_at": moment.isoformat(),
                 "updated_at": moment.isoformat(),
+                "selection_history": [],
                 "members": {
                     connection_id: {
                         "connection_id": connection_id,
@@ -780,6 +781,7 @@ class OntologyRunStore:
             if epoch is None or epoch["status"] != "active":
                 return None
             order = epoch["member_order"]
+            cursor_before = int(epoch["cursor"])
             for _ in range(len(order)):
                 index = int(epoch["cursor"]) % len(order)
                 connection_id = order[index]
@@ -790,6 +792,8 @@ class OntologyRunStore:
                 next_attempt = datetime.fromisoformat(member["next_attempt_at"])
                 if next_attempt > moment:
                     continue
+                member["selection_cursor_before"] = cursor_before
+                member["selection_cursor_after"] = epoch["cursor"]
                 epoch["revision"] += 1
                 epoch["updated_at"] = moment.isoformat()
                 self._persist_advanced(state, moment)
@@ -804,6 +808,8 @@ class OntologyRunStore:
         outcome: str,
         reason_code: str = "",
         next_attempt_at: datetime | None = None,
+        actor: str = "",
+        authorization_receipt: str = "",
         now: datetime,
     ) -> dict[str, Any]:
         """Persist one exact terminal/exclusion result or a rotated retry."""
@@ -843,6 +849,17 @@ class OntologyRunStore:
                 else moment.isoformat()
             )
             member["updated_at"] = moment.isoformat()
+            epoch["selection_history"].append(
+                {
+                    "connection_id": connection,
+                    "cursor_before": member.get("selection_cursor_before"),
+                    "cursor_after": member.get("selection_cursor_after"),
+                    "attempt": member["attempt_count"],
+                    "outcome": outcome,
+                    "actor": actor,
+                    "authorization_receipt": authorization_receipt,
+                }
+            )
             if all(
                 value["outcome"] != "pending"
                 for value in epoch["members"].values()
@@ -2074,6 +2091,9 @@ def _epoch_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
     record.setdefault("epoch_id", "")
     record.setdefault("registry_revision", 0)
     record.setdefault("registry_hash", "")
+    record.setdefault("selection_history", [])
+    if not isinstance(record["selection_history"], list):
+        raise TypeError("Eligible-set selection history must be an array")
     record["member_order"] = [
         str(value).casefold() for value in record.get("member_order", ())
     ]

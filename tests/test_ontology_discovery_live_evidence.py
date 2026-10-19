@@ -430,7 +430,7 @@ def test_selection_receipts_are_snapshot_diffs_not_synthesized_flags() -> None:
         )
 
 
-def test_drain_uses_durable_rotation_history_after_resume() -> None:
+def test_drain_rejects_aggregate_only_rotation_after_resume() -> None:
     prepared = _snapshot(
         cursor=0,
         outcomes=("pending", "pending", "pending"),
@@ -469,17 +469,122 @@ def test_drain_uses_durable_rotation_history_after_resume() -> None:
         }
     }
 
+    with pytest.raises(EvidenceError, match="coordinator_retry_rotation_unavailable"):
+        derive_drain_evidence(
+            preflight=preflight,
+            prepared=prepared,
+            receipts=[],
+            final_snapshot=drained,
+        )
+
+
+def test_drain_uses_ordered_durable_history_after_resume() -> None:
+    prepared = _snapshot(
+        cursor=0, outcomes=("pending", "pending", "pending"), attempts=(0, 0, 0),
+    )
+    drained = _snapshot(
+        cursor=2,
+        outcomes=("succeeded", "exhausted_failure", "succeeded"),
+        attempts=(1, 2, 1),
+    )
+    epoch = drained["facts"]["epoch"]
+    epoch["status"] = "drained"
+    epoch["active_epoch_count"] = 0
+    history = [
+        {
+            "record_hash": "sha256:" + str(member) * 64,
+            "epoch_hash": epoch["epoch_hash"],
+            "snapshot_hash": epoch["snapshot_hash"],
+            "cursor_before": before,
+            "cursor_after": after,
+            "attempt": attempt,
+            "outcome": outcome,
+            "authorization_hash": "sha256:" + str(member) * 64,
+            "process_hash": "sha256:" + str(index + 4) * 64,
+        }
+        for index, (member, before, after, attempt, outcome) in enumerate([
+            (1, 0, 1, 1, "succeeded"),
+            (2, 1, 2, 1, "retrying"),
+            (3, 2, 0, 1, "succeeded"),
+            (2, 0, 2, 2, "exhausted_failure"),
+        ])
+    ]
+    epoch["selection_history"] = history
     result = derive_drain_evidence(
-        preflight=preflight,
+        preflight={"contract": {"validation_connection_root_hash": "sha256:" + "a" * 64}},
         prepared=prepared,
-        receipts=[],
+        receipts=history[-1:],
         final_snapshot=drained,
     )
-
+    assert result["selection_receipts"] == history
     assert result["durable_rotation_proof"] is True
     assert result["retry_rotated"] is True
     assert result["later_member_progress"] is True
-    assert len(result["selection_receipts"]) == 3
+
+    resumed = _snapshot(
+        cursor=2, outcomes=("succeeded", "pending", "pending"), attempts=(1, 1, 0),
+    )
+    resumed["facts"]["epoch"]["selection_history"] = history[:2]
+    assert derive_drain_evidence(
+        preflight={"contract": {"validation_connection_root_hash": "sha256:" + "a" * 64}},
+        prepared=resumed, receipts=history[2:], final_snapshot=drained,
+    ) == result
+
+    for field, value in (
+        ("cursor", 1),
+        ("selection_history", history[:1]),
+        ("selection_history", "invalid"),
+        ("selection_history", [None]),
+    ):
+        malformed_resume = json.loads(json.dumps(resumed))
+        malformed_resume["facts"]["epoch"][field] = value
+        with pytest.raises(EvidenceError, match="coordinator_selection_history_invalid"):
+            derive_drain_evidence(
+                preflight={}, prepared=malformed_resume,
+                receipts=history[2:], final_snapshot=drained,
+            )
+    malformed_resume = json.loads(json.dumps(resumed))
+    malformed_resume["facts"]["epoch"]["members"][0]["attempt_count"] = 2
+    with pytest.raises(EvidenceError, match="coordinator_selection_history_invalid"):
+        derive_drain_evidence(
+            preflight={}, prepared=malformed_resume,
+            receipts=history[2:], final_snapshot=drained,
+        )
+    malformed_resume = json.loads(json.dumps(resumed))
+    malformed_resume["facts"]["epoch"]["selection_history"][0]["process_hash"] = (
+        "sha256:" + "0" * 64
+    )
+    with pytest.raises(EvidenceError, match="coordinator_selection_history_invalid"):
+        derive_drain_evidence(
+            preflight={}, prepared=malformed_resume,
+            receipts=history[2:], final_snapshot=drained,
+        )
+
+    for field, value in (
+        ("epoch_hash", "sha256:" + "0" * 64),
+        ("snapshot_hash", "sha256:" + "0" * 64),
+        ("authorization_hash", ""),
+        ("process_hash", ""),
+        ("attempt", 3),
+        ("attempt", True),
+        ("cursor_before", 0),
+        ("cursor_after", 5),
+    ):
+        epoch["selection_history"] = json.loads(json.dumps(history))
+        epoch["selection_history"][1][field] = value
+        with pytest.raises(EvidenceError, match="coordinator_selection_history_invalid"):
+            derive_drain_evidence(
+                preflight={}, prepared=prepared, receipts=[], final_snapshot=drained,
+            )
+
+    epoch["selection_history"] = [history[0], history[1], history[3], history[2]]
+    with pytest.raises(EvidenceError, match="coordinator_selection_history_invalid"):
+        derive_drain_evidence(
+            preflight={},
+            prepared=prepared,
+            receipts=[],
+            final_snapshot=drained,
+        )
 
 
 def test_injection_derivation_requires_direct_arg_batch_dispatch_and_tool_facts() -> None:
@@ -769,6 +874,10 @@ def test_three_record_drain_proves_starvation_free_retry_rotation() -> None:
     no_later_progress["drain"]["selection_receipts"].insert(2, retry)
     report = evaluate_lifecycle_evidence(no_later_progress)
     assert "starvation_free_selection_order" in report["missing_evidence"]
+    no_later_progress["drain"]["durable_rotation_proof"] = True
+    assert "starvation_free_selection_order" in evaluate_lifecycle_evidence(
+        no_later_progress
+    )["missing_evidence"]
 
     mixed_epoch = json.loads(json.dumps(evidence))
     mixed_epoch["drain"]["selection_receipts"][2]["epoch_hash"] = (

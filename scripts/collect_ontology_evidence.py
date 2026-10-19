@@ -670,6 +670,15 @@ def summarize_lifecycle_documents(
         if latest_epoch
         else ""
     )
+    history = latest_epoch.get("selection_history", [])
+    if not isinstance(history, list) or any(
+        not isinstance(row, Mapping)
+        or type(row.get("cursor_before")) is not int
+        or type(row.get("cursor_after")) is not int
+        or type(row.get("attempt")) is not int
+        for row in history
+    ):
+        raise EvidenceCollectionError("selection_history_invalid")
     return {
         "fixture": {
             "drill_count": len(drills),
@@ -718,6 +727,30 @@ def summarize_lifecycle_documents(
             "revision": int(latest_epoch.get("revision") or 0),
             "member_count": len(members),
             "members": member_rows,
+            "selection_history": [
+                {
+                    "record_hash": _closed_hash(row.get("connection_id")),
+                    "epoch_hash": _closed_hash(latest_epoch.get("epoch_id")),
+                    "snapshot_hash": snapshot_hash,
+                    "cursor_before": row.get("cursor_before"),
+                    "cursor_after": row.get("cursor_after"),
+                    "attempt": row.get("attempt"),
+                    "outcome": (
+                        "retrying"
+                        if row.get("outcome") == "pending"
+                        else row.get("outcome")
+                        if row.get("outcome") in {
+                            "succeeded", "duplicate", "exhausted_failure", "excluded",
+                        }
+                        else "unknown"
+                    ),
+                    "authorization_hash": _closed_hash(
+                        row.get("authorization_receipt")
+                    ),
+                    "process_hash": _closed_hash(row.get("actor")),
+                }
+                for row in history
+            ],
         },
         "runs": {
             "count": len(run_summaries),

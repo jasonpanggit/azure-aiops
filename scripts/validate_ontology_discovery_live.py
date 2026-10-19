@@ -1884,7 +1884,7 @@ def evaluate_lifecycle_evidence(
         "authoritative_selection_receipts",
     )
     require(
-        starvation_free or drain.get("durable_rotation_proof") is True,
+        starvation_free,
         "starvation_free_selection_order",
     )
     require(
@@ -3962,7 +3962,93 @@ def derive_drain_evidence(
         for row in members
         if row.get("outcome") in terminal
     ]
-    receipt_rows = [dict(row) for row in receipts]
+    history = epoch.get("selection_history")
+    if history is not None and not isinstance(history, list):
+        raise EvidenceError("coordinator_selection_history_invalid")
+    durable_rotation = isinstance(history, list) and bool(history)
+    receipt_rows = (
+        [dict(row) for row in history if isinstance(row, Mapping)]
+        if durable_rotation
+        else [dict(row) for row in receipts]
+    )
+    if durable_rotation and len(receipt_rows) != len(history):
+        raise EvidenceError("coordinator_selection_history_invalid")
+    attempts: dict[str, int] = {}
+    last_outcomes: dict[str, object] = {}
+    prepared_epoch = _snapshot_fact(prepared, "epoch")
+    prepared_history = prepared_epoch.get("selection_history", [])
+    cursor = 0
+    member_order = [
+        row.get("record_hash")
+        for row in prepared_epoch["members"]
+    ]
+    if durable_rotation:
+        if (
+            not isinstance(prepared_history, list)
+            or receipt_rows[:len(prepared_history)] != prepared_history
+            or len(prepared_history) > len(receipt_rows)
+        ):
+            raise EvidenceError("coordinator_selection_history_invalid")
+        prefix_attempts: dict[str, object] = {}
+        prefix_outcomes: dict[str, object] = {}
+        for row in prepared_history:
+            prefix_attempts[str(row.get("record_hash"))] = row.get("attempt")
+            prefix_outcomes[str(row.get("record_hash"))] = row.get("outcome")
+        prefix_cursor = prepared_history[-1].get("cursor_after") if prepared_history else 0
+        if (
+            type(prepared_epoch.get("cursor")) is not int
+            or prepared_epoch["cursor"] != prefix_cursor
+            or any(
+                prefix_attempts.get(str(row["record_hash"]), 0)
+                != row.get("attempt_count")
+                or prefix_outcomes.get(str(row["record_hash"]), "retrying")
+                != (
+                    "retrying"
+                    if row.get("outcome") == "pending"
+                    else row.get("outcome")
+                )
+                for row in prepared_epoch["members"]
+            )
+        ):
+            raise EvidenceError("coordinator_selection_history_invalid")
+    for row in receipt_rows:
+        record_hash = row.get("record_hash")
+        if (
+            record_hash not in prepare["record_hashes"]
+            or row.get("epoch_hash") != prepare["epoch_hash"]
+            or row.get("snapshot_hash") != prepare["snapshot_hash"]
+            or not _require_hash(row.get("authorization_hash"))
+            or not _require_hash(row.get("process_hash"))
+            or type(row.get("cursor_before")) is not int
+            or type(row.get("cursor_after")) is not int
+            or not 0 <= row["cursor_before"] < 3
+            or not 0 <= row["cursor_after"] < 3
+            or row.get("outcome") not in {
+                "retrying", "succeeded", "duplicate", "exhausted_failure", "excluded",
+            }
+        ):
+            raise EvidenceError("coordinator_selection_history_invalid")
+        if durable_rotation:
+            if (
+                row["cursor_before"] != cursor
+                or row["cursor_after"] != (member_order.index(record_hash) + 1) % 3
+                or type(row.get("attempt")) is not int
+                or row["attempt"] != attempts.get(str(record_hash), 0) + 1
+                or last_outcomes.get(str(record_hash), "retrying") != "retrying"
+            ):
+                raise EvidenceError("coordinator_selection_history_invalid")
+            cursor = row["cursor_after"]
+            attempts[str(record_hash)] = row["attempt"]
+            last_outcomes[str(record_hash)] = row["outcome"]
+    if durable_rotation and (
+        cursor != epoch.get("cursor")
+        or any(
+            attempts.get(str(row.get("record_hash"))) != row.get("attempt_count")
+            or last_outcomes.get(str(row.get("record_hash"))) != row.get("outcome")
+            for row in members
+        )
+    ):
+        raise EvidenceError("coordinator_selection_history_invalid")
     retry_indexes = [
         index
         for index, row in enumerate(receipt_rows)
@@ -3988,72 +4074,18 @@ def derive_drain_evidence(
     process_hashes = [
         str(row.get("process_hash") or "") for row in receipt_rows
     ]
-    runs = _snapshot_fact(final_snapshot, "runs")
-    run_rows = [
-        row
-        for row in _closed_list(runs.get("records"))
-        if isinstance(row, Mapping)
-    ]
-    durable_process_hashes = [
-        str(process_hash)
-        for row in run_rows
-        for process_hash in _closed_list(row.get("process_hashes"))
-        if _require_hash(process_hash)
-    ]
-    durable_rotation = (
-        len(run_rows) == 3
-        and {row.get("connection_hash") for row in run_rows}
-        == set(prepare["record_hashes"])
-        and all(
-            int(row.get("attempt_count") or 0) >= 2
-            and len(_closed_list(row.get("process_hashes"))) >= 2
-            and _require_hash(row.get("authorization_hash"))
-            for row in run_rows
-        )
-        and int(epoch.get("revision") or 0) >= 6
-    )
-    if durable_rotation and {
-        row.get("record_hash") for row in receipt_rows
-    } != set(
-        prepare["record_hashes"]
-    ):
-        run_by_connection = {
-            row.get("connection_hash"): row for row in run_rows
-        }
-        receipt_rows = [
-            {
-                "record_hash": row.get("record_hash"),
-                "epoch_hash": epoch.get("epoch_hash"),
-                "snapshot_hash": epoch.get("snapshot_hash"),
-                "cursor_before": int(epoch.get("cursor") or 0),
-                "cursor_after": int(epoch.get("cursor") or 0),
-                "attempt": int(row.get("attempt_count") or 0),
-                "outcome": row.get("outcome"),
-                "authorization_hash": row.get("authorization_hash"),
-                "process_hash": (
-                    _closed_list(
-                        run_by_connection.get(
-                            row.get("record_hash"),
-                            {},
-                        ).get("process_hashes")
-                    )[-1]
-                ),
-            }
-            for row in members
-        ]
-    process_hashes = list(
-        dict.fromkeys([*process_hashes, *durable_process_hashes])
-    )
+    process_hashes = list(dict.fromkeys(process_hashes))
     prepared_registry = _snapshot_fact(prepared, "registry")
     final_registry = _snapshot_fact(final_snapshot, "registry")
     if (
         epoch.get("status") != "drained"
+        or len(members) != 3
         or epoch.get("epoch_hash") != prepare["epoch_hash"]
         or epoch.get("snapshot_hash") != prepare["snapshot_hash"]
         or set(terminal_hashes) != set(prepare["record_hashes"])
     ):
         raise EvidenceError("coordinator_terminal_drain_unavailable")
-    if not retry_rotated and not durable_rotation:
+    if not retry_rotated:
         raise EvidenceError("coordinator_retry_rotation_unavailable")
     if len(set(process_hashes)) < 2:
         raise EvidenceError("coordinator_process_replacement_unavailable")
@@ -4085,7 +4117,7 @@ def derive_drain_evidence(
         "terminal_record_hashes": terminal_hashes,
         "selection_receipts": receipt_rows,
         "retry_rotated": True,
-        "later_member_progress": later_progress or durable_rotation,
+        "later_member_progress": later_progress,
         "durable_rotation_proof": durable_rotation,
         "process_hashes": process_hashes,
         "restart_lineage_preserved": True,

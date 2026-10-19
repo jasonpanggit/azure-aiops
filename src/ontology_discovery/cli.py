@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import socket
+import uuid
 from datetime import datetime
 
 from .coordinator import OntologyDiscoveryCoordinator
@@ -40,15 +41,22 @@ def _parser() -> argparse.ArgumentParser:
         default=1,
         help="Production safety bound; exactly one connection per pass",
     )
-    parser.add_argument("--owner", default=socket.gethostname())
+    parser.add_argument("--owner")
     return parser
+
+
+def _process_owner() -> str:
+    """Return a lease owner unique to this coordinator process invocation."""
+
+    return f"{socket.gethostname()}:{uuid.uuid4().hex}"
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    owner = args.owner if args.owner is not None else _process_owner()
 
     async def execute() -> dict[str, int | bool]:
-        runtime = build_production_runtime(owner=args.owner)
+        runtime = build_production_runtime(owner=owner)
         try:
             return await runtime.run_once(limit=args.limit)
         finally:
