@@ -17,7 +17,18 @@ from collections.abc import Iterable, Mapping, Sequence
 from functools import cached_property
 from typing import Any
 
+from intelligence.governance import (
+    FinOpsEngine,
+    IdentityRiskEngine,
+    SpnGovernanceEngine,
+)
+
 _IDENTITY_TYPES = ("RoleAssignment", "RoleDefinition", "ManagedIdentity")
+_NO_IDENTITY_DATA = (
+    "No role assignment data has been synced for this scope. This is not a "
+    "statement that no privileged access exists -- run a connection sync to "
+    "collect it."
+)
 
 
 def _unpack(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -118,4 +129,48 @@ class GovernanceSnapshot:
         return bool(scope.matches(scope_attributes(_unpack(row))))
 
 
-__all__ = ["GovernanceSnapshot"]
+def finops_engine(snapshot: GovernanceSnapshot) -> FinOpsEngine:
+    """Project the same scoped connection-generation rows for REST and tools."""
+    return FinOpsEngine(
+        advisor_recommendations=snapshot.rows("AdvisorRecommendation"),
+        cost_actuals=snapshot.rows("CostActual"),
+        resources=[
+            *snapshot.rows("Resource"),
+            *snapshot.rows("VirtualMachine"),
+            *snapshot.rows("ArcServer"),
+        ],
+    )
+
+
+def identity_engine(snapshot: GovernanceSnapshot) -> IdentityRiskEngine:
+    """Build identity intelligence without broadening the supplied snapshot."""
+    return IdentityRiskEngine(
+        role_assignments=snapshot.rows("RoleAssignment"),
+        role_definitions=snapshot.rows("RoleDefinition"),
+        managed_identities=snapshot.rows("ManagedIdentity"),
+    )
+
+
+def spn_engine(snapshot: GovernanceSnapshot) -> SpnGovernanceEngine:
+    """Build credential governance from the already-scoped connection view."""
+    return SpnGovernanceEngine(
+        snapshot.connections,
+        role_assignments=snapshot.rows("RoleAssignment"),
+    )
+
+
+def identity_warnings(snapshot: GovernanceSnapshot) -> list[str]:
+    """Keep missing role-assignment evidence distinct from an observed zero."""
+    warnings = list(snapshot.warnings)
+    if not snapshot.rows("RoleAssignment"):
+        warnings.append(_NO_IDENTITY_DATA)
+    return list(dict.fromkeys(warnings))
+
+
+__all__ = [
+    "GovernanceSnapshot",
+    "finops_engine",
+    "identity_engine",
+    "identity_warnings",
+    "spn_engine",
+]

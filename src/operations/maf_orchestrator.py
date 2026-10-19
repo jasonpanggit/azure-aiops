@@ -574,6 +574,13 @@ def build_deterministic_fallback(
 
     def safe_call(spec: Any) -> ToolCallCandidate | None:
         tools = list(spec.operations_tools_for_page(page_kind))
+        if request.snapshot.selected_entities or any(
+            item.selected for item in request.snapshot.evidence
+        ):
+            tools = [
+                tool for tool in tools
+                if tool not in {"governance_summary", "identity_summary", "finops_summary"}
+            ]
         lowered_question = request.question.casefold()
         preferred_arguments: dict[str, dict[str, Any]] = {}
         if page_kind == "kb_detail" and "kb_detail" in tools:

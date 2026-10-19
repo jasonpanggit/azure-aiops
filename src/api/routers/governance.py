@@ -31,10 +31,7 @@ from intelligence.governance import (
     REVIEW_AUDIENCES,
     AccessReviewBuilder,
     AuditExportBuilder,
-    FinOpsEngine,
-    IdentityRiskEngine,
     SettingsValidationError,
-    SpnGovernanceEngine,
     default_settings,
 )
 from intelligence.governance.campaigns import (
@@ -70,6 +67,10 @@ from ..evidence import (
     envelope,
 )
 from ..governance_snapshot import GovernanceSnapshot
+from ..governance_snapshot import finops_engine as _finops
+from ..governance_snapshot import identity_engine as _identity
+from ..governance_snapshot import identity_warnings as _identity_warnings
+from ..governance_snapshot import spn_engine as _spn
 from ..rbac import ACTION_WRITE
 from ..scope import Scope
 
@@ -84,13 +85,6 @@ FINOPS_ENGINE = "intelligence.governance.FinOpsEngine"
 IDENTITY_ENGINE = "intelligence.governance.IdentityRiskEngine"
 SPN_ENGINE = "intelligence.governance.SpnGovernanceEngine"
 SOURCE_TABLE = "connection_generation_entities"
-
-_NO_IDENTITY_DATA = (
-    "No role assignment data has been synced for this scope. This is not a "
-    "statement that no privileged access exists -- run a connection sync to "
-    "collect it."
-)
-
 
 def _snapshot(
     context: Context,
@@ -120,40 +114,6 @@ def _evidence(
         confidence=confidence,
         timestamp=snapshot.observed_at,
     )
-
-
-def _finops(snapshot: GovernanceSnapshot) -> FinOpsEngine:
-    return FinOpsEngine(
-        advisor_recommendations=snapshot.rows("AdvisorRecommendation"),
-        cost_actuals=snapshot.rows("CostActual"),
-        resources=[
-            *snapshot.rows("Resource"),
-            *snapshot.rows("VirtualMachine"),
-            *snapshot.rows("ArcServer"),
-        ],
-    )
-
-
-def _identity(snapshot: GovernanceSnapshot) -> IdentityRiskEngine:
-    return IdentityRiskEngine(
-        role_assignments=snapshot.rows("RoleAssignment"),
-        role_definitions=snapshot.rows("RoleDefinition"),
-        managed_identities=snapshot.rows("ManagedIdentity"),
-    )
-
-
-def _spn(snapshot: GovernanceSnapshot) -> SpnGovernanceEngine:
-    return SpnGovernanceEngine(
-        snapshot.connections,
-        role_assignments=snapshot.rows("RoleAssignment"),
-    )
-
-
-def _identity_warnings(snapshot: GovernanceSnapshot) -> list[str]:
-    warnings = list(snapshot.warnings)
-    if not snapshot.rows("RoleAssignment"):
-        warnings.append(_NO_IDENTITY_DATA)
-    return list(dict.fromkeys(warnings))
 
 
 @router.get("/finops/summary", summary="Cost accountability summary")

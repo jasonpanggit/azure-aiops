@@ -90,6 +90,37 @@ For a live audit, inspect the actual authenticated browser response and rendered
 panel together. HTTP 200 alone, a specialist name, or replayed test fixtures
 does not establish a successful live LLM answer.
 
+### Native Governance, Identity and FinOps Insights
+
+These three page mappings use `governance_summary`, `identity_summary` and
+`finops_summary`, respectively. Each accepts no caller-supplied arguments and
+uses `ApiContext.governance_snapshot(effective_scope, require_generation=True)`,
+the same scoped, generation-pinned connection evidence used by the REST pages.
+The engine projections are shared with REST, rather than importing router
+handlers or interpreting a page title/question as a business-service identifier.
+
+The manifest grants these native reads to the corresponding specialists.
+Other Governance pages retain their existing reviewed semantic grants; the
+legacy MCP consumer's allowlist and twelve-specialist portfolio are unchanged.
+Explicitly selected entities retain their existing subject-specific tools;
+an estate summary is not a substitute for a selected resource's risk or owner.
+An unnamed standalone ownership question still requires a subject.
+New specialist MCP grants and the Terraform registry are projected from the
+same reviewed manifest. Source/package parity does not establish that an older
+deployed Foundry specialist version has been republished: verify the actual
+consumer's grants before claiming remote MCP parity.
+
+Provider or missing-generation failures return `unavailable`, without fallback
+to a broader semantic snapshot. A successful read with no relevant synced rows
+returns `empty`. Missing role assignments never become a zero-privilege claim;
+missing Cost Management data and mixed currencies retain the FinOps engine's
+explicit limitations. Governance summarises observed identity, cost and
+onboarding credentials, not policy compliance, approval or completed reviews.
+Bounded principal-risk, Advisor and waste projections provide affected identifiers;
+raw role assignments, credential records and secret references are not sent
+to the model. Payload list bounds disclose any truncation while summary counts
+continue to cover the full authorized snapshot.
+
 ### Live incident and remediation scope parity
 
 Incident and remediation tools use the existing live adapters for an explicit
