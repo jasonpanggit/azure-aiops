@@ -95,6 +95,8 @@ question without a hint is bound to the already-validated `cve:*` page ID using
 the existing `cve_detail` read. Never substitute a global exposure list or a
 different CVE for missing enrichment. Live acceptance checks identifiers in the
 actual narration, not only HTTP status and model provenance.
+CVE detail drawers retain the canonical snapshot and exact thread revision for
+starter and typed follow-ups so unhinted follow-ups remain on the visible CVE.
 
 ### Native Governance, Identity and FinOps Insights
 
@@ -113,7 +115,7 @@ an estate summary is not a substitute for a selected resource's risk or owner.
 Direct visible observations on these three estate pages are not implicit
 operator selections. Their page-scoped follow-up drawers use the same canonical
 snapshot/request path as Insights, including exact server thread revisions.
-Other drawers retain their existing question-only contracts.
+Apart from CVE detail above, other drawers retain their existing question-only contracts.
 An unnamed standalone ownership question still requires a subject.
 New specialist MCP grants and the Terraform registry are projected from the
 same reviewed manifest. Source/package parity does not establish that an older

@@ -227,17 +227,19 @@ describe("CopilotDrawer", () => {
     };
   }
 
-  it.each(["governance", "identity", "finops"] as const)(
+  it.each(["governance", "identity", "finops", "cve_detail"] as const)(
     "retains %s page context, reviewed hints and exact thread revisions",
     async (pageKind) => {
       const nativeSnapshot = normalizeCopilotSnapshotV2({
         ...canonicalSnapshot("azure"),
         page_kind: pageKind,
-        page_id: pageKind,
+        page_id: pageKind === "cve_detail" ? "cve:CVE-2025-15649" : pageKind,
         evidence: [],
       });
-      const specialist = pageKind === "identity" ? "identity_access" : pageKind;
-      const tool = `${pageKind}_summary`;
+      const specialist = pageKind === "cve_detail"
+        ? "vulnerability" : pageKind === "identity" ? "identity_access" : pageKind;
+      const tool = pageKind === "cve_detail" ? "cve_detail" : `${pageKind}_summary`;
+      const toolArguments = pageKind === "cve_detail" ? { cve_id: "CVE-2025-15649" } : {};
       const threadId = "thr-ffffffffffffffffffffffffffffffff";
       investigateCanonical.mockResolvedValue(canonicalResult(threadId, "native:source"));
       render(
@@ -247,7 +249,7 @@ describe("CopilotDrawer", () => {
             requestedScope={{ subscription: ["visible"] }}
             starterQuestions={[{
               label: "Summarize current evidence",
-              specialistId: specialist, tool, toolArguments: {},
+              specialistId: specialist, tool, toolArguments,
             }]}
           />
         </TestProviders>,
@@ -257,7 +259,7 @@ describe("CopilotDrawer", () => {
         expect.objectContaining({
           snapshot: nativeSnapshot,
           requested_scope: { subscription: ["visible"] },
-          hint: { specialist_id: specialist, tool, arguments: {} },
+          hint: { specialist_id: specialist, tool, arguments: toolArguments },
         }),
         { subscription: ["visible"] },
       ));
