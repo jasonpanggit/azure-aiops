@@ -4900,6 +4900,61 @@ def test_deferred_semantic_cve_fallback_rejects_conflicting_selected_cve(
     assert response.json()["error"]["details"]["field"] == "snapshot.page_id"
 
 
+@pytest.mark.parametrize("mode", ["compatibility", "canary"])
+@pytest.mark.parametrize("cve_id", ["CVE-2025-15649", "CVE-2026-13221"])
+def test_cve_detail_executive_insight_without_hint_is_bound_before_io(
+    tmp_path, monkeypatch, mode, cve_id,
+):
+    enable_authorized_canary(monkeypatch)
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", mode)
+    body = _cve_canonical_body(cve_id)
+    body.pop("hint")
+    body["question"] = (
+        "Give me a concise executive insight for CVE detail. "
+        "Use only the supplied page evidence."
+    )
+    calls = []
+
+    def exact_tool(name, arguments, **_kwargs):
+        calls.append((name, dict(arguments)))
+        assert name == "cve_detail"
+        assert arguments == {"cve_id": cve_id}
+        return ToolResult(
+            status="ok",
+            data={
+                "cve_id": cve_id,
+                "external_catalog_status": "empty",
+                "scoped_exposure_status": "ok",
+                "scoped_exposure": {
+                    "query_cve_id": cve_id, "total_count": 1,
+                    "returned_count": 1, "items": [{"weakness_id": cve_id}],
+                },
+            },
+            evidence=(Evidence(
+                source_engine="api.ExposureQueryService",
+                source_table="gold_exposure_facts",
+                resource_id=cve_id,
+                confidence="high",
+            ),),
+        )
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", exact_tool)
+    monkeypatch.setattr("operations.investigation.call_tool", exact_tool)
+    response = TestClient(
+        create_app(_context(tmp_path, None)), raise_server_exceptions=False,
+    ).post(
+        "/api/v1/copilot/investigations?subscription=sub-a",
+        headers=HEADERS, json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == [("cve_detail", {"cve_id": cve_id})]
+    data = response.json()["data"]
+    assert data["selected_tools"] == ["cve_detail"]
+    assert data["tool_results"][0]["data"]["cve_id"] == cve_id
+    assert data["mutation_authorized"] is False
+
+
 def test_canonical_cve_rejects_prompt_or_hint_from_stale_visible_context(
     tmp_path,
     monkeypatch,

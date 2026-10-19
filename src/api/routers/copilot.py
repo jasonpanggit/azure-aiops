@@ -2231,6 +2231,18 @@ def investigate_canonical(
                 )
             },
         ) from exc
+    if (
+        plan_hint is None
+        and browser_snapshot.page_kind in {"cve_detail", "vulnerability"}
+        and browser_snapshot.page_id.casefold().startswith("cve:")
+    ):
+        plan_hint = CanonicalPlanHint(
+            specialist_id="vulnerability",
+            tool="cve_detail",
+            arguments={
+                "cve_id": canonical_cve_id(browser_snapshot.page_id.split(":", 1)[1]),
+            },
+        )
     execution_payload = payload.model_copy(update={"hint": plan_hint})
     rollout = copilot_rollout_decision(stable_key=principal.subject)
     hint_candidate: CandidatePlan | None = None
