@@ -2125,7 +2125,13 @@ def investigate_canonical(
                 )
                 for item in selection_snapshot.evidence
                 if (
-                    item.selected or item.direct
+                    item.selected
+                    or (
+                        item.direct
+                        and browser_snapshot.page_kind not in {
+                            "governance", "identity", "finops",
+                        }
+                    )
                 )
                 and (
                     isinstance(item.entity, AzureEntityRef)

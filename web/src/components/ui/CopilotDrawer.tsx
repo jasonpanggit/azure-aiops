@@ -18,6 +18,7 @@ import type { CopilotAnswer, CopilotToolCall } from "@/lib/services";
 import {
   buildCopilotSnapshot,
   copilotApi,
+  investigateCanonical,
   toCanonicalInvestigationView,
 } from "@/lib/services";
 import {
@@ -267,7 +268,24 @@ export function CopilotDrawer({
           }),
         );
       setLastSnapshot(submittedSnapshot);
-      const envelope = await copilotApi.investigate(
+      const nativePage = canonicalSnapshot
+        && ["governance", "identity", "finops"].includes(canonicalSnapshot.page_kind);
+      const envelope = nativePage ? await investigateCanonical(
+        {
+          contract_version: "1",
+          question: nextQuestion,
+          requested_scope: effectiveRequestedScope,
+          snapshot: submittedSnapshot,
+          ...(threadContinuity.thread ? {
+            thread_id: threadContinuity.thread.threadId,
+            expected_thread_revision: threadContinuity.thread.threadRevision,
+          } : {}),
+          ...(specialistId && tool ? {
+            hint: { specialist_id: specialistId, tool, arguments: toolArguments ?? {} },
+          } : {}),
+        },
+        effectiveRequestedScope,
+      ) : await copilotApi.investigate(
         nextQuestion,
         effectiveRequestedScope,
         {
@@ -314,7 +332,7 @@ export function CopilotDrawer({
       ]);
       setStage(view.degraded && view.narrationMode !== "foundry"
         ? "fallback"
-        : result.fact_status === "partial"
+        : ("fact_status" in result ? result.fact_status : result.status) === "partial"
           ? "partial"
           : "idle");
     } catch (reason) {

@@ -104,6 +104,10 @@ Other Governance pages retain their existing reviewed semantic grants; the
 legacy MCP consumer's allowlist and twelve-specialist portfolio are unchanged.
 Explicitly selected entities retain their existing subject-specific tools;
 an estate summary is not a substitute for a selected resource's risk or owner.
+Direct visible observations on these three estate pages are not implicit
+operator selections. Their page-scoped follow-up drawers use the same canonical
+snapshot/request path as Insights, including exact server thread revisions.
+Other drawers retain their existing question-only contracts.
 An unnamed standalone ownership question still requires a subject.
 New specialist MCP grants and the Terraform registry are projected from the
 same reviewed manifest. Source/package parity does not establish that an older
