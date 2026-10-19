@@ -96,6 +96,11 @@ class BoundedBenchmarkReader:
         self.reader = reader
         self.calls = 0
 
+    @property
+    def endpoint(self) -> SqlEndpoint:
+        """Preserve the endpoint required by production SQL instrumentation."""
+        return self.reader.endpoint
+
     def query(
         self,
         sql: str,
