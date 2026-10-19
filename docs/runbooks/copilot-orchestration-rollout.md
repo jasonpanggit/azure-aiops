@@ -90,6 +90,12 @@ For a live audit, inspect the actual authenticated browser response and rendered
 panel together. HTTP 200 alone, a specialist name, or replayed test fixtures
 does not establish a successful live LLM answer.
 
+CVE detail Insights must also preserve subject identity: a generic executive
+question without a hint is bound to the already-validated `cve:*` page ID using
+the existing `cve_detail` read. Never substitute a global exposure list or a
+different CVE for missing enrichment. Live acceptance checks identifiers in the
+actual narration, not only HTTP status and model provenance.
+
 ### Native Governance, Identity and FinOps Insights
 
 These three page mappings use `governance_summary`, `identity_summary` and
