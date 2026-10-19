@@ -6,7 +6,7 @@ import {
   ThreadContinuityProvider,
   useThreadContinuity,
 } from "@/lib/copilot/thread-context";
-import type { CanonicalCopilotResult } from "@/lib/copilot/page-adapters";
+import { normalizeCopilotSnapshotV2, type CanonicalCopilotResult } from "@/lib/copilot/page-adapters";
 import { ScopeProvider } from "@/lib/scope-context";
 import { ApiError, type EvidenceItem } from "@/lib/types";
 import { CopilotDrawer } from "./CopilotDrawer";
@@ -20,6 +20,7 @@ vi.mock("@/lib/services", async () => {
   const actual = await vi.importActual<typeof import("@/lib/services")>("@/lib/services");
   return {
     ...actual,
+    investigateCanonical,
     copilotApi: {
       ...actual.copilotApi,
       investigate: (
@@ -225,6 +226,54 @@ describe("CopilotDrawer", () => {
       warnings: [],
     };
   }
+
+  it.each(["governance", "identity", "finops"] as const)(
+    "retains %s page context, reviewed hints and exact thread revisions",
+    async (pageKind) => {
+      const nativeSnapshot = normalizeCopilotSnapshotV2({
+        ...canonicalSnapshot("azure"),
+        page_kind: pageKind,
+        page_id: pageKind,
+        evidence: [],
+      });
+      const specialist = pageKind === "identity" ? "identity_access" : pageKind;
+      const tool = `${pageKind}_summary`;
+      const threadId = "thr-ffffffffffffffffffffffffffffffff";
+      investigateCanonical.mockResolvedValue(canonicalResult(threadId, "native:source"));
+      render(
+        <TestProviders>
+          <CopilotDrawer
+            open onClose={vi.fn()} snapshot={nativeSnapshot}
+            requestedScope={{ subscription: ["visible"] }}
+            starterQuestions={[{
+              label: "Summarize current evidence",
+              specialistId: specialist, tool, toolArguments: {},
+            }]}
+          />
+        </TestProviders>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Summarize current evidence/ }));
+      await waitFor(() => expect(investigateCanonical).toHaveBeenCalledWith(
+        expect.objectContaining({
+          snapshot: nativeSnapshot,
+          requested_scope: { subscription: ["visible"] },
+          hint: { specialist_id: specialist, tool, arguments: {} },
+        }),
+        { subscription: ["visible"] },
+      ));
+      await waitFor(() => expect(screen.getByLabelText("root continuity")).toHaveTextContent(threadId));
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "What is uncertain?" } });
+      fireEvent.click(screen.getByRole("button", { name: /^Send$/ }));
+      await waitFor(() => expect(investigateCanonical).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          question: "What is uncertain?", snapshot: nativeSnapshot,
+          thread_id: threadId, expected_thread_revision: 1,
+        }),
+        { subscription: ["visible"] },
+      ));
+      expect(investigateCanonical.mock.calls.at(-1)?.[0]).not.toHaveProperty("hint");
+    },
+  );
 
   it("keeps the page snapshot local and renders server-grounded citations", async () => {
     const result = canonicalResult(

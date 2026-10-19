@@ -368,3 +368,59 @@ def test_authenticated_page_insights_use_native_evidence_without_hint(tmp_path, 
     assert body["synthesis"]["compatibility_answer"]["model"] == "test-model"
     assert body["citations"]
     assert body["mutation_authorized"] is False
+
+
+@pytest.mark.parametrize(("page", "tool"), [
+    ("governance", "governance_summary"),
+    ("identity", "identity_summary"),
+    ("finops", "finops_summary"),
+])
+@pytest.mark.parametrize("selection", ["observation", "selected_row", "selected_entity"])
+def test_populated_native_page_observations_are_not_implicit_selections(
+    tmp_path, monkeypatch, page, tool, selection,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "compatibility")
+
+    class Agent:
+        def answer(self, *, question, context):
+            assert "browser-spend-fiction" not in json.dumps(context)
+            return AgentAnswer(
+                text="Observed native evidence.", agent_name="native-test",
+                model="test-model", agent_version="1",
+            )
+
+    context = _context(
+        tmp_path, _snapshot(), scope=Scope.from_mapping({"subscription": ["visible"]}),
+        agent=Agent(),
+    )
+    client = TestClient(create_app(context), raise_server_exceptions=False)
+    resource_id = "/subscriptions/visible/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm"
+    entity = {"type": "azure", "resource_id": resource_id}
+    response = client.post(
+        "/api/v1/copilot/investigations",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        json={
+            "question": "Give me a concise executive insight for this page.",
+            "requested_scope": {"subscription": ["visible"]},
+            "snapshot": {
+                "page_kind": page, "page_id": page,
+                "coverage": {"visible_count": 1, "total_count": 1, "complete": True},
+                "selected_entities": [entity] if selection == "selected_entity" else [],
+                "evidence": [{
+                    "evidence_id": "finops:waste:vm", "source": "finops/waste",
+                    "resource_id": resource_id, "entity": entity,
+                    "direct": True, "selected": selection == "selected_row",
+                    "data": {"value": "browser-spend-fiction"},
+                }],
+            },
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()["data"]
+    if selection == "observation":
+        assert body["selected_tools"] == [tool]
+        assert body["synthesis"]["compatibility_answer"]["model"] == "test-model"
+    else:
+        assert tool not in body["selected_tools"]
+    assert body["mutation_authorized"] is False
