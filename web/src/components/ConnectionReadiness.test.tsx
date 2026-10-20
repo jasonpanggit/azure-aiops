@@ -22,7 +22,9 @@ const envelope = <T,>(data: T) => ({ data, evidence: [], knowledge_version: "gen
 describe("Connection readiness journey", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resources.mockResolvedValue({ ...envelope({ resources: [] }), pagination: { total: 57 } });
+    resources.mockResolvedValue({ ...envelope({
+      resources: [], scope_qualification: { status: "supported", unsupported_dimensions: [] },
+    }), pagination: { total: 57 } });
     layers.mockResolvedValue(envelope({ layers: {
       bronze: { healthy: 1, total: 2 }, silver: { healthy: 0, total: 0 }, gold: { healthy: 0, total: 1 },
     } }));
@@ -50,6 +52,15 @@ describe("Connection readiness journey", () => {
     expect(layers).toHaveBeenCalledWith(scope);
     expect(status).toHaveBeenCalledWith("conn-a", scope);
     expect(capabilities).toHaveBeenCalledWith(scope);
+    for (const name of ["bronze publication", "silver publication", "gold publication", "consumer capabilities"]) {
+      const href = screen.getByRole("link", { name: `Inspect ${name}` }).getAttribute("href")!;
+      const query = new URL(href, "https://example.invalid").searchParams;
+      expect(query.getAll("subscription")).toEqual(["sub-a"]);
+      expect(query.getAll("subscription_connection")).toEqual(["conn-a"]);
+      expect(query.getAll("environment")).toEqual(["prod"]);
+    }
+    expect(screen.queryByRole("link", { name: "Inspect persisted inventory" })).not.toBeInTheDocument();
+    expect(screen.getByText(/destination does not support this selected connection scope/)).toBeInTheDocument();
   });
 
   it("keeps successful stages visible when one source fails", async () => {
@@ -65,10 +76,49 @@ describe("Connection readiness journey", () => {
     resources.mockImplementationOnce(() => new Promise(value => { resolve = value; }));
     const { rerender } = render(<ConnectionReadiness connection={connection} scope={{}} refreshKey={0} />);
     await waitFor(() => expect(resources).toHaveBeenCalledTimes(1));
-    resources.mockResolvedValueOnce({ ...envelope({ resources: [] }), pagination: { total: 2 } });
+    resources.mockResolvedValueOnce({ ...envelope({
+      resources: [], scope_qualification: { status: "supported", unsupported_dimensions: [] },
+    }), pagination: { total: 2 } });
     rerender(<ConnectionReadiness connection={{ ...connection, connection_id: "conn-b", subscription_id: "sub-b" }} scope={{}} refreshKey={0} />);
     expect(await screen.findByText(/2 authorized inventory resources/)).toBeInTheDocument();
     resolve({ ...envelope({ resources: [] }), knowledge_version: "old-scope" });
     await waitFor(() => expect(screen.queryByText(/old-scope/)).not.toBeInTheDocument());
+  });
+
+  it.each([undefined, {
+    status: "unsupported", unsupported_dimensions: ["subscription_connection"],
+    reason: "connection_attribution_unavailable",
+  }])("does not present an unqualified connection response as zero resources", async scopeQualification => {
+    resources.mockResolvedValueOnce({
+      ...envelope({
+        resources: [], scope_qualification: scopeQualification,
+        generation_id: "published-generation",
+        family_availability: { paas: { family: "paas", state: "ready" } },
+      }),
+      pagination: { total: 0 },
+    });
+    render(<ConnectionReadiness connection={connection} scope={{}} refreshKey={0} />);
+    expect(await screen.findByText(/Connection-scoped inventory count is unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText(/0 authorized inventory resources/)).not.toBeInTheDocument();
+    expect(screen.getByText(/published-generation/)).toBeInTheDocument();
+    const inventory = screen.getByText("Persisted inventory").closest("li")!;
+    expect(within(inventory).getByText("unknown")).toBeInTheDocument();
+    expect(resources).toHaveBeenCalledWith({
+      subscription: ["sub-a"], subscription_connection: ["conn-a"],
+    }, 0, 1);
+  });
+
+  it("retains a qualified genuine zero and the reported publication generation", async () => {
+    resources.mockResolvedValueOnce({
+      ...envelope({
+        resources: [], generation_id: "empty-generation",
+        scope_qualification: { status: "supported", unsupported_dimensions: [] },
+      }),
+      pagination: { total: 0 },
+    });
+    render(<ConnectionReadiness connection={connection} scope={{}} refreshKey={0} />);
+    expect(await screen.findByText(/0 authorized inventory resources/)).toBeInTheDocument();
+    expect(screen.getByText(/empty-generation/)).toBeInTheDocument();
+    expect(screen.queryByText(/generation is not reported/)).not.toBeInTheDocument();
   });
 });

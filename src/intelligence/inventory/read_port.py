@@ -91,6 +91,7 @@ class InventoryReadPort:
                 len(groups) if grouped_result is not None else None
             ),
             "family_availability": result["data"]["family_availability"],
+            "scope_qualification": result["data"]["scope_qualification"],
             "observed_at": self.service.observed_at,
             "query_version": self.service.query_version,
             "warnings": result["warnings"],

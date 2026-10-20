@@ -718,8 +718,13 @@ def _server_inventory_result(result: Mapping[str, Any] | None) -> ToolResult:
     )
     if isinstance(data.get("resources"), list):
         data["resources"] = [public_inventory_asset(row) for row in data["resources"]]
+    qualification = data.get("scope_qualification") or {}
     return ToolResult(
-        status=STATUS_OK if total else STATUS_EMPTY,
+        status=(
+            STATUS_UNAVAILABLE
+            if qualification.get("status") == "unsupported"
+            else STATUS_OK if total else STATUS_EMPTY
+        ),
         data=data,
         evidence=evidence,
         warning="; ".join(warnings),

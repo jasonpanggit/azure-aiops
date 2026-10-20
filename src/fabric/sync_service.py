@@ -352,6 +352,9 @@ def _should_publish_table(
         in {
             "ontology_entities",
             "ontology_relationships",
+            "silver_workload_observations",
+            "silver_workload_deployments",
+            "metadata_workload_source_checkpoints",
         }
         or (patch_barrier_present and table_name in {*patch_tables, barrier_table})
     )
@@ -3993,14 +3996,11 @@ class FabricSyncService:
         }
         loaded: dict[str, list[dict[str, Any]]] = {}
         for table_name, paths in products.items():
-            rows: list[dict[str, Any]] = []
             for relative in paths:
                 exists, candidate = self._read_snapshot_jsonl(snapshot, relative)
                 if exists:
-                    rows = candidate
+                    loaded[table_name] = candidate
                     break
-            if rows:
-                loaded[table_name] = rows
         return loaded
 
     def _load_source_partition_status(

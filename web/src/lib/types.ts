@@ -394,6 +394,12 @@ export interface FlatResourceCollection {
   facets?: Record<string, Array<{ value: string; count: number }>>;
   represented_count?: number;
   aggregate_basis?: "authorized_published_observations";
+  /** Unsupported attribution must not be interpreted as an authoritative zero. */
+  scope_qualification?: {
+    status: "supported" | "unsupported";
+    unsupported_dimensions: string[];
+    reason?: string;
+  };
 }
 
 /** Normalized exact-identity details; raw provider properties/tags are excluded. */
@@ -1500,6 +1506,21 @@ export interface FabricManifestEntry {
   subscription_connection?: string;
 }
 
+export interface FabricSourceObservation {
+  state: "observed_nonempty" | "observed_empty" | "unobserved";
+  evidence_mode: "recorded_metadata" | "not_recorded";
+  source: { engine: string; table: string; version: number | null };
+  scope: Record<string, string[]>;
+  observed_at: string | null;
+  freshness: Freshness;
+  reason_code: string;
+}
+
+export interface FabricManifestSummary {
+  entries: FabricManifestEntry[];
+  observation?: FabricSourceObservation;
+}
+
 export interface FabricGovernanceGap {
   table_name: string;
   ownership_gap_count: number;
@@ -1512,6 +1533,7 @@ export interface FabricGovernanceSummary {
   tag_gap_count: number;
   referential_integrity_blockers: number;
   gaps: FabricGovernanceGap[];
+  observation?: FabricSourceObservation;
 }
 
 export interface FabricIngestionRun {
@@ -2165,6 +2187,8 @@ export interface OntologyGeneration {
   fence: number;
   complete: boolean;
   validation: {
+    /** Whether durable validation metadata contains an explicit boolean result. */
+    observed?: boolean;
     passed: boolean;
     errors: string[];
     model_derived_relationships: number;

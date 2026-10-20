@@ -1316,10 +1316,51 @@ def test_create_agent_requires_secret_for_client_credentials_before_provider_io(
     assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
 
 
+@pytest.mark.parametrize(
+    ("missing_name", "expected_message"),
+    [
+        ("FOUNDRY_PROJECT_ENDPOINT", "FOUNDRY_PROJECT_ENDPOINT is required"),
+        ("FOUNDRY_AGENT_NAME", "FOUNDRY_AGENT_NAME is required"),
+        ("FOUNDRY_AGENT_MODEL", "FOUNDRY_AGENT_MODEL is required"),
+        ("FOUNDRY_AGENT_PROMPT", "FOUNDRY_AGENT_PROMPT is required"),
+        (
+            "AZURE_TENANT_ID",
+            "AZURE_TENANT_ID is required for client_credentials authentication",
+        ),
+        (
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_ID is required for client_credentials authentication",
+        ),
+        (
+            "AZURE_CLIENT_SECRET",
+            "AZURE_CLIENT_SECRET is required for client_credentials authentication",
+        ),
+    ],
+)
+def test_create_agent_requires_each_explicit_configuration_variable_before_io(
+    tmp_path, missing_name, expected_message
+):
+    env = _rollout_fixture(
+        tmp_path,
+        response={"name": "operations-copilot", "version": "provider-1"},
+    )
+    env.pop(missing_name)
+
+    result = _run_rollout(env, tmp_path)
+
+    assert result.returncode == 1
+    assert result.stderr.strip() == f"create-foundry-agent: {expected_message}"
+    assert (tmp_path / "curl-args.log").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "auth-result.log").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "az-args.log").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "create.log").read_text(encoding="utf-8") == ""
+
+
 def test_create_agent_auth_contract_never_enables_xtrace():
     script = CREATE_AGENT_SCRIPT.read_text(encoding="utf-8")
 
     assert "set -x" not in script
+    assert "${!var" not in script
 
 
 def test_create_agent_records_the_actual_provider_version_id(tmp_path):

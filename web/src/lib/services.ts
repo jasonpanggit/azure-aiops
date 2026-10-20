@@ -83,7 +83,7 @@ import type {
   FabricGovernanceSummary,
   FabricIngestionRun,
   FabricLayerCounts,
-  FabricManifestEntry,
+  FabricManifestSummary,
   TwinComparison,
   TwinExport,
   TwinQueryResult,
@@ -267,7 +267,7 @@ export const fabricMedallionApi = {
     }),
 
   manifest: (scope: ScopeSelection = {}) =>
-    apiRequest<{ entries: FabricManifestEntry[] }>("/fabric-medallion/manifest", {
+    apiRequest<FabricManifestSummary>("/fabric-medallion/manifest", {
       query: scopeToSearchParams(scope),
     }),
 

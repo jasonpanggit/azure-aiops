@@ -978,6 +978,84 @@ def test_deployed_publication_orders_observations_after_workload_checkpoint(
     assert table_names[checkpoint_index + 1] == EXPOSURE_OBSERVATIONS_TABLE
 
 
+@pytest.mark.parametrize("directory", ["exposure", "workload"])
+def test_workload_product_loader_retains_explicit_empty_not_missing(
+    tmp_path: Path, directory: str,
+) -> None:
+    service = _service(tmp_path)
+    snapshot = Path(service._resolve_snapshot(""))
+    assert service._load_workload_products(snapshot) == {}
+    products = snapshot / directory
+    products.mkdir(parents=True, exist_ok=True)
+    (products / "workload_deployments.jsonl").write_text("")
+
+    assert service._load_workload_products(snapshot) == {
+        "silver_workload_deployments": [],
+    }
+
+
+def test_workload_product_current_empty_does_not_restore_legacy_rows(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    snapshot = Path(service._resolve_snapshot(""))
+    for directory in ("exposure", "workload"):
+        (snapshot / directory).mkdir(parents=True, exist_ok=True)
+    (snapshot / "exposure/workload_deployments.jsonl").write_text("")
+    (snapshot / "workload/workload_deployments.jsonl").write_text(
+        json.dumps({"deployment_id": "legacy"}) + "\n"
+    )
+
+    assert service._load_workload_products(snapshot) == {
+        "silver_workload_deployments": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "table_name",
+    [
+        "silver_workload_observations",
+        "silver_workload_deployments",
+        "metadata_workload_source_checkpoints",
+    ],
+)
+def test_explicit_empty_workload_product_materializes_schema(
+    tmp_path: Path, table_name: str,
+) -> None:
+    service = _service(tmp_path)
+    items, versions = _prepare_publish_items(
+        {table_name: []},
+        onelake=service.onelake,
+        delta=service.delta,
+        patch_barrier_present=False,
+        patch_tables=(),
+        barrier_table="metadata_patch_snapshot",
+    )
+
+    assert items == [(table_name, [])]
+    assert versions == {table_name: None}
+    layer, name = table_name.split("_", 1)
+    uri = service.onelake.table_uri(layer, name)
+    service.delta.write(
+        uri, [], mode=service._write_mode_for_table(table_name),
+        schema=schema_for(table_name),
+    )
+    materialized = DeltaTable(str(uri))
+    assert materialized.count() == 0
+    assert set(materialized.schema().to_arrow().names) == set(
+        schema_for(table_name).names
+    )
+    _, existing_versions = _prepare_publish_items(
+        {table_name: []},
+        onelake=service.onelake,
+        delta=service.delta,
+        patch_barrier_present=False,
+        patch_tables=(),
+        barrier_table="metadata_patch_snapshot",
+    )
+    assert existing_versions == {table_name: materialized.version()}
+
+
 def test_sync_ignores_progress_callback_errors(tmp_path: Path) -> None:
     calls = 0
 

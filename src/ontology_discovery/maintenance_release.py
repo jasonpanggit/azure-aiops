@@ -361,6 +361,50 @@ def verify_plan20_21_order(
             raise MaintenanceDenied("plan21_precedes_plan20_finalization")
 
 
+def verify_plan21_22_order(
+    artifact_root: Path, *, _contents: Mapping[str, bytes] | None = None,
+) -> None:
+    """Require accepted Plan 22 to bind and follow accepted Plan 21.
+
+    Acceptance fields are necessary content, not signatures. The caller must
+    authenticate the complete corpus through the existing release reader.
+    """
+    directory = _phase_dir(Path(artifact_root), "13")
+    if not (directory / "13-22-PLAN.md").is_file():
+        raise MaintenanceDenied("plan22_plan_missing")
+
+    def text(name: str) -> str:
+        path = directory / name
+        relative = str(path.relative_to(artifact_root))
+        if _contents is not None and relative in _contents:
+            return _contents[relative].decode("utf-8")
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            raise MaintenanceDenied("plan21_22_summaries_missing") from None
+
+    second = text("13-21-SUMMARY.md")
+    third = text("13-22-SUMMARY.md")
+    front = _frontmatter(third)
+
+    def field(name: str) -> str:
+        values = [
+            line.split(":", 1)[1].strip().strip("'\"")
+            for line in front.splitlines() if line.startswith(name + ":")
+        ]
+        return values[0] if len(values) == 1 else ""
+
+    if field("accepted") != "true":
+        raise MaintenanceDenied("plan22_acceptance_absent")
+    if field("plan21_acceptance_digest") != hashlib.sha256(second.encode()).hexdigest():
+        raise MaintenanceDenied("plan22_not_bound_to_plan21")
+    accepted = _aware(_completed(second), "plan21_completed")
+    started = _aware(field("started"), "plan22_started")
+    completed = _aware(_completed(third), "plan22_completed")
+    if not accepted < started <= completed:
+        raise MaintenanceDenied("plan22_precedes_plan21_acceptance")
+
+
 def _verify_live_evidence(
     payload: Mapping[str, Any], trust: TrustContext,
     control: Mapping[str, Any], now: datetime,
@@ -739,6 +783,8 @@ def verify_maintenance_attestation(
         strict=trust.purpose == PURPOSE_LIVE,
         _contents=contents,
     )
+    if trust.purpose == PURPOSE_LIVE:
+        verify_plan21_22_order(trust.artifact_root, _contents=contents)
     if not str(prerequisite.get("inherited_preconditions_digest") or ""):
         raise MaintenanceDenied("inherited_preconditions_absent")
 
@@ -975,5 +1021,6 @@ __all__ = [
     "digest",
     "verify_maintenance_attestation",
     "verify_plan20_21_order",
+    "verify_plan21_22_order",
     "verify_prerequisite_corpus",
 ]

@@ -157,6 +157,12 @@ def live_authority(tmp_path: Path) -> Authority:
         f"plan20_finalization_digest: {hashlib.sha256(first.read_bytes()).hexdigest()}"
         "\n---\nfinal acceptance\n"
     )
+    second.with_name("13-22-SUMMARY.md").write_text(
+        "---\nstatus: complete\nstarted: 2026-10-18T13:00:00+00:00\n"
+        "completed: 2026-10-18T14:00:00+00:00\naccepted: true\n"
+        f"plan21_acceptance_digest: {hashlib.sha256(second.read_bytes()).hexdigest()}"
+        "\n---\nSynthetic acceptance-chain closure; not deployed proof.\n"
+    )
     payload = authority.payload()
     payload["purpose"] = PURPOSE_LIVE
     payload["release"]["tenant_id"] = "262a3a77-7d74-4684-8937-897d98d2a17a"

@@ -87,23 +87,38 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 
-for var in FOUNDRY_PROJECT_ENDPOINT FOUNDRY_AGENT_NAME FOUNDRY_AGENT_MODEL \
-           FOUNDRY_AGENT_PROMPT; do
-  if [[ -z "${!var:-}" ]]; then
-    echo "create-foundry-agent: ${var} is required" >&2
-    exit 1
-  fi
-done
+if [[ -z "${FOUNDRY_PROJECT_ENDPOINT:-}" ]]; then
+  echo "create-foundry-agent: FOUNDRY_PROJECT_ENDPOINT is required" >&2
+  exit 1
+fi
+if [[ -z "${FOUNDRY_AGENT_NAME:-}" ]]; then
+  echo "create-foundry-agent: FOUNDRY_AGENT_NAME is required" >&2
+  exit 1
+fi
+if [[ -z "${FOUNDRY_AGENT_MODEL:-}" ]]; then
+  echo "create-foundry-agent: FOUNDRY_AGENT_MODEL is required" >&2
+  exit 1
+fi
+if [[ -z "${FOUNDRY_AGENT_PROMPT:-}" ]]; then
+  echo "create-foundry-agent: FOUNDRY_AGENT_PROMPT is required" >&2
+  exit 1
+fi
 
 auth_mode="${FOUNDRY_AUTH_MODE:-client_credentials}"
 case "${auth_mode}" in
   client_credentials)
-    for var in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
-      if [[ -z "${!var:-}" ]]; then
-        echo "create-foundry-agent: ${var} is required for client_credentials authentication" >&2
-        exit 1
-      fi
-    done
+    if [[ -z "${AZURE_TENANT_ID:-}" ]]; then
+      echo "create-foundry-agent: AZURE_TENANT_ID is required for client_credentials authentication" >&2
+      exit 1
+    fi
+    if [[ -z "${AZURE_CLIENT_ID:-}" ]]; then
+      echo "create-foundry-agent: AZURE_CLIENT_ID is required for client_credentials authentication" >&2
+      exit 1
+    fi
+    if [[ -z "${AZURE_CLIENT_SECRET:-}" ]]; then
+      echo "create-foundry-agent: AZURE_CLIENT_SECRET is required for client_credentials authentication" >&2
+      exit 1
+    fi
     ;;
   azure_cli)
     if ! command -v az >/dev/null 2>&1; then

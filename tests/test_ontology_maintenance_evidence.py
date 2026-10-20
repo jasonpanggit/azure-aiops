@@ -6,10 +6,12 @@ import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from onboarding.monitor_logs import APP_DEPENDENCIES_QUERY, AzureMonitorLogsClient
 from ontology.subscription_connection import SubscriptionConnection
@@ -18,6 +20,7 @@ from ontology_discovery.evidence_projection import (
     project_application_dependency_evidence,
 )
 from ontology_discovery.incremental import split_evidence_batches
+from ontology_discovery.policy import ProposalPolicy
 from ontology_discovery.runtime import ProductionConnectionProcessor
 from ontology_discovery.store import OntologyRunStore
 
@@ -452,11 +455,17 @@ def test_fixed_monitor_query_is_narrow_bounded_and_uses_workspace_scope() -> Non
     assert "TenantId" not in query
 
 
+@pytest.mark.parametrize("policy_age_days", [0, 2])
 def test_runtime_source_projection_reaches_parser_policy_and_durable_dispatch(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, policy_age_days: int
 ) -> None:
     import ontology_discovery.runtime as runtime_module
 
+    monkeypatch.setattr(
+        runtime_module,
+        "ProposalPolicy",
+        partial(ProposalPolicy, now=lambda: NOW + timedelta(days=policy_age_days)),
+    )
     inventory_generation = "inventory-generation-7"
     runtime_scope = "tenant-1:sub-1:offline-connection"
     application_entities = [
@@ -660,7 +669,8 @@ def test_runtime_source_projection_reaches_parser_policy_and_durable_dispatch(
         scope=runtime_scope,
         source_generation_id=run["source_generation_id"],
     )["decisions"][0]
-    assert decision.policy_eligible is True
+    assert decision.policy_eligible is (policy_age_days == 0)
+    assert ("stale_evidence" in decision.reasons) is (policy_age_days == 2)
     assert decision.admitted is False
     assert store.get(run["run_id"])["checkpoint"]["payload"]["source_binding"][
         "inventory_generation_id"

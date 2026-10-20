@@ -1728,11 +1728,17 @@ def _tool_inventory_resources(tool_context: ToolContext, args: Mapping[str, Any]
         groups = result.get("groups") or []
         observed_at = str(result.get("observed_at") or "")
         query_version = str(result.get("query_version") or "")
+        qualification = result.get("scope_qualification") or {}
         return ToolResult(
-            status=STATUS_OK if rows or groups else STATUS_EMPTY,
+            status=(
+                STATUS_UNAVAILABLE
+                if qualification.get("status") == "unsupported"
+                else STATUS_OK if rows or groups else STATUS_EMPTY
+            ),
             data=_bound(
                 {
                     "resources": [public_inventory_asset(row) for row in rows],
+                    "scope_qualification": qualification,
                     "total": result.get("total", len(rows)),
                     "groups": groups,
                     "group_total": result.get("group_total"),
@@ -1752,6 +1758,7 @@ def _tool_inventory_resources(tool_context: ToolContext, args: Mapping[str, Any]
                     confidence=CONFIDENCE_HIGH,
                 ),
             ),
+            warning="; ".join(str(item) for item in result.get("warnings", [])),
         )
 
     return _provider_result(tool_context, "inventory_read_port", run)

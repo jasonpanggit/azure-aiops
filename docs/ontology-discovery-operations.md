@@ -67,6 +67,98 @@ candidates, immutable stages, the active generation, exports, and all
 consumers. There is no release, canary, allowlist, or activation option in the
 live validator.
 
+## Status storage failures
+
+An Azure storage HTTP failure while reading authorized ontology status returns
+`503 provider_unavailable`, reason `ontology_status_read_unavailable`, rather
+than an empty successful run list. The error retains the request correlation
+and normal configured CORS policy; untrusted origins gain no access. Provider
+target identifiers and raw response text are not returned. The
+`ontology_status_provider_unavailable` warning records only the provider's
+status code when available.
+
+This is an API error boundary, not a data-permission repair. The API must have
+the intended read capability on its exact dedicated ontology state root.
+Workspace Viewer alone does not prove OneLake file access. Reconcile effective
+item data-read roles for the selected managed identity, preserving existing
+roles and scope; do not redirect state into the operational Lakehouse, grant
+Contributor, or widen CORS to conceal a read denial. A successful scoped
+deployed read is still required for live acceptance.
+
+Generation `validation.observed` distinguishes a durable explicit boolean
+validation result from an unavailable or missing receipt. A default
+`passed: false` without an observed result is **Not reported**, not an executed
+failure. The proposals empty state cites a completed zero-proposal run only
+when a succeeded run explicitly reports `proposal_count: 0`; missing history,
+active/failed/cancelled runs and unverified empty lists do not establish that
+outcome.
+
+## Persistent API state-read policy
+
+`ontology_api_state_read_role_contract` in `infra/terraform/outputs.tf` declares
+the API apps managed identity, dedicated state workspace/item, exact
+`Phase13ApiStateRead` role and `/Files/aiops/ontology/state` folder. This is an
+operator-reconciled REST policy because the provider cannot safely round-trip
+ManagedIdentity members. It is not an unsupported Terraform role resource or
+a plan-time/local-exec writer. The existing five-item evidence contract belongs
+to a different identity; never substitute that broader contract for API reads.
+Existing REST reconciliation preserves unrelated policies semantically.
+
+After the output is available from the normal validated Terraform state update,
+save it with `terraform -chdir=infra/terraform output -json
+ontology_api_state_read_role_contract` to a mode-0600 contract file. Do not apply
+unrelated infrastructure just to emit an output. For the already repaired dev
+target, the bindings are workspace `7fdda9f2-46fa-4ce5-b810-57924ae32491`, item
+`340c485f-3d1c-4277-a1bd-84cdc340af47`, app MI
+`1701d43c-bdc3-4ab7-9964-02cbbbc35a93`, tenant
+`262a3a77-7d74-4684-8937-897d98d2a17a`. Reconfirm the actual API
+`AIOPS_ONTOLOGY_STATE_HOME` and selected MI before any reconciliation.
+
+Reuse `scripts.reconcile_onelake_data_access_roles` from an explicit operator
+Python invocation, rather than the five-item CLI:
+
+```python
+import json
+import httpx
+from pathlib import Path
+from scripts import reconcile_onelake_data_access_roles as roles
+
+contract = json.loads(Path("api-state-read-contract.json").read_text())
+assert contract["role_name"] == "Phase13ApiStateRead"
+assert contract["path"] == "/Files/aiops/ontology/state"
+config = Path("/absolute/path/to/approved-mode-0700-azure-cli-config")
+principal_type = roles._get_principal_type_from_azure_cli(
+    config, contract["principal_object_id"], contract["principal_resource_id"],
+)
+token = roles._get_token_from_azure_cli(config)
+roles.MAX_RETRIES = 0  # Stop and review on ETag conflict.
+with httpx.Client(headers={"Authorization": f"Bearer {token}"}, timeout=30) as client:
+    result = roles.reconcile_item_roles(
+        client=client,
+        workspace_id=contract["workspace_id"], item_id=contract["item_id"],
+        object_id=contract["principal_object_id"], tenant_id=contract["tenant_id"],
+        role_name=contract["role_name"], paths=(contract["path"],),
+        verified_principal_type=principal_type, dry_run=True,
+    )
+print(json.dumps(result))
+```
+
+Dry-run first; only an approved operator changes `dry_run` to false after
+retaining current/desired policies, collection ETag and exact scope diff.
+The existing reconciler performs server dry-run, conditional PUT and semantic
+readback. Never print/export the token. A PUT can regenerate server role IDs,
+including DefaultReader's ID; policy preservation is not assignment-ID or byte
+preservation. Review known role-ID consumers before future updates.
+
+For rollback, GET the current collection and ETag, remove only the exact new
+API role, preserve every unrelated current policy, strip server `id`/ETag
+metadata and use the supported dry-run/If-Match/readback contract. Stop on
+conflict. Retained old bytes are evidence, not a stale-ID/ETag replay payload.
+Neither Terraform output nor successful policy readback establishes live
+authorization: require one exact-scope pinned API status read through its MI.
+The 2026-10-20 repair produced HTTP200 with configured CORS; sibling denials,
+other roots and full lifecycle acceptance remain separate qualifications.
+
 ## Agent-led maintenance preparation
 
 Phase 14 builds on this shadow runtime; it does not enable model admission.

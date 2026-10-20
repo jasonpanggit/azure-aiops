@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 # Match the project's src-layout without importing production composition/clients.
 SOURCE = Path(__file__).resolve().parents[1] / "src"
 if str(SOURCE) not in sys.path:
@@ -62,6 +64,51 @@ OPEN_QUESTIONS = [
 
 def gate(status: str, *reasons: str) -> dict[str, Any]:
     return {"status": status, "reasons": list(reasons)}
+
+
+def phase13_corpus_diagnostic(root: Path) -> dict[str, Any]:
+    """Inventory exact required plans/evidence without granting acceptance."""
+    phase = root / "phases" / "13-autonomous-ontology-discovery-and-fabric-synchronization"
+
+    def status(path: Path) -> str:
+        try:
+            text = path.read_text(encoding="utf-8")
+            if not text.startswith("---\n") or "\n---" not in text[4:]:
+                return "unreadable_or_invalid"
+            front = yaml.safe_load(text.split("\n---", 1)[0][4:])
+            value = front.get("status") if isinstance(front, dict) else None
+            return value.strip().casefold() if isinstance(value, str) and value.strip() else "unreadable_or_invalid"
+        except (OSError, UnicodeError, yaml.YAMLError):
+            return "unreadable_or_invalid"
+
+    required = range(1, 23)
+    missing = [
+        f"13-{number:02d}-SUMMARY.md" for number in required
+        if not (phase / f"13-{number:02d}-SUMMARY.md").is_file()
+    ]
+    missing_plans = [
+        f"13-{number:02d}-PLAN.md" for number in required
+        if not (phase / f"13-{number:02d}-PLAN.md").is_file()
+    ]
+    unfinished = []
+    for number in required:
+        path = phase / f"13-{number:02d}-SUMMARY.md"
+        if path.is_file():
+            value = status(path)
+            if value not in {"complete", "completed", "passed"}:
+                unfinished.append({"path": path.name, "status": value})
+    verification = status(phase / "13-VERIFICATION.md")
+    return {
+        "required": 22,
+        "present": 22 - len(missing),
+        "missing": missing,
+        "missing_plans": missing_plans,
+        "unfinished_summaries": unfinished,
+        "verification_status": verification,
+        "status": "BLOCKED" if missing or missing_plans or unfinished or verification != "passed" else "LOCAL_ONLY",
+        "reason": "phase13_count_reconciliation_owned_upstream",
+        "authority": "diagnostic_only",
+    }
 
 
 def verify_saved_bundle(
@@ -161,14 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         except MaintenanceDenied as denied:
             diagnostics.append({"target": target, "status": "BLOCKED", "reason": denied.reason})
     report["local_prerequisite_diagnostics"] = diagnostics
-    phase13 = root / "phases" / "13-autonomous-ontology-discovery-and-fabric-synchronization"
-    report["phase13_count_diagnostic"] = {
-        "required": 22, "present": len(list(phase13.glob("13-*-SUMMARY.md"))),
-        "missing": [f"13-{number:02d}-SUMMARY.md" for number in range(1, 23)
-                    if not (phase13 / f"13-{number:02d}-SUMMARY.md").is_file()],
-        "reason": "phase13_count_reconciliation_owned_upstream",
-        "authority": "diagnostic_only",
-    }
+    report["phase13_count_diagnostic"] = phase13_corpus_diagnostic(root)
     # Only the explicitly requested local report is written; no authority files.
     try:
         args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

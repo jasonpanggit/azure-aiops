@@ -49,6 +49,14 @@ _GROUP_KEY = re.compile(r"^[^|/\\]{1,120}\|[^|/\\]{1,120}$")
 _PAAS_GROUP_KEY = re.compile(r"^[^|/\\]{1,160}\|[^|/\\]{1,120}\|[^|/\\]{1,120}$")
 
 
+def _scope_error_details(service: InventoryService, scope: ReadScope) -> dict[str, str]:
+    qualification = service.scope_qualification(scope)
+    return {
+        "scope_qualification": qualification["status"],
+        "scope_qualification_reason": qualification.get("reason", ""),
+    }
+
+
 def _service(context: Context) -> InventoryService:
     service = context.resolve_provider("inventory")
     if not isinstance(service, InventoryService):
@@ -354,7 +362,10 @@ def os_inventory_detail(
     service = _service(context)
     result = service.detail(group_key, scope, offset=page.offset, limit=page.limit)
     if result is None:
-        raise ApiError(ErrorCode.NOT_FOUND, "No OS inventory group matches this scope")
+        raise ApiError(
+            ErrorCode.NOT_FOUND, "No OS inventory group matches this scope",
+            _scope_error_details(service, scope),
+        )
     return envelope(
         result["data"],
         evidence=_evidence(service),
@@ -437,7 +448,10 @@ def paas_inventory_detail(
     service = _service(context)
     result = service.paas_detail(group_key, scope, offset=page.offset, limit=page.limit)
     if result is None:
-        raise ApiError(ErrorCode.NOT_FOUND, "No PaaS inventory group matches this scope")
+        raise ApiError(
+            ErrorCode.NOT_FOUND, "No PaaS inventory group matches this scope",
+            _scope_error_details(service, scope),
+        )
     return envelope(
         {
             **result["data"],
@@ -481,6 +495,7 @@ def inventory_resources(
                 for family, status in result["family_availability"].items()
             },
             "requested_scope": scope.to_dict(),
+            "scope_qualification": result["scope_qualification"],
             "query_version": service.query_version,
             "generation_id": service.generation_id,
             "facets": result["facets"],
@@ -507,7 +522,10 @@ def inventory_asset(
     service = _service(context)
     row = InventoryReadPort(service).get_resource(scope, resource_id)
     if row is None:
-        raise ApiError(ErrorCode.NOT_FOUND, "No inventory asset matches this scope")
+        raise ApiError(
+            ErrorCode.NOT_FOUND, "No inventory asset matches this scope",
+            _scope_error_details(service, scope),
+        )
     return envelope(
         {"resource": _public_asset(row), "generation_id": service.generation_id, "query_version": service.query_version},
         evidence=_resource_evidence(service),
@@ -808,6 +826,7 @@ def software_inventory_detail(
         raise ApiError(
             ErrorCode.NOT_FOUND,
             "No installed software and version matches this scope",
+            _scope_error_details(service, scope),
         )
     return envelope(
         result["data"],

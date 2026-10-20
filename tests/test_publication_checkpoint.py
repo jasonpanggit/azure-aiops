@@ -68,6 +68,11 @@ def _persist(
     return store, checkpoint
 
 
+def _artifact_path(root: Path, index: int) -> Path:
+    manifest = json.loads(next(root.rglob("manifest.json")).read_text(encoding="utf-8"))
+    return root / manifest["artifacts"][index]["name"]
+
+
 def test_prepared_checkpoint_roundtrips_streamed_rows_with_integrity(
     tmp_path: Path,
 ) -> None:
@@ -178,21 +183,20 @@ def test_table_plan_mismatch_lists_bounded_deterministic_name_difference(
     )
 
 
-@pytest.mark.parametrize("target", ["artifact", "manifest"])
+@pytest.mark.parametrize(
+    ("target", "artifact_index"),
+    [("artifact", 0), ("artifact", 1), ("artifact", 2), ("manifest", 0)],
+)
 def test_checkpoint_tampering_fails_closed(
     tmp_path: Path,
     target: str,
+    artifact_index: int,
 ) -> None:
     store, _checkpoint = _persist(tmp_path)
-    paths = [path for path in tmp_path.rglob("*") if path.is_file()]
-    path = next(
-        candidate
-        for candidate in paths
-        if (
-            "/artifacts/" in candidate.as_posix()
-            if target == "artifact"
-            else candidate.name == "manifest.json"
-        )
+    path = (
+        _artifact_path(tmp_path, artifact_index)
+        if target == "artifact"
+        else next(tmp_path.rglob("manifest.json"))
     )
     if target == "artifact":
         path.write_text('{"resource_id":"tampered"}\n', encoding="utf-8")
@@ -208,13 +212,12 @@ def test_checkpoint_tampering_fails_closed(
         )
 
 
-def test_missing_checkpoint_artifact_fails_closed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("artifact_index", range(3))
+def test_missing_checkpoint_artifact_fails_closed(
+    tmp_path: Path, artifact_index: int
+) -> None:
     store, _checkpoint = _persist(tmp_path)
-    artifact = next(
-        path
-        for path in tmp_path.rglob("*")
-        if path.is_file() and "/artifacts/" in path.as_posix()
-    )
+    artifact = _artifact_path(tmp_path, artifact_index)
     artifact.unlink()
 
     with pytest.raises(PublicationCheckpointError, match="missing or unreadable"):
@@ -224,15 +227,12 @@ def test_missing_checkpoint_artifact_fails_closed(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("artifact_index", range(3))
 def test_checkpoint_read_error_closes_iterator_before_store_recovery(
-    tmp_path: Path,
+    tmp_path: Path, artifact_index: int
 ) -> None:
     store, _checkpoint = _persist(tmp_path)
-    artifact = next(
-        path
-        for path in tmp_path.rglob("*")
-        if path.is_file() and "/artifacts/" in path.as_posix()
-    )
+    artifact = _artifact_path(tmp_path, artifact_index)
     artifact.write_text("{not-json}\n", encoding="utf-8")
 
     with pytest.raises(PublicationCheckpointError, match="invalid JSON"):

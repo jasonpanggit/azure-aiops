@@ -6,6 +6,7 @@ import time
 import uuid
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
@@ -23,6 +24,7 @@ _PUBLICATION_INTENT_ID = "fabric_publication_intent_id"
 _PUBLICATION_OUTCOME_DIGEST = "fabric_publication_outcome_digest"
 _PUBLICATION_ROWS_PROCESSED = "fabric_publication_rows_processed"
 _PUBLICATION_HISTORY_LIMIT = 128
+_TIMESTAMP_HISTORY_LIMIT = 1_000
 _NO_EXPECTED_VERSION = object()
 
 
@@ -91,14 +93,16 @@ class DeltaWriter:
     # and Arrow record-batch construction. Actual peak memory is higher than
     # this estimate because Arrow and Python representations coexist briefly.
     APPEND_PREFLIGHT_BATCH_BYTES: ClassVar[int] = 4 * 1024 * 1024
-    REQUIRED_COLUMNS: ClassVar[frozenset[str]] = frozenset({
-        "tenant_id",
-        "subscription_id",
-        "resource_id",
-        "timestamp",
-        "change_version",
-        "ingestion_run_id",
-    })
+    REQUIRED_COLUMNS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "tenant_id",
+            "subscription_id",
+            "resource_id",
+            "timestamp",
+            "change_version",
+            "ingestion_run_id",
+        }
+    )
 
     def __init__(
         self,
@@ -158,9 +162,7 @@ class DeltaWriter:
                 replay_columns=frozenset(append_replay_columns),
                 replay_json_fields={
                     column: frozenset(fields)
-                    for column, fields in (
-                        append_replay_json_fields or {}
-                    ).items()
+                    for column, fields in (append_replay_json_fields or {}).items()
                 },
                 scan_partition_columns=tuple(append_scan_partition_columns),
                 transaction_id=transaction_id,
@@ -216,26 +218,20 @@ class DeltaWriter:
             or not isinstance(preflight_batch_bytes, int)
             or preflight_batch_bytes < 1
         ):
-            raise ValueError(
-                "append_preflight_batch_bytes must be a positive integer"
-            )
+            raise ValueError("append_preflight_batch_bytes must be a positive integer")
 
         incoming_indices: dict[tuple[str, ...], int] = {}
         for index, row in enumerate(rows):
             key = _row_key(row, key_columns)
             previous_index = incoming_indices.get(key)
-            if (
-                previous_index is not None
-                and _canonical_row(
-                    rows[previous_index],
-                    replay_columns=replay_columns,
-                    replay_json_fields=replay_json_fields,
-                )
-                != _canonical_row(
-                    row,
-                    replay_columns=replay_columns,
-                    replay_json_fields=replay_json_fields,
-                )
+            if previous_index is not None and _canonical_row(
+                rows[previous_index],
+                replay_columns=replay_columns,
+                replay_json_fields=replay_json_fields,
+            ) != _canonical_row(
+                row,
+                replay_columns=replay_columns,
+                replay_json_fields=replay_json_fields,
             ):
                 raise ValueError(f"Append row mutation for key {key}")
             # Preserve the previous implementation's last-row-wins behavior
@@ -410,9 +406,7 @@ class DeltaWriter:
 
         exists = self.exists(uri)
         table = (
-            DeltaTable(uri, storage_options=self.storage_options)
-            if exists
-            else None
+            DeltaTable(uri, storage_options=self.storage_options) if exists else None
         )
         if publication_expected_version is not _NO_EXPECTED_VERSION:
             current_version = table.version() if table is not None else None
@@ -428,10 +422,7 @@ class DeltaWriter:
                     skipped=True,
                     version=table.version(),
                 )
-            if (
-                table.version() != expected_version
-                and _has_active_files(table)
-            ):
+            if table.version() != expected_version and _has_active_files(table):
                 pending_indices = []
                 if len(incoming_indices) > self.APPEND_TARGET_STREAMING_THRESHOLD:
                     incoming = [rows[index] for index in incoming_indices]
@@ -515,9 +506,7 @@ class DeltaWriter:
             partition_by=list(partition_by) or None,
             schema_mode="merge",
             storage_options=self.storage_options,
-            commit_properties=CommitProperties(
-                custom_metadata=custom_metadata
-            ),
+            commit_properties=CommitProperties(custom_metadata=custom_metadata),
         )
         table = DeltaTable(uri, storage_options=self.storage_options)
         return DeltaWriteResult(
@@ -559,10 +548,7 @@ class DeltaWriter:
         replay_json_fields: Mapping[str, frozenset[str]],
         scan_partition_values: Mapping[str, frozenset[str]],
     ) -> set[tuple[str, ...]]:
-        incoming_by_key = {
-            _row_key(row, key_columns): row
-            for row in incoming_rows
-        }
+        incoming_by_key = {_row_key(row, key_columns): row for row in incoming_rows}
         filters: Any
         if len(key_columns) == 1:
             column = key_columns[0]
@@ -580,10 +566,7 @@ class DeltaWriter:
         else:
             filters = [
                 [
-                    *(
-                        (column, "=", row[column])
-                        for column in key_columns
-                    ),
+                    *((column, "=", row[column]) for column in key_columns),
                     *(
                         (partition_column, "in", sorted(values))
                         for partition_column, values in scan_partition_values.items()
@@ -623,10 +606,7 @@ class DeltaWriter:
         replay_json_fields: Mapping[str, frozenset[str]],
         scan_partition_values: Mapping[str, frozenset[str]],
     ) -> set[tuple[str, ...]]:
-        incoming_by_key = {
-            _row_key(row, key_columns): row
-            for row in incoming_rows
-        }
+        incoming_by_key = {_row_key(row, key_columns): row for row in incoming_rows}
         excluded_columns = {"ingestion_run_id", *replay_columns}
         dataset = table.to_pyarrow_dataset()
         semantic_columns = [
@@ -637,28 +617,20 @@ class DeltaWriter:
         null_defaults = dict.fromkeys(semantic_columns)
         action_table = pa.table(table.get_add_actions(flatten=True))
         partition_columns = [
-            name
-            for name in action_table.column_names
-            if name.startswith("partition.")
+            name for name in action_table.column_names if name.startswith("partition.")
         ]
         active_files = {
             _normalized_delta_file_path(str(row["path"])): {
                 name.removeprefix("partition."): row.get(name)
                 for name in partition_columns
             }
-            for row in action_table.select(
-                ["path", *partition_columns]
-            ).to_pylist()
+            for row in action_table.select(["path", *partition_columns]).to_pylist()
         }
         existing_keys: set[tuple[str, ...]] = set()
         for file_path in dataset.files:
-            partitions = active_files.get(
-                _normalized_delta_file_path(file_path)
-            )
+            partitions = active_files.get(_normalized_delta_file_path(file_path))
             if partitions is None:
-                raise RuntimeError(
-                    "Delta active file is missing partition metadata"
-                )
+                raise RuntimeError("Delta active file is missing partition metadata")
             if any(
                 str(partitions.get(column) or "") not in values
                 for column, values in scan_partition_values.items()
@@ -672,8 +644,7 @@ class DeltaWriter:
             missing_key_columns = [
                 name
                 for name in key_columns
-                if name not in parquet.schema_arrow.names
-                and name not in partitions
+                if name not in parquet.schema_arrow.names and name not in partitions
             ]
             if missing_key_columns:
                 raise ValueError(
@@ -681,14 +652,11 @@ class DeltaWriter:
                     + ", ".join(missing_key_columns)
                 )
             file_columns = [
-                name
-                for name in semantic_columns
-                if name in parquet.schema_arrow.names
+                name for name in semantic_columns if name in parquet.schema_arrow.names
             ]
-            file_schema = pa.schema([
-                dataset.schema.field(name)
-                for name in file_columns
-            ])
+            file_schema = pa.schema(
+                [dataset.schema.field(name) for name in file_columns]
+            )
             target_batch_size = _parquet_batch_size(
                 parquet,
                 max_rows=batch_size,
@@ -727,21 +695,14 @@ class DeltaWriter:
         columns: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Read a Delta table, optionally projecting only required columns."""
-        if (
-            version is not None
-            and (
-                isinstance(version, bool)
-                or not isinstance(version, int)
-                or version < 0
-            )
+        if version is not None and (
+            isinstance(version, bool) or not isinstance(version, int) or version < 0
         ):
             raise ValueError("Delta read version must be a non-negative integer")
         self._refresh_storage_options()
         if not self.exists(table_uri):
             if version is not None:
-                raise ValueError(
-                    "Version-qualified Delta table does not exist"
-                )
+                raise ValueError("Version-qualified Delta table does not exist")
             return []
         uri = str(table_uri)
         table = DeltaTable(
@@ -752,7 +713,9 @@ class DeltaWriter:
         projected_columns = list(columns) if columns is not None else None
         if urlparse(uri).scheme in {"", "file"}:
             actions = pa.table(table.get_add_actions(flatten=True))
-            files = [str(Path(uri) / path) for path in actions.column("path").to_pylist()]
+            files = [
+                str(Path(uri) / path) for path in actions.column("path").to_pylist()
+            ]
             return (
                 pq.read_table(files, columns=projected_columns).to_pylist()
                 if files
@@ -761,13 +724,63 @@ class DeltaWriter:
         return table.to_pyarrow_table(columns=projected_columns).to_pylist()
 
     def exists(self, table_uri: str | Path) -> bool:
-        return DeltaTable.is_deltatable(str(table_uri), storage_options=self.storage_options)
+        return DeltaTable.is_deltatable(
+            str(table_uri), storage_options=self.storage_options
+        )
 
     def version(self, table_uri: str | Path) -> int | None:
         self._refresh_storage_options()
         if not self.exists(table_uri):
             return None
-        return DeltaTable(str(table_uri), storage_options=self.storage_options).version()
+        return DeltaTable(
+            str(table_uri), storage_options=self.storage_options
+        ).version()
+
+    def latest_commit_timestamp(
+        self,
+        table_uri: str | Path,
+        *,
+        version: int | None = None,
+    ) -> str | None:
+        """Return recorded commit time only when bounded history proves the version."""
+        if version is not None and (
+            isinstance(version, bool) or not isinstance(version, int) or version < 0
+        ):
+            raise ValueError("Delta history version must be a non-negative integer")
+        self._refresh_storage_options()
+        if not self.exists(table_uri):
+            if version is not None:
+                raise ValueError("Version-qualified Delta table does not exist")
+            return None
+        table = DeltaTable(str(table_uri), storage_options=self.storage_options)
+        target_version = table.version() if version is None else version
+        history = table.history(limit=_TIMESTAMP_HISTORY_LIMIT)
+        commit = next(
+            (
+                entry
+                for entry in history
+                if entry.get("version") == target_version
+            ),
+            None,
+        )
+        if commit is None:
+            return None
+        timestamp = commit.get("timestamp")
+        if isinstance(timestamp, datetime):
+            value = timestamp
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+            return None
+        try:
+            return (
+                datetime.fromtimestamp(timestamp / 1000, tz=UTC)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        except (OverflowError, OSError, ValueError):
+            return None
 
     def describe(self, table_uri: str | Path, *, version: int) -> dict[str, Any]:
         """Read schema and configuration at an explicitly pinned Delta version."""
@@ -810,9 +823,7 @@ class DeltaWriter:
                     "Delta publication transaction digest does not match"
                 )
             version = int(commit["version"])
-            rows_processed = int(
-                commit.get(_PUBLICATION_ROWS_PROCESSED) or 0
-            )
+            rows_processed = int(commit.get(_PUBLICATION_ROWS_PROCESSED) or 0)
             if version < 0 or rows_processed < 0:
                 raise RuntimeError("Invalid Delta publication commit metadata")
             return DeltaWriteResult(
@@ -874,12 +885,13 @@ class DeltaWriter:
         processed_count = len(rows)
         exists = self.exists(uri)
         table = (
-            DeltaTable(uri, storage_options=self.storage_options)
-            if exists
-            else None
+            DeltaTable(uri, storage_options=self.storage_options) if exists else None
         )
         self._assert_table_version(table, expected_version)
-        supports_version_compare = bool(rows) and {"resource_id", "change_version"} <= set(rows[0])
+        supports_version_compare = bool(rows) and {
+            "resource_id",
+            "change_version",
+        } <= set(rows[0])
         if mode is DeltaWriteMode.OVERWRITE and exists and supports_version_compare:
             assert table is not None
             # A synchronous scan prevents Arrow workers from outliving short-lived
@@ -960,9 +972,7 @@ class DeltaWriter:
             partition_by=list(partition_by) or None,
             schema_mode="merge",
             storage_options=self.storage_options,
-            commit_properties=CommitProperties(
-                custom_metadata=dict(commit_metadata)
-            )
+            commit_properties=CommitProperties(custom_metadata=dict(commit_metadata))
             if commit_metadata
             else None,
         )
@@ -981,13 +991,16 @@ class DeltaWriter:
     ) -> None:
         missing = sorted(required_columns - set(rows[0]))
         if missing:
-            raise ValueError("Delta row is missing required columns: " + ", ".join(missing))
+            raise ValueError(
+                "Delta row is missing required columns: " + ", ".join(missing)
+            )
         for index in range(1, len(rows)):
             row = rows[index]
             row_missing = sorted(required_columns - set(row))
             if row_missing:
                 raise ValueError(
-                    f"Delta row {index} is missing required columns: " + ", ".join(row_missing)
+                    f"Delta row {index} is missing required columns: "
+                    + ", ".join(row_missing)
                 )
 
     def _retry(self, operation: Callable[[], _T]) -> _T:
@@ -1028,7 +1041,16 @@ def _is_transient(exc: Exception) -> bool:
         return True
     return any(
         marker in text
-        for marker in ("429", "500", "502", "503", "504", "timeout", "temporarily", "conflict")
+        for marker in (
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "timeout",
+            "temporarily",
+            "conflict",
+        )
     )
 
 
@@ -1057,11 +1079,7 @@ def _canonical_row(
     # The physical ingestion run is write metadata, not event content. A
     # replay of the same stable event must remain idempotent across runs.
     excluded_columns = {"ingestion_run_id", *replay_columns}
-    content = {
-        key: value
-        for key, value in row.items()
-        if key not in excluded_columns
-    }
+    content = {key: value for key, value in row.items() if key not in excluded_columns}
     for column, excluded_fields in (replay_json_fields or {}).items():
         value = content.get(column)
         if not isinstance(value, str):
@@ -1073,9 +1091,7 @@ def _canonical_row(
         if not isinstance(parsed, Mapping):
             continue
         content[column] = {
-            key: item
-            for key, item in parsed.items()
-            if key not in excluded_fields
+            key: item for key, item in parsed.items() if key not in excluded_fields
         }
     return json.dumps(
         content,
@@ -1100,10 +1116,7 @@ def _batched_payload_indices(
     batch_bytes = 0
     for index in indices:
         row_bytes = payload_bytes[index]
-        if batch and (
-            len(batch) >= max_rows
-            or batch_bytes + row_bytes > max_bytes
-        ):
+        if batch and (len(batch) >= max_rows or batch_bytes + row_bytes > max_bytes):
             yield batch
             batch = []
             batch_bytes = 0
