@@ -98,6 +98,17 @@ Legacy JSON publication must not be retargeted at the TMDL copy without the
 separate compatibility/migration gates. Offline review/replay passing does not
 qualify deployment or enable automatic ontology changes.
 
+The offline source projection also supports opt-in
+`aiops.dependencyResourceIds` declarations containing exact target ARM IDs and
+fixed-field `AppDependencies` observations. Physical resources resolve through
+existing in-scope Application membership; telemetry labels alone cannot create
+identity. Monitor input requires explicit server-supplied emitter/target
+bindings and an injected source reader. The fixed query and projector are not
+proof that production telemetry or those bindings exist. Repeated events from
+one source cannot count as independent corroboration. Stored graph baselines
+advance only with successful dispatch and predecessor CAS; partial scans do not
+retire unseen rows or establish a complete baseline.
+
 ## Credentialed validation
 
 ### Native-only deterministic repair

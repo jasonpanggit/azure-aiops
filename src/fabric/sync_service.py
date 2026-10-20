@@ -8,7 +8,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -521,6 +521,8 @@ class DedicatedOntologyPublisherAdapter:
 
 
 class FabricSyncService:
+    ontology_product_reader: Any = None
+
     _PATCH_PUBLICATION_TABLES: tuple[str, ...] = (
         "bronze_patchassessment",
         "bronze_patchassessmentdetail",
@@ -3527,6 +3529,11 @@ class FabricSyncService:
         *,
         marker: Mapping[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if self.ontology_product_reader is not None:
+            # Maintenance composition: resolve the active generation's
+            # immutable product receipt; never the latest Delta heads or an
+            # unrelated sync completed marker.
+            return self.ontology_product_reader.read_ontology()
         selected = (
             dict(marker)
             if marker is not None
@@ -3552,6 +3559,62 @@ class FabricSyncService:
                 version=relationship_version,
             ),
         )
+
+    def materialize_ontology_generation(
+        self,
+        *,
+        entities: Sequence[Mapping[str, Any]],
+        relationships: Sequence[Mapping[str, Any]],
+        generation_id: str,
+        source_generation: str,
+        content_hash: str,
+        authorization_digest: str,
+        attestation_digest: str,
+        validation: Mapping[str, Any],
+        guard: Callable[[], None] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Write the exact immutable generation's closed product manifest.
+
+        Publisher-owned maintenance operation: no inventory reload, no
+        deterministic RelationshipBuilder, no lifecycle reconstruction and no
+        ``sync``.  Every table is a full-snapshot OVERWRITE (a new Delta
+        version; no table is ever deleted) so obsolete active rows disappear
+        while prior versions stay readable for pinned consumers.
+        """
+        products = ontology_generation_products(
+            entities,
+            relationships,
+            generation_id=generation_id,
+            source_generation=source_generation,
+            content_hash=content_hash,
+            authorization_digest=authorization_digest,
+            attestation_digest=attestation_digest,
+            validation=validation,
+        )
+        written: dict[str, dict[str, Any]] = {}
+        for table_name, rows in products.items():
+            if guard is not None:
+                guard()
+            layer, logical = table_name.split("_", 1)
+            uri = self.onelake.table_uri(layer, logical)
+            result = self.delta.write(
+                uri,
+                rows,
+                mode=DeltaWriteMode.OVERWRITE,
+                schema=schema_for(table_name),
+            )
+            if result.version is None:
+                raise RuntimeError(f"{table_name} write returned no Delta version")
+            written[table_name] = {
+                "version": int(result.version),
+                "rows": len(rows),
+            }
+        if guard is not None:
+            guard()
+        catalog = _generation_catalog(products, written, generation_id, content_hash)
+        self.onelake.write_json("ontology/metadata/catalog.json", catalog)
+        return written
+
 
     def _publish_ontology(self, datasets: dict[str, list[dict[str, Any]]]) -> None:
         if self.ontology_publisher is None:
@@ -4374,6 +4437,118 @@ def _validated_delta_version(value: Any, *, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{field_name} must be a non-negative integer")
     return value
+
+
+def ontology_generation_products(
+    entities: Sequence[Mapping[str, Any]],
+    relationships: Sequence[Mapping[str, Any]],
+    *,
+    generation_id: str,
+    source_generation: str,
+    content_hash: str,
+    authorization_digest: str,
+    attestation_digest: str,
+    validation: Mapping[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    """Closed, candidate-derived product manifest (table name -> exact rows).
+
+    Canonical tables keep every row (including retired lifecycle history and
+    ``source=model``); typed tables hold only active rows, and every allowed
+    typed relationship table is present (possibly empty).  Health and quality
+    are generation-bound; unrelated exposure/security/workload products are not
+    part of this manifest.
+    """
+    entity_rows = [dict(row) for row in entities]
+    relationship_rows = [dict(row) for row in relationships]
+    products: dict[str, list[dict[str, Any]]] = {
+        "ontology_entities": entity_rows,
+        "ontology_relationships": relationship_rows,
+    }
+    for entity_type in ONTOLOGY_ENTITY_TYPES:
+        products[ontology_entity_table(entity_type)] = [
+            row
+            for row in entity_rows
+            if row.get("entity_type") == entity_type
+            and row.get("lifecycle_status") == "active"
+        ]
+    for relationship_type in ONTOLOGY_RELATIONSHIP_TYPES:
+        products.setdefault(ontology_relationship_table(*relationship_type), [])
+    for row in relationship_rows:
+        if row.get("lifecycle_status") != "active":
+            continue
+        table = ontology_relationship_table(
+            row["subject_type"], row["predicate"], row["object_type"]
+        )
+        products.setdefault(table, []).append(row)
+    stamp = max(
+        (str(row.get("timestamp") or "") for row in (*entity_rows, *relationship_rows)),
+        default="",
+    )
+    identity = {
+        "generation_id": generation_id,
+        "source_generation": source_generation,
+        "content_hash": content_hash,
+        "authorization_digest": authorization_digest,
+        "attestation_digest": attestation_digest,
+    }
+    entity_ids = {str(row.get("resource_id")) for row in entity_rows}
+    linked = {
+        str(row.get(key))
+        for row in relationship_rows
+        for key in ("subject_id", "object_id")
+    }
+    products["ontology_health"] = [
+        {
+            "tenant_id": "system",
+            "subscription_id": "system",
+            "resource_id": f"ontology-health://{generation_id}",
+            "timestamp": stamp,
+            "change_version": _hash_json({**identity, "kind": "health"}),
+            "ingestion_run_id": generation_id,
+            "entity_count": len(entity_rows),
+            "relationship_count": len(relationship_rows),
+            "orphan_resources": len(entity_ids - linked),
+            "missing_ownership": 0,
+            "missing_tags": 0,
+            "synchronization_errors": 0,
+        }
+    ]
+    products["ontology_quality_report"] = [
+        {
+            "tenant_id": "system",
+            "subscription_id": "system",
+            "resource_id": f"ontology-quality://{generation_id}",
+            "timestamp": stamp,
+            "change_version": _hash_json({**identity, "kind": "quality"}),
+            "ingestion_run_id": generation_id,
+            "passed": bool(validation.get("passed")),
+            "report_json": json.dumps(dict(validation), sort_keys=True),
+        }
+    ]
+    return products
+
+
+def _generation_catalog(
+    products: Mapping[str, Sequence[Mapping[str, Any]]],
+    written: Mapping[str, Mapping[str, Any]],
+    generation_id: str,
+    content_hash: str,
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": "1.0.0",
+        "generationId": generation_id,
+        "contentHash": content_hash,
+        "tables": [
+            {
+                "name": table,
+                "rowCount": len(rows),
+                "deltaVersion": written[table]["version"],
+                "columns": sorted(schema_for(table).names),
+            }
+            for table, rows in sorted(products.items())
+        ],
+    }
+
 
 
 def _catalog_metadata(

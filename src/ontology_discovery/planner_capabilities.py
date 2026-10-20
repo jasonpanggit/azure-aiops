@@ -32,6 +32,7 @@ _EXECUTION_CLASSES = frozenset(
 )
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _VERSION = re.compile(r"[0-9]{1,10}(?:[.-][0-9]{1,10}){0,3}")
+_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 class UnsupportedPlannerCapability(RuntimeError):
@@ -126,6 +127,9 @@ def provider_receipt(
         receipt["agent_version_hash"] = hashlib.sha256(version.encode()).hexdigest()
         if _VERSION.fullmatch(version):
             receipt["agent_version"] = version
+    model = attempt.get("model")
+    if isinstance(model, str) and _MODEL.fullmatch(model):
+        receipt["model"] = model
     for key in ("prompt_hash", "schema_hash"):
         value = attempt.get(key)
         if isinstance(value, str) and _SHA256.fullmatch(value):

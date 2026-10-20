@@ -344,7 +344,12 @@ class PublisherDispatchView:
             )
             value = {"step": step_name, **copy.deepcopy(dict(receipt))}
             if existing is not None:
-                if existing != value:
+                # A restarted worker re-records identical evidence at a later
+                # wall-clock time; only the timestamp may differ.
+                def _stable(item: Mapping[str, Any]) -> dict[str, Any]:
+                    return {k: v for k, v in item.items() if k != "recorded_at"}
+
+                if _stable(existing) != _stable(value):
                     raise DispatchConflict("dispatch_receipt_conflict")
                 return copy.deepcopy(row)
             row["receipts"].append(value)

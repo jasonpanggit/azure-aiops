@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -32,6 +33,12 @@ from storage.onelake_writer import OneLakeWriter
 from .command_intake import PublisherCommandConsumer
 from .dispatch_store import PublisherDispatchStore
 from .drill_control import DrillControlConfig, PublisherDrillControl
+from .maintenance_consumers import MaintenanceConsumerCheck
+from .maintenance_materialization import (
+    CandidateGenerationMaterializer,
+    ProductConsumerPorts,
+)
+from .maintenance_release import MaintenanceConfigError, build_production_reader
 from .publisher import CONSUMER_FAMILIES, OntologyGenerationPublisher
 from .publisher_worker import PublisherIntakeAdapter, PublisherWorker
 
@@ -130,7 +137,58 @@ def publisher_fabric_config(
     )
 
 
-def build_publisher_runtime(config: PublisherRuntimeConfig):
+@dataclass(frozen=True)
+class MaintenanceRuntimeBindings:
+    """Server-owned, default-off Phase 14 maintenance selection.
+
+    ``authorizer`` is Plan 04's publisher-side ``MaintenanceAuthorizer`` (shared
+    Ed25519 verifier, trusted-record reader); ``definition_fingerprint`` is the
+    approved definition contract.  Only offline/local composition is accepted
+    here; live runtimes stay closed until the exact read/observer/key/attestation
+    prerequisites are approved by Unified Deployment.
+    """
+
+    authorizer: object
+    definition_fingerprint: Callable[[], str]
+    expected_target: Mapping[str, str] | None = None
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+    fault: Callable[[str], None] | None = None
+
+
+def build_publisher_runtime(
+    config: PublisherRuntimeConfig,
+    *,
+    maintenance: MaintenanceRuntimeBindings | None = None,
+):
+    # Maintenance is default-off and server-selected.  The approved read-only
+    # reader/observer bindings are supplied by Unified Deployment after the
+    # prerequisites; until then selecting maintenance fails startup closed
+    # rather than silently running without independent authorization.
+    if maintenance is None and build_production_reader() is not None:
+        raise MaintenanceConfigError("maintenance_observer_bindings_unapproved")
+    if maintenance is not None:
+        if config.runtime_mode == "production":
+            raise MaintenanceConfigError("maintenance_live_bindings_unapproved")
+        if (
+            not callable(getattr(maintenance.authorizer, "authorize", None))
+            or not callable(getattr(maintenance.authorizer, "authorize_restore", None))
+            or not callable(maintenance.definition_fingerprint)
+        ):
+            raise MaintenanceConfigError("maintenance_bindings_unqualified")
+        required_target = {
+            "tenant_id",
+            "subscription_id",
+            "connection_id",
+            "workspace_id",
+            "item_id",
+            "definition_fingerprint",
+        }
+        if (
+            maintenance.expected_target is None
+            or set(maintenance.expected_target) != required_target
+            or any(not str(maintenance.expected_target.get(k) or "").strip() for k in required_target)
+        ):
+            raise MaintenanceConfigError("maintenance_target_binding_unqualified")
     loaded = FabricRuntimeConfig.load(config.fabric_config)
     fabric_config = publisher_fabric_config(
         loaded, config.publisher_client_id
@@ -169,6 +227,44 @@ def build_publisher_runtime(config: PublisherRuntimeConfig):
         return {family: passed for family in CONSUMER_FAMILIES}
 
     drill_control = build_drill_control(config)
+    materialize = lambda candidate: _materialize(
+        fabric.service, candidate.source_generation
+    )
+    consumer_check = check
+    maintenance_authorizer = None
+    if maintenance is not None:
+        from storage.onelake_documents import OneLakeDocumentStore as _Documents
+
+        service = fabric.service
+        target = hashlib.sha256(
+            str(service.onelake.table_uri("ontology", "entities")).encode()
+        ).hexdigest()[:32]
+        materializer = CandidateGenerationMaterializer(
+            storage=publication,
+            documents=_Documents(config.roots["publication"]),
+            service=service,
+            authorizer=maintenance.authorizer,
+            target_id=target,
+            clock=maintenance.clock,
+            expected_target=maintenance.expected_target,
+            definition_fingerprint=maintenance.definition_fingerprint,
+            fault=maintenance.fault,
+        )
+        service.ontology_product_reader = materializer.reader
+        observers = ProductConsumerPorts(
+            storage=publication,
+            reader=materializer.reader,
+            service=service,
+            definition_fingerprint=maintenance.definition_fingerprint,
+            clock=maintenance.clock,
+        )
+        consumer_check = MaintenanceConsumerCheck(
+            ports=observers.ports(),
+            definition_fingerprint=maintenance.definition_fingerprint,
+            clock=maintenance.clock,
+        )
+        materialize = materializer
+        maintenance_authorizer = maintenance.authorizer
     worker = PublisherWorker(
         dispatches=dispatches,
         publisher=publisher,
@@ -177,12 +273,11 @@ def build_publisher_runtime(config: PublisherRuntimeConfig):
         fence_allocator=MonotonicFenceAllocator(
             OneLakeDocumentStore(config.roots["dispatch"])
         ),
-        materialize=lambda candidate: _materialize(
-            fabric.service, candidate.source_generation
-        ),
-        consumer_check=check,
+        materialize=materialize,
+        consumer_check=consumer_check,
         now=now,
         drill_control=drill_control,
+        maintenance_authorizer=maintenance_authorizer,
     )
     intake = PublisherIntakeAdapter(
         registry=ConnectionRegistry(config.roots["connection"]),

@@ -7,6 +7,8 @@ import uuid
 from collections import Counter
 from typing import Any
 
+from .definition_compatibility import assert_legacy_publisher_compatible
+
 ENTITY_COLUMNS = (
     ("resource_id", "String"),
     ("name", "String"),
@@ -45,11 +47,19 @@ class OntologyPublisher:
         ontology_name: str,
         entity_types: dict[str, str],
         relationships: dict[tuple[str, str, str], str],
+        expected_item_id: str | None = None,
     ) -> dict[str, Any]:
         definition = self.build_definition(entity_types, relationships, ontology_name)
         item = self.manager.resolve(ontology_id=ontology_id, ontology_name=ontology_name)
         if item:
             current = self.manager.get_definition(str(item["id"]))
+            # Format/target gate: a legacy replacement must never reach
+            # updateDefinition for TMDL, mixed, unknown or wrong-target items.
+            assert_legacy_publisher_compatible(
+                current,
+                item_id=str(item["id"]),
+                expected_item_id=expected_item_id,
+            )
             if _definitions_equal(current, definition):
                 return {**item, "action": "unchanged"}
             try:

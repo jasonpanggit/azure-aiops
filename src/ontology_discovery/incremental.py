@@ -177,6 +177,84 @@ def canonical_graph_hash(graph: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def graph_row_hashes(graph: Mapping[str, Any]) -> dict[str, str]:
+    """Hash each typed graph row independently for durable incremental work."""
+
+    normalized = normalize_graph_state(
+        entities=_graph_rows(graph, "entities"),
+        relationships=_graph_rows(graph, "relationships"),
+        pending_relationships=_graph_rows(graph, "pending"),
+    )
+    identities = {
+        "entities": "resource_id",
+        "relationships": "resource_id",
+        "pending": "pending_id",
+    }
+    result: dict[str, str] = {}
+    for section, rows in normalized.items():
+        for row in rows:
+            identity = _identifier(row.get(identities[section]))
+            if not identity:
+                raise ValueError(f"graph {section} row has no stable identity")
+            result[f"{section}/{identity}"] = hashlib.sha256(
+                json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+    return result
+
+
+def apply_incremental_graph(
+    *,
+    previous_graph: Mapping[str, Any],
+    current_graph: Mapping[str, Any],
+    delta: IncrementalDelta,
+) -> dict[str, list[dict[str, Any]]]:
+    """Replay changed rows over a committed graph without copying a full build.
+
+    Unchanged records come only from the durable predecessor. Partial scans
+    retain unseen, unresolved, and explicitly stale records; only a complete,
+    authoritative scan can apply retirement.
+    """
+
+    previous = normalize_graph_state(
+        entities=_graph_rows(previous_graph, "entities"),
+        relationships=_graph_rows(previous_graph, "relationships"),
+        pending_relationships=_graph_rows(previous_graph, "pending"),
+    )
+    current = normalize_graph_state(
+        entities=_graph_rows(current_graph, "entities"),
+        relationships=_graph_rows(current_graph, "relationships"),
+        pending_relationships=_graph_rows(current_graph, "pending"),
+    )
+    current_hashes = graph_row_hashes(current)
+    if current_hashes != dict(delta.current_row_hashes):
+        raise ValueError("incremental delta does not match current graph")
+
+    section_identity = {
+        "entities": "resource_id",
+        "relationships": "resource_id",
+        "pending": "pending_id",
+    }
+    result: dict[str, list[dict[str, Any]]] = {}
+    added_or_changed = set(delta.added) | set(delta.changed)
+    protected = set(delta.unresolved) | set(delta.stale)
+    retired = set(delta.retired) if delta.authoritative else set()
+    for section in _GRAPH_SECTIONS:
+        identity_field = section_identity[section]
+        merged = {
+            f"{section}/{_identifier(row[identity_field])}": copy.deepcopy(row)
+            for row in previous[section]
+        }
+        for row in current[section]:
+            key = f"{section}/{_identifier(row[identity_field])}"
+            if key in added_or_changed and key not in protected:
+                merged[key] = copy.deepcopy(row)
+        for key in retired:
+            if key.startswith(f"{section}/"):
+                merged.pop(key, None)
+        result[section] = [merged[key] for key in sorted(merged)]
+    return result
+
+
 def compare_graph_parity(
     full_graph: Mapping[str, Any],
     incremental_graph: Mapping[str, Any],
@@ -260,10 +338,28 @@ def split_evidence_batches(
                 _chunk_count(len(component["pair"]), MAX_CANDIDATE_PAIRS),
                 _chunk_count(len(component["evidence"]), MAX_EVIDENCE_RECORDS),
             )
-            for index in range(chunks):
-                entities = _slice(component["entity"], index, MAX_CHANGED_ENTITIES)
-                pairs = _slice(component["pair"], index, MAX_CANDIDATE_PAIRS)
-                evidence = _slice(component["evidence"], index, MAX_EVIDENCE_RECORDS)
+            linked_chunks = _linked_component_chunks(component)
+            if linked_chunks is not None:
+                chunk_records = linked_chunks
+            else:
+                chunk_records = [
+                    {
+                        "entity": _slice(
+                            component["entity"], index, MAX_CHANGED_ENTITIES
+                        ),
+                        "pair": _slice(
+                            component["pair"], index, MAX_CANDIDATE_PAIRS
+                        ),
+                        "evidence": _slice(
+                            component["evidence"], index, MAX_EVIDENCE_RECORDS
+                        ),
+                    }
+                    for index in range(chunks)
+                ]
+            for index, chunk in enumerate(chunk_records):
+                entities = chunk["entity"]
+                pairs = chunk["pair"]
+                evidence = chunk["evidence"]
                 record_ids = [
                     _record_identifier(record, kind)
                     for kind, records in (
@@ -534,10 +630,93 @@ def _slice(records: list[dict[str, Any]], index: int, limit: int) -> list[dict[s
     return records[index * limit : (index + 1) * limit]
 
 
+def _linked_component_chunks(
+    component: Mapping[str, list[dict[str, Any]]],
+) -> list[dict[str, list[dict[str, Any]]]] | None:
+    """Pack each pair with its referenced evidence in the same bounded batch."""
+
+    pairs = component["pair"]
+    if not any(record.get("evidence_ids") for record in pairs):
+        return None
+    evidence_by_id = {
+        _record_identifier(record, "evidence"): record
+        for record in component["evidence"]
+    }
+    chunks: list[dict[str, list[dict[str, Any]]]] = []
+    current = {"entity": [], "pair": [], "evidence": []}
+    assigned_evidence: set[str] = set()
+
+    def flush() -> None:
+        nonlocal current
+        if any(current.values()):
+            chunks.append(current)
+        current = {"entity": [], "pair": [], "evidence": []}
+
+    for pair in pairs:
+        refs = sorted({_identifier(value) for value in pair.get("evidence_ids", ())})
+        missing = [reference for reference in refs if reference not in evidence_by_id]
+        if missing:
+            raise EvidenceBatchRejected(
+                BatchRejectionReason.MALFORMED_RECORD,
+                "candidate pair references missing evidence",
+                record_id=_record_identifier(pair, "pair"),
+            )
+        referenced = [evidence_by_id[reference] for reference in refs]
+        current_ids = {
+            _record_identifier(record, "evidence") for record in current["evidence"]
+        }
+        related = [
+            record
+            for record in referenced
+            if _record_identifier(record, "evidence") not in current_ids
+        ]
+        if len(related) > MAX_EVIDENCE_RECORDS:
+            raise EvidenceBatchRejected(
+                BatchRejectionReason.INDIVISIBLE_RECORD,
+                "candidate pair references exceed bounded evidence capacity",
+                record_id=_record_identifier(pair, "pair"),
+            )
+        if (
+            len(current["pair"]) >= MAX_CANDIDATE_PAIRS
+            or len(current["evidence"]) + len(related) > MAX_EVIDENCE_RECORDS
+        ):
+            flush()
+            related = referenced
+        current["pair"].append(pair)
+        current["evidence"].extend(related)
+        assigned_evidence.update(refs)
+    flush()
+
+    for record in component["evidence"]:
+        record_id = _record_identifier(record, "evidence")
+        if record_id in assigned_evidence:
+            continue
+        if len(current["evidence"]) >= MAX_EVIDENCE_RECORDS:
+            flush()
+        current["evidence"].append(record)
+        assigned_evidence.add(record_id)
+    flush()
+
+    entity_chunks = [
+        _slice(component["entity"], index, MAX_CHANGED_ENTITIES)
+        for index in range(
+            _chunk_count(len(component["entity"]), MAX_CHANGED_ENTITIES)
+        )
+    ]
+    for index, records in enumerate(entity_chunks):
+        if index < len(chunks):
+            chunks[index]["entity"] = records
+        elif records:
+            chunks.append({"entity": records, "pair": [], "evidence": []})
+    return chunks
+
+
 __all__ = [
     "BatchRejectionReason",
     "EvidenceBatchRejected",
     "IncrementalDelta",
+    "apply_incremental_graph",
     "classify_incremental",
+    "graph_row_hashes",
     "split_evidence_batches",
 ]

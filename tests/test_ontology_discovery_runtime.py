@@ -523,19 +523,88 @@ def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
     monkeypatch.setenv("FOUNDRY_ONTOLOGY_AGENT_VERSION", "7")
     monkeypatch.setenv("AIOPS_CONFIG_PATH", str(config_path))
 
+    vm_a_id = (
+        "/subscriptions/subscription-connection-a/resourceGroups/apps/providers/"
+        "Microsoft.Compute/virtualMachines/vm-a"
+    )
+    vm_b_id = (
+        "/subscriptions/subscription-connection-a/resourceGroups/apps/providers/"
+        "Microsoft.Compute/virtualMachines/vm-b"
+    )
     entities = [
-        _valid_ontology_entity("vm-a", "VirtualMachine"),
+        _valid_ontology_entity(vm_a_id, "VirtualMachine"),
         _valid_ontology_entity("app-a", "Application"),
+        _valid_ontology_entity(vm_b_id, "VirtualMachine"),
+        _valid_ontology_entity("app-b", "Application"),
     ]
     relationship = {
         **_valid_ontology_entity("relationship-a", "Application"),
         "subject_id": "app-a",
         "subject_type": "Application",
         "predicate": "hosted_on",
-        "object_id": "vm-a",
+        "object_id": vm_a_id,
         "object_type": "VirtualMachine",
         "source": "resource_tag",
         "confidence": 1.0,
+    }
+    memberships = [
+        {
+            **_valid_ontology_entity("membership-a", "Application"),
+            "subject_id": vm_a_id,
+            "subject_type": "VirtualMachine",
+            "predicate": "member_of",
+            "object_id": "app-a",
+            "object_type": "Application",
+            "source": "application_tag",
+            "confidence": 1.0,
+        },
+        {
+            **_valid_ontology_entity("membership-b", "Application"),
+            "subject_id": vm_b_id,
+            "subject_type": "VirtualMachine",
+            "predicate": "member_of",
+            "object_id": "app-b",
+            "object_type": "Application",
+            "source": "application_tag",
+            "confidence": 1.0,
+        },
+    ]
+    deterministic = [relationship, *memberships]
+    observed_at = datetime.now(UTC)
+    bronze_resources = [
+        {
+            "resource_id": vm_a_id,
+            "subscription_id": "subscription-connection-a",
+            "source_generation_id": "inventory-1",
+            "observed_at": observed_at.isoformat(),
+            "payload_json": json.dumps(
+                {
+                    "id": vm_a_id,
+                    "tags": {
+                        "aiops.dependencyResourceIds": json.dumps([vm_b_id])
+                    },
+                }
+            ),
+        },
+        {
+            "resource_id": vm_b_id,
+            "subscription_id": "subscription-connection-a",
+            "source_generation_id": "inventory-1",
+            "observed_at": observed_at.isoformat(),
+            "payload_json": json.dumps({"id": vm_b_id, "tags": {}}),
+        },
+    ]
+    monitor_row = {
+        "TimeGenerated": observed_at.isoformat(),
+        "Id": "dependency-1",
+        "OperationId": "operation-1",
+        "_ResourceId": vm_a_id,
+        "_SubscriptionId": "subscription-connection-a",
+        "AppRoleName": "frontend",
+        "Target": "backend",
+        "DependencyType": "HTTP",
+        "Success": True,
+        "SyntheticSource": "",
     }
 
     class FakeStore:
@@ -548,13 +617,19 @@ def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
         store = FakeStore()
 
         def refresh(self):
-            return SimpleNamespace(manifest={"runId": "inventory-1"})
+            return SimpleNamespace(
+                manifest={
+                    "runId": "inventory-1",
+                    "startedAt": observed_at.isoformat(),
+                }
+            )
 
     class FakeMapper:
         def load(self, *_args, **_kwargs):
             return {
                 "ontology_entities": entities,
-                "ontology_relationships": [relationship],
+                "ontology_relationships": deterministic,
+                "bronze_resources": bronze_resources,
             }
 
     class FakeCurator:
@@ -562,19 +637,24 @@ def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
             pass
 
         async def propose(self, _run, _batch):
+            pair = next(
+                value
+                for value in _batch["candidate_pairs"]
+                if value.get("predicate") == "depends_on"
+            )
             return {
                 "batch_id": _batch["batch_id"],
                 "status": "proposals",
                 "proposals": [
                     {
-                        "subject_id": "vm-a",
-                        "subject_type": "VirtualMachine",
-                        "predicate": "member_of",
-                        "object_id": "app-a",
-                        "object_type": "Application",
-                        "evidence_refs": [_batch["evidence_records"][0]["evidence_id"]],
-                        "observed_at": NOW.isoformat(),
-                        "rationale": "The cited inventory observation links the endpoints.",
+                        "subject_id": pair["subject_id"],
+                        "subject_type": pair["subject_type"],
+                        "predicate": pair["predicate"],
+                        "object_id": pair["object_id"],
+                        "object_type": pair["object_type"],
+                        "evidence_refs": list(pair["evidence_ids"]),
+                        "observed_at": observed_at.isoformat(),
+                        "rationale": "Two independently sourced observations corroborate this pair.",
                         "confidence": 0.99,
                         "uncertainty": [],
                         "disposition": "propose",
@@ -590,6 +670,19 @@ def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
         "ontology_discovery.runtime.build_connection_inventory_pipeline",
         lambda *_args, **_kwargs: FakePipeline(),
     )
+    real_build_runtime = cli.build_production_runtime
+
+    def offline_runtime(*, owner):
+        return real_build_runtime(
+            owner=owner,
+            monitor_dependency_reader=lambda _connection: [monitor_row],
+            monitor_identity_bindings=lambda _connection: {
+                "frontend": vm_a_id,
+                "backend": vm_b_id,
+            },
+        )
+
+    monkeypatch.setattr(cli, "build_production_runtime", offline_runtime)
     monkeypatch.setattr("ontology_discovery.runtime.InventoryDatasetMapper", FakeMapper)
     monkeypatch.setattr("ontology_discovery.runtime.OntologyCurator", FakeCurator)
 
@@ -601,16 +694,25 @@ def test_cli_main_real_composition_persists_evidence_proposal_and_dispatch(
     )
     runs = run_store.list_runs()
     dispatches = PublisherDispatchStore(str(dispatch_home)).coordinator().list_publish()
-    assert len(runs) == len(dispatches) == 1
+    assert len(runs) == len(dispatches) == 1, runs
     assert runs[0]["status"] == "succeeded"
     assert runs[0]["checkpoint"]["name"] == "publisher_dispatch_created"
     assert run_store.list_evidence_batches(run_id=runs[0]["run_id"])
     registry_scope = "tenant-a:subscription-connection-a:connection-a"
     assert run_store.list_proposals(scope=registry_scope)
-    assert dispatches[0]["candidate"]["relationships"] == [relationship]
+    assert {
+        row["resource_id"] for row in dispatches[0]["candidate"]["relationships"]
+    } == {row["resource_id"] for row in deterministic}
     assert dispatches[0]["candidate"]["decision_lineage"][0].endswith(
         ":shadow-excluded"
     )
+    dispatched_evidence = run_store.list_evidence_batches(run_id=runs[0]["run_id"])[0][
+        "batch"
+    ]["evidence_records"]
+    assert {row["source"] for row in dispatched_evidence} == {
+        "azure-resource-graph:dependency-tag",
+        "azure-monitor:AppDependencies",
+    }
     output = capsys.readouterr().out
     assert "connection-a" not in output
     assert "tenant-a" not in output
@@ -700,14 +802,16 @@ def test_reconciliation_cadence_watermark_and_drift_survive_restart(tmp_path):
     )
     assert repaired["result"]["drift_status"] == "drift_detected"
     assert repaired["result"]["repair_authority"] == "full"
-    assert repaired["control"]["force_full"] is False
+    assert repaired["control"]["force_full"] is True
+    assert repaired["control"]["force_full_reason"] == "drift_detected"
 
     following = OntologyRunStore(state_path).select_reconciliation_mode(
         connection_id="connection-a",
         now=NOW + timedelta(minutes=5),
         cadence_seconds=3600,
     )
-    assert following["selected_mode"] == "incremental"
+    assert following["selected_mode"] == "full"
+    assert following["selection_reason"] == "drift_detected"
 
 
 def test_fixture_prepare_cleanup_and_sweep_are_bounded_and_fenced(tmp_path):
