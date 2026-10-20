@@ -114,6 +114,7 @@ import type {
   OsInventoryDetail,
   InventoryNarrative,
   OntologyAutomationStatus,
+  OntologyAgentCapabilities,
   OntologyEvaluation,
   OntologyEvaluationSnapshot,
   OntologyGeneration,
@@ -306,6 +307,12 @@ function ontologyQuery(
  * additionally carry the server revision or pointer ETag they observed.
  */
 export const ontologyAutomationApi = {
+  /** Read the scoped native entry point without invoking an agent or a run. */
+  agentCapabilities: (connectionId: string, scope: ScopeSelection) =>
+    apiRequest<OntologyAgentCapabilities>("/ontology-discovery/agent-capabilities", {
+      query: ontologyQuery(connectionId, scope),
+    }),
+
   status: (connectionId: string, scope: ScopeSelection) =>
     apiRequest<OntologyAutomationStatus>("/ontology-discovery/status", {
       query: ontologyQuery(connectionId, scope),

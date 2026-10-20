@@ -267,6 +267,17 @@ resource "azurerm_container_app" "api" {
         value = local.ontology_publication_home
       }
 
+      dynamic "env" {
+        for_each = var.fabric_native_ontology_target == null ? {} : {
+          AIOPS_ONTOLOGY_NATIVE_WORKSPACE_ID = var.fabric_native_ontology_target.workspace_id
+          AIOPS_ONTOLOGY_NATIVE_ITEM_ID      = var.fabric_native_ontology_target.item_id
+        }
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
       env {
         name  = "AIOPS_RUNTIME_MODE"
         value = var.enable_fabric ? "production" : "demo"
