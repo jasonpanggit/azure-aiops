@@ -99,7 +99,7 @@ class PairReleaseConflict(RuntimeError):
 class OntologyRunStore:
     """Versioned run records with deterministic identity and fenced ownership."""
 
-    SCHEMA_VERSION = "1.3.0"
+    SCHEMA_VERSION = "1.4.0"
 
     def __init__(
         self,
@@ -931,6 +931,8 @@ class OntologyRunStore:
         connection_id: str,
         now: datetime,
         cadence_seconds: int = 86400,
+        baseline_scope: str | None = None,
+        baseline_lineage_key: str | None = None,
     ) -> dict[str, Any]:
         """Choose full/incremental solely from durable server-owned control."""
 
@@ -959,8 +961,48 @@ class OntologyRunStore:
                 state["reconciliation_controls"].append(control)
                 reason = "first_run"
                 mode = "full"
+            elif baseline_scope is not None and baseline_lineage_key is not None:
+                baseline_key = _baseline_key(
+                    connection,
+                    _required(baseline_scope, "baseline_scope"),
+                    _required(baseline_lineage_key, "baseline_lineage_key"),
+                )
+                baseline = next(
+                    (
+                        row
+                        for row in state["reconciliation_baselines"]
+                        if row.get("baseline_key") == baseline_key
+                    ),
+                    None,
+                )
+                if baseline is None:
+                    reason = "baseline_missing"
+                    mode = "full"
+                elif not _baseline_replayable(baseline):
+                    reason = "baseline_incompatible_or_incomplete"
+                    mode = "full"
+                elif control["force_full"]:
+                    reason = str(
+                        control.get("force_full_reason") or "maintenance_requested"
+                    )
+                    mode = "full"
+                elif not _valid_watermark(control["committed_watermark"]):
+                    reason = (
+                        "first_run"
+                        if not control["committed_watermark"]
+                        else "watermark_invalid"
+                    )
+                    mode = "full"
+                elif datetime.fromisoformat(control["next_full_due_at"]) <= moment:
+                    reason = "cadence_elapsed"
+                    mode = "full"
+                else:
+                    reason = "watermark_current"
+                    mode = "incremental"
             elif control["force_full"]:
-                reason = "maintenance_requested"
+                reason = str(
+                    control.get("force_full_reason") or "maintenance_requested"
+                )
                 mode = "full"
             elif not _valid_watermark(control["committed_watermark"]):
                 reason = (
@@ -982,6 +1024,38 @@ class OntologyRunStore:
             control["updated_at"] = moment.isoformat()
             self._persist_advanced(state, moment)
             return copy.deepcopy(control)
+
+    def get_committed_baseline(
+        self,
+        *,
+        connection_id: str,
+        scope: str,
+        lineage_key: str,
+    ) -> dict[str, Any] | None:
+        """Read one exact, versioned predecessor graph for restart replay."""
+
+        key = _baseline_key(
+            _required(connection_id, "connection_id").casefold(),
+            _required(scope, "scope"),
+            _required(lineage_key, "lineage_key"),
+        )
+        with self._lock:
+            rows = self._read_state()["reconciliation_baselines"]
+        row = next((item for item in rows if item["baseline_key"] == key), None)
+        if row is None:
+            return None
+        if (
+            row.get("schema_version") != "ontology-graph-v1"
+            or row.get("scope", "").casefold() != scope.casefold()
+            or row.get("lineage_key") != lineage_key
+            or row.get("coverage") not in {"complete", "partial", "degraded"}
+            or not isinstance(row.get("graph"), Mapping)
+            or not isinstance(row.get("row_hashes"), Mapping)
+        ):
+            raise ValueError("committed ontology baseline is corrupt or incompatible")
+        if dict(row["row_hashes"]) != _hash_graph_rows(row["graph"]):
+            raise ValueError("committed ontology baseline hashes are corrupt")
+        return copy.deepcopy(row)
 
     def mark_full_reconciliation_due(
         self,
@@ -1038,6 +1112,7 @@ class OntologyRunStore:
             if cadence is not None:
                 control["cadence_seconds"] = cadence
             control["force_full"] = True
+            control["force_full_reason"] = "maintenance_requested"
             control["revision"] += 1
             control["updated_at"] = moment.isoformat()
             state["reconciliation_audits"].append(
@@ -1069,6 +1144,8 @@ class OntologyRunStore:
         incremental_graph: Mapping[str, Any],
         dispatch_id: str,
         now: datetime,
+        baseline: Mapping[str, Any] | None = None,
+        baseline_expected_revision: int | None = None,
     ) -> dict[str, Any]:
         """Persist parity first, then advance the watermark after dispatch."""
 
@@ -1079,6 +1156,64 @@ class OntologyRunStore:
         moment = _aware(now)
         connection = _required(connection_id, "connection_id").casefold()
         parity = compare_graph_parity(full_graph, incremental_graph)
+        baseline_payload: dict[str, Any] | None = None
+        baseline_key = ""
+        baseline_hash = ""
+        if baseline is not None:
+            from .incremental import graph_row_hashes, normalize_graph_state
+
+            scope = _required(baseline.get("scope"), "baseline.scope")
+            lineage_key = _required(
+                baseline.get("lineage_key"), "baseline.lineage_key"
+            )
+            schema_version = _required(
+                baseline.get("schema_version"), "baseline.schema_version"
+            )
+            coverage = _required(baseline.get("coverage"), "baseline.coverage")
+            if schema_version != "ontology-graph-v1":
+                raise ValueError("baseline schema version is incompatible")
+            if coverage not in {"complete", "partial", "degraded"}:
+                raise ValueError("baseline coverage is invalid")
+            graph = normalize_graph_state(
+                entities=_graph_rows(baseline.get("graph"), "entities"),
+                relationships=_graph_rows(baseline.get("graph"), "relationships"),
+                pending_relationships=_graph_rows(
+                    baseline.get("graph"), "pending"
+                ),
+            )
+            row_hashes = graph_row_hashes(graph)
+            supplied_hashes = dict(baseline.get("row_hashes") or {})
+            if supplied_hashes != row_hashes:
+                raise ValueError("baseline row hashes do not match graph")
+            if parity["status"] == "drift_detected" and coverage == "complete":
+                graph = normalize_graph_state(
+                    entities=_graph_rows(full_graph, "entities"),
+                    relationships=_graph_rows(full_graph, "relationships"),
+                    pending_relationships=_graph_rows(full_graph, "pending"),
+                )
+                row_hashes = graph_row_hashes(graph)
+            baseline_key = _baseline_key(connection, scope, lineage_key)
+            baseline_payload = {
+                "baseline_key": baseline_key,
+                "connection_id": connection,
+                "scope": scope,
+                "lineage_key": lineage_key,
+                "schema_version": schema_version,
+                "coverage": coverage,
+                "row_hashes": row_hashes,
+                "graph": graph,
+                "source_fingerprint": _required(
+                    baseline.get("source_fingerprint"),
+                    "baseline.source_fingerprint",
+                ),
+            }
+            baseline_hash = hashlib.sha256(
+                json.dumps(
+                    baseline_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
         result_id = "ORR-" + hashlib.sha256(
             json.dumps(
                 {
@@ -1087,6 +1222,7 @@ class OntologyRunStore:
                     "committed_watermark": watermark,
                     "dispatch_id": dispatch,
                     **parity,
+                    "baseline_hash": baseline_hash,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -1104,8 +1240,6 @@ class OntologyRunStore:
             )
             if control is None:
                 raise RunClaimConflict("reconciliation_control_missing", {})
-            if control["committed_watermark"] != predecessor_watermark:
-                raise RunClaimConflict("reconciliation_watermark_conflict", control)
             result = next(
                 (
                     row
@@ -1114,28 +1248,67 @@ class OntologyRunStore:
                 ),
                 None,
             )
-            if result is None:
-                result = {
-                    "result_id": result_id,
-                    "connection_hash": hashlib.sha256(
-                        connection.encode()
-                    ).hexdigest(),
-                    "selected_mode": control["selected_mode"],
-                    "selection_reason": control["selection_reason"],
-                    "predecessor_watermark": predecessor_watermark,
-                    "committed_watermark": watermark,
-                    "dispatch_id": dispatch,
-                    "drift_status": parity["status"],
-                    "drift_count": parity["drift_count"],
-                    "drift_hash": parity["drift_hash"],
-                    "full_graph_hash": parity["full_graph_hash"],
-                    "incremental_graph_hash": parity[
-                        "incremental_graph_hash"
-                    ],
-                    "repair_authority": "full",
-                    "created_at": moment.isoformat(),
+            if result is not None:
+                return {
+                    "control": copy.deepcopy(control),
+                    "result": copy.deepcopy(result),
                 }
-                state["reconciliation_results"].append(result)
+            if control["committed_watermark"] != predecessor_watermark:
+                raise RunClaimConflict("reconciliation_watermark_conflict", control)
+            if baseline_payload is not None:
+                existing_baseline = next(
+                    (
+                        row
+                        for row in state["reconciliation_baselines"]
+                        if row["baseline_key"] == baseline_key
+                    ),
+                    None,
+                )
+                actual_revision = (
+                    None
+                    if existing_baseline is None
+                    else int(existing_baseline["revision"])
+                )
+                if actual_revision != baseline_expected_revision:
+                    raise RunClaimConflict(
+                        "reconciliation_baseline_revision_conflict",
+                        existing_baseline or {},
+                    )
+                baseline_record = {
+                    **baseline_payload,
+                    "revision": 1 if existing_baseline is None else actual_revision + 1,
+                    "committed_watermark": watermark,
+                    "updated_at": moment.isoformat(),
+                }
+                if existing_baseline is None:
+                    state["reconciliation_baselines"].append(baseline_record)
+                else:
+                    state["reconciliation_baselines"][
+                        state["reconciliation_baselines"].index(existing_baseline)
+                    ] = baseline_record
+            result = {
+                "result_id": result_id,
+                "connection_hash": hashlib.sha256(
+                    connection.encode()
+                ).hexdigest(),
+                "selected_mode": control["selected_mode"],
+                "selection_reason": control["selection_reason"],
+                "predecessor_watermark": predecessor_watermark,
+                "committed_watermark": watermark,
+                "dispatch_id": dispatch,
+                "drift_status": parity["status"],
+                "drift_count": parity["drift_count"],
+                "drift_hash": parity["drift_hash"],
+                "full_graph_hash": parity["full_graph_hash"],
+                "incremental_graph_hash": parity[
+                    "incremental_graph_hash"
+                ],
+                "repair_authority": "full",
+                "baseline_key": baseline_key,
+                "baseline_hash": baseline_hash,
+                "created_at": moment.isoformat(),
+            }
+            state["reconciliation_results"].append(result)
             control["committed_watermark"] = watermark
             control["full_graph_hash"] = parity["full_graph_hash"]
             control["incremental_graph_hash"] = parity[
@@ -1144,7 +1317,13 @@ class OntologyRunStore:
             control["drift_status"] = parity["status"]
             control["drift_count"] = parity["drift_count"]
             control["drift_hash"] = parity["drift_hash"]
-            control["force_full"] = False
+            control["force_full"] = parity["status"] == "drift_detected"
+            control["force_full_reason"] = (
+                "drift_detected" if control["force_full"] else ""
+            )
+            if baseline_payload is not None and baseline_payload["coverage"] != "complete":
+                control["force_full"] = True
+                control["force_full_reason"] = "baseline_incomplete"
             control["next_full_due_at"] = (
                 moment + timedelta(seconds=control["cadence_seconds"])
             ).isoformat()
@@ -1967,6 +2146,11 @@ class OntologyRunStore:
             not isinstance(row, dict) for row in controls
         ):
             raise TypeError("Reconciliation controls must be a list of objects")
+        baselines = payload.get("reconciliation_baselines", [])
+        if not isinstance(baselines, list) or any(
+            not isinstance(row, dict) for row in baselines
+        ):
+            raise TypeError("Reconciliation baselines must be a list of objects")
         results = payload.get("reconciliation_results", [])
         if not isinstance(results, list) or any(
             not isinstance(row, dict) for row in results
@@ -2000,6 +2184,9 @@ class OntologyRunStore:
             "reconciliation_controls": [
                 _control_with_defaults(row) for row in controls
             ],
+            "reconciliation_baselines": [
+                _baseline_with_defaults(row) for row in baselines
+            ],
             "reconciliation_results": copy.deepcopy(results),
             "reconciliation_audits": copy.deepcopy(audits),
             "updated_at": str(payload.get("updated_at") or ""),
@@ -2024,6 +2211,7 @@ class OntologyRunStore:
             "admission_releases": state["admission_releases"],
             "eligible_epochs": state["eligible_epochs"],
             "reconciliation_controls": state["reconciliation_controls"],
+            "reconciliation_baselines": state["reconciliation_baselines"],
             "reconciliation_results": state["reconciliation_results"],
             "reconciliation_audits": state["reconciliation_audits"],
             "updated_at": state["updated_at"],
@@ -2080,6 +2268,7 @@ def _initial_state() -> dict[str, Any]:
         "admission_releases": [],
         "eligible_epochs": [],
         "reconciliation_controls": [],
+        "reconciliation_baselines": [],
         "reconciliation_results": [],
         "reconciliation_audits": [],
         "updated_at": "",
@@ -2136,10 +2325,28 @@ def _new_reconciliation_control(
         "drift_count": 0,
         "drift_hash": "",
         "force_full": False,
+        "force_full_reason": "",
         "revision": 0,
         "created_at": moment.isoformat(),
         "updated_at": moment.isoformat(),
     }
+
+
+def _baseline_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    record = copy.deepcopy(dict(row))
+    record.setdefault("baseline_key", "")
+    record.setdefault("connection_id", "")
+    record.setdefault("scope", "")
+    record.setdefault("lineage_key", "")
+    record.setdefault("schema_version", "")
+    record.setdefault("coverage", "degraded")
+    record.setdefault("row_hashes", {})
+    record.setdefault("graph", {"entities": [], "relationships": [], "pending": []})
+    record.setdefault("source_fingerprint", "")
+    record["revision"] = _nonnegative_int(record.get("revision", 0))
+    record.setdefault("committed_watermark", "")
+    record.setdefault("updated_at", "")
+    return record
 
 
 def _control_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -2157,10 +2364,49 @@ def _control_with_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
     record.setdefault("drift_count", 0)
     record.setdefault("drift_hash", "")
     record.setdefault("force_full", False)
+    record.setdefault("force_full_reason", "")
     record.setdefault("revision", 0)
     record.setdefault("created_at", "")
     record.setdefault("updated_at", "")
     return record
+
+
+def _baseline_key(connection_id: str, scope: str, lineage_key: str) -> str:
+    identity = f"{connection_id.casefold()}|{scope.casefold()}|{lineage_key}"
+    return "ORB-" + hashlib.sha256(identity.encode()).hexdigest()[:32].upper()
+
+
+def _hash_graph_rows(graph: Mapping[str, Any]) -> dict[str, str]:
+    from .incremental import graph_row_hashes
+
+    return graph_row_hashes(graph)
+
+
+def _baseline_replayable(baseline: Mapping[str, Any]) -> bool:
+    if (
+        baseline.get("schema_version") != "ontology-graph-v1"
+        or baseline.get("coverage") != "complete"
+        or not isinstance(baseline.get("graph"), Mapping)
+        or not isinstance(baseline.get("row_hashes"), Mapping)
+        or int(baseline.get("revision") or 0) < 1
+        or not str(baseline.get("source_fingerprint") or "").strip()
+    ):
+        return False
+    try:
+        return dict(baseline["row_hashes"]) == _hash_graph_rows(baseline["graph"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _graph_rows(graph: Any, section: str) -> list[Mapping[str, Any]]:
+    if not isinstance(graph, Mapping):
+        raise TypeError("baseline graph must be an object")
+    rows = graph.get(section, ())
+    if not isinstance(rows, (list, tuple)) or any(
+        not isinstance(row, Mapping) for row in rows
+    ):
+        raise TypeError(f"baseline graph {section} must be a list of records")
+    return list(rows)
 
 
 def _valid_watermark(value: object) -> bool:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,6 +13,7 @@ from ontology_discovery import runtime
 from ontology_discovery.planner_capabilities import (
     PlannerSelection,
     UnsupportedPlannerCapability,
+    provider_receipt,
     select_planner,
 )
 
@@ -149,3 +151,17 @@ def test_fallback_requires_closed_reason_at_invocation() -> None:
     )
     with pytest.raises(ValueError, match="invalid_planner_fallback"):
         forged.require_supported()
+
+
+@pytest.mark.parametrize("model", ["gpt-4.1", "", None, "secret\nvalue", "x" * 129])
+def test_receipt_binds_only_bounded_model_metadata(model) -> None:
+    curator = SimpleNamespace(last_attempt={"model": model})
+    receipt = provider_receipt(
+        selection=select_planner(), curator=curator, result={"proposals": []},
+    )
+    if model == "gpt-4.1":
+        assert receipt["model"] == model
+        curator.last_attempt["model"] = "gpt-other"
+        assert receipt["model"] == model
+    else:
+        assert "model" not in receipt

@@ -249,6 +249,41 @@ class AuthoritativeDatasetPublisher:
             receipt,
         )
 
+    def persist_stage_authorization(
+        self,
+        *,
+        target_generation_id: str,
+        owner_id: str,
+        fence: int,
+        audit: dict[str, Any],
+    ) -> None:
+        """Create an immutable authorization record distinct from recovery audits."""
+        generation = _safe_generation_id(target_generation_id)
+        if not self.generation_exists(generation):
+            raise FileNotFoundError(f"generation {generation} is not complete")
+        owner_hash = hashlib.sha256(owner_id.encode()).hexdigest()[:16]
+        self._documents.create_only(
+            f"generations/{generation}/stage-authorization-{fence}-{owner_hash}.json",
+            audit,
+        )
+
+    def read_stage_authorization(
+        self,
+        *,
+        target_generation_id: str,
+        owner_id: str,
+        fence: int,
+    ) -> dict[str, Any]:
+        """Read the exact immutable authorization for one fenced stage attempt."""
+        generation = _safe_generation_id(target_generation_id)
+        owner_hash = hashlib.sha256(owner_id.encode()).hexdigest()[:16]
+        snapshot = self._documents.read_snapshot(
+            f"generations/{generation}/stage-authorization-{fence}-{owner_hash}.json"
+        )
+        if not snapshot.exists:
+            raise FileNotFoundError(f"generation {generation} has no stage authorization")
+        return snapshot.payload
+
     def persist_rollback_audit(
         self,
         *,

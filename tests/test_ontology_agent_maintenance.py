@@ -523,7 +523,7 @@ def test_provenance_is_closed_bounded_and_never_derived_from_retry_count(
         assert set(receipt) <= {
             "receipt_version", "requested_provider", "selected_provider",
             "fallback_reason", "execution_class", "metadata_status", "response_hash",
-            "prompt_hash", "schema_hash", "agent_version", "agent_version_hash",
+            "prompt_hash", "schema_hash", "agent_version", "agent_version_hash", "model",
         }
         assert len(json.dumps(receipt)) < 1024
         assert receipt["prompt_hash"] == curator.last_attempt["prompt_hash"]

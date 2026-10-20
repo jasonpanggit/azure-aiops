@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -305,19 +305,33 @@ class OntologyValidator:
         proposal_lineage: Iterable[str],
         decision_lineage: Iterable[str],
         consumer_compatibility: Mapping[str, bool],
+        model_authorizer: Callable[[list[dict[str, Any]]], bool] | None = None,
     ) -> OntologyPublicationValidationReport:
-        """Validate every input that can make a generation authoritative."""
+        """Validate every input that can make a generation authoritative.
+
+        Without an explicit ``model_authorizer`` port (Phase 14 maintenance)
+        any model-derived relationship keeps failing validation.  The port
+        returns whether every model row is independently authorized; a caller
+        boolean cannot replace it.
+        """
 
         entity_rows = list(entities)
         relationship_rows = list(relationships)
         graph = self.validate(entity_rows, relationship_rows)
-        model_derived = sum(
-            1
+        model_rows = [
+            row
             for row in relationship_rows
             if str(row.get("source") or "").strip().casefold()
             in {"model", "ai", "llm"}
             or row.get("model_derived") is True
-        )
+        ]
+        model_derived = len(model_rows)
+        model_authorized = model_derived == 0
+        if model_derived and model_authorizer is not None:
+            try:
+                model_authorized = model_authorizer(model_rows) is True
+            except Exception:  # noqa: BLE001 - authorizer failure is a denial
+                model_authorized = False
         proposals = tuple(proposal_lineage)
         decisions = tuple(decision_lineage)
         lineage_complete = bool(str(source_generation).strip()) and all(
@@ -338,7 +352,7 @@ class OntologyValidator:
         return OntologyPublicationValidationReport(
             passed=(
                 graph.passed
-                and model_derived == 0
+                and model_authorized
                 and lineage_complete
                 and consumers_compatible
             ),

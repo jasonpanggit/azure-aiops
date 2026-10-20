@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from collections.abc import Callable, Mapping
@@ -44,7 +45,14 @@ class PublisherWorker:
         consumer_check: Callable[[str, str], Mapping[str, bool]],
         now: Callable[[], datetime],
         drill_control: PublisherDrillControl | None = None,
+        maintenance_authorizer: Any | None = None,
     ) -> None:
+        if maintenance_authorizer is not None and not getattr(
+            consumer_check, "maintenance_observer", False
+        ):
+            # Phase 13 callbacks are never maintenance convergence evidence.
+            raise ValueError("maintenance_requires_independent_consumer_observers")
+        self._maintenance = maintenance_authorizer
         self._dispatches = dispatches
         self._publisher = publisher
         self._publisher_identity = _required(publisher_identity, "publisher_identity")
@@ -132,7 +140,9 @@ class PublisherWorker:
         return result
 
     def _process(self, claimed: Mapping[str, Any], moment: datetime) -> None:
-        candidate = _candidate_from_dispatch(claimed)
+        candidate = _candidate_from_dispatch(
+            claimed, allow_model_rows=self._maintenance is not None
+        )
         dispatch_id = str(claimed["dispatch_id"])
         revision = [int(claimed["revision"])]
         initial_pointer = self._publisher._storage.read_pointer()
@@ -169,7 +179,11 @@ class PublisherWorker:
             if (
                 row["status"] != "claimed"
                 or row["lease_owner"] != self._owner_id
-                or datetime.fromisoformat(row["lease_expires_at"]) <= moment
+                or datetime.fromisoformat(row["lease_expires_at"]) <= (
+                    _aware(self._now())
+                    if getattr(self._materialize, "maintenance_candidate_bound", False)
+                    else moment
+                )
             ):
                 raise DispatchConflict("dispatch_lease_lost")
 
@@ -202,6 +216,85 @@ class PublisherWorker:
                         break
             return values
 
+        materializer = (
+            self._materialize
+            if getattr(self._materialize, "maintenance_candidate_bound", False)
+            and callable(getattr(self._materialize, "bind", None))
+            else None
+        )
+        if materializer is not None:
+            journal = materializer.journal.read() or {}
+            if (
+                (journal.get("operation") or {}).get("generation_id") == candidate.generation_id
+                and (journal.get("recovery_intent") or {}).get("reason") == "post_check_failed"
+                and journal.get("phase") in {"restoring", "critical"}
+            ):
+                recovery_fence = self._fences.allocate(
+                    scope=str(claimed["connection_id"]), owner_id=self._owner_id
+                ).value
+                materializer.bind(
+                    owner_id=self._owner_id, fence=recovery_fence,
+                    predecessor=(journal.get("recovery_intent") or {}).get("target_generation"),
+                    pointer_etag=initial_pointer.etag,
+                )
+                self._publisher.resume_recovery(
+                    materializer=materializer,
+                    publisher_identity=self._publisher_identity, owner_id=self._owner_id,
+                    rollback_fence_allocator=lambda: self._fences.allocate(
+                        scope=str(claimed["connection_id"]), owner_id=self._owner_id
+                    ).value,
+                    post_consumer_check=lambda generation_id: checked("post", generation_id),
+                )
+        if materializer is not None and (
+            initial_pointer.pointer is not None
+            and initial_pointer.pointer.active_generation == candidate.generation_id
+        ):
+            # The pointer CAS survived a process death: reconcile the real
+            # products against the immutable receipt, then finish post-check,
+            # receipt and journal -- never a second blind promotion.
+            materializer.bind(
+                owner_id=self._owner_id,
+                fence=fence.value,
+                predecessor=initial_pointer.pointer.prior_generation,
+                pointer_etag=initial_pointer.etag,
+            )
+            try:
+                materializer.reconcile()
+                promoted = self._publisher.resume_committed(
+                    generation_id=candidate.generation_id,
+                    source_generation=candidate.source_generation,
+                    content_hash=str(claimed["content_hash"]),
+                    materializer=materializer,
+                    post_consumer_check=lambda generation_id: checked(
+                        "post", generation_id
+                    ),
+                    publisher_identity=self._publisher_identity,
+                    owner_id=self._owner_id,
+                    rollback_fence_allocator=lambda: self._fences.allocate(
+                        scope=str(claimed["connection_id"]),
+                        owner_id=self._owner_id,
+                    ).value,
+                    cancellation_check=lambda: False,
+                    lease_guard=lease_guard,
+                    step_recorder=record,
+                )
+            finally:
+                materializer.release()
+            row = current()
+            self._dispatches.complete_publish(
+                dispatch_id,
+                expected_revision=int(row["revision"]),
+                owner=self._owner_id,
+                receipt={
+                    "generation_id": candidate.generation_id,
+                    "pointer_etag": promoted.etag or "",
+                    "command_hash": claimed["content_hash"],
+                    "completed_at": moment.isoformat(),
+                    "resumed": True,
+                },
+                now=moment,
+            )
+            return
         promoted = self._publisher.publish(
             candidate,
             publisher_identity=self._publisher_identity,
@@ -232,6 +325,7 @@ class PublisherWorker:
                 scope=str(claimed["connection_id"]),
                 owner_id=self._owner_id,
             ).value,
+            maintenance_authorizer=self._maintenance,
         )
         row = current()
         self._dispatches.complete_publish(
@@ -258,11 +352,47 @@ class PublisherWorker:
             or pointer.etag != claimed["observed_pointer_etag"]
         ):
             raise PublicationSafetyError("stale rollback pointer observation")
+        if self._maintenance is not None:
+            active = self._publisher._storage.read_generation(
+                pointer.pointer.active_generation
+            )
+            if self._maintenance.model_rows(active["relationships"]):
+                # Recovery needs its own current restore permission; revoked
+                # new-edge admission is not enough and is not required.
+                try:
+                    self._maintenance.authorize_restore()
+                except Exception:  # noqa: BLE001
+                    raise PublicationSafetyError("restore_not_authorized") from None
         fence = self._fences.allocate(
             scope=str(claimed["connection_id"]),
             owner_id=self._owner_id,
         )
-        rolled_back = self._publisher.rollback(
+        materializer = (
+            self._materialize
+            if getattr(self._materialize, "maintenance_candidate_bound", False)
+            and callable(getattr(self._materialize, "bind", None))
+            else None
+        )
+        if materializer is not None:
+            # Rollback must rematerialize the target's physical products, not
+            # just move the pointer.  Pointer and consumers are separate steps.
+            materializer.bind(
+                owner_id=self._owner_id,
+                fence=fence.value,
+                predecessor=pointer.pointer.active_generation,
+                pointer_etag=pointer.etag,
+            )
+            try:
+                materializer.recover_physical(
+                    reason="explicit_rollback",
+                    target=str(claimed["target_generation_id"]),
+                    expected_active=pointer.pointer.active_generation,
+                )
+            except Exception:
+                materializer.release()
+                raise
+        try:
+            rolled_back = self._publisher.rollback(
             target_generation_id=str(claimed["target_generation_id"]),
             source_generation=str(claimed["source_generation_id"]),
             publisher_identity=self._publisher_identity,
@@ -272,12 +402,27 @@ class PublisherWorker:
             fence=fence.value,
             cancellation_check=lambda: False,
             lease_guard=lambda: None,
-        )
+            restore_guard=(
+                materializer.assert_restore_authorized if materializer is not None else None
+            ),
+            )
+        except Exception:
+            if materializer is not None:
+                with contextlib.suppress(Exception):  # critical journal durable
+                    materializer.recover_physical(reason="rollback_pointer_failed")
+                materializer.release()
+            raise
         checks = dict(
             self._consumer_check(
                 "post", str(claimed["target_generation_id"])
             )
         )
+        if materializer is not None:
+            materializer.mark_recovery(
+                pointer=True,
+                consumer=set(checks) == set(CONSUMER_FAMILIES) and all(checks.values()),
+            )
+            materializer.release()
         if set(checks) != set(CONSUMER_FAMILIES) or not all(checks.values()):
             raise PublicationSafetyError("rollback consumer verification failed")
         self._dispatches.complete_rollback(
@@ -422,7 +567,9 @@ class PublisherIntakeAdapter:
         return ""
 
 
-def _candidate_from_dispatch(row: Mapping[str, Any]) -> OntologyGenerationCandidate:
+def _candidate_from_dispatch(
+    row: Mapping[str, Any], *, allow_model_rows: bool = False
+) -> OntologyGenerationCandidate:
     raw = row.get("candidate")
     if not isinstance(raw, Mapping):
         raise PublicationSafetyError("dispatch candidate is malformed")
@@ -437,7 +584,7 @@ def _candidate_from_dispatch(row: Mapping[str, Any]) -> OntologyGenerationCandid
     }
     if not required.issubset(raw):
         raise PublicationSafetyError("dispatch candidate is incomplete")
-    if any(
+    if not allow_model_rows and any(
         relationship.get("model_derived") is True
         or str(relationship.get("source") or "").casefold() == "model"
         for relationship in raw["relationships"]

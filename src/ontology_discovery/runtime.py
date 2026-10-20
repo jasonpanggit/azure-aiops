@@ -6,6 +6,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import math
 import os
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -38,7 +39,25 @@ from .coordinator import (
 )
 from .curator import OntologyCurator
 from .dispatch_store import CoordinatorDispatchView, PublisherDispatchStore
-from .incremental import classify_incremental, normalize_graph_state
+from .evidence_projection import project_application_dependency_evidence
+from .incremental import (
+    apply_incremental_graph,
+    classify_incremental,
+    graph_row_hashes,
+    normalize_graph_state,
+)
+from .maintenance_admission import MaintenanceAdmission, vocabulary_fingerprint
+from .maintenance_consumers import (
+    BudgetLedger,
+    cost_usd,
+)
+from .maintenance_relationships import FirstAdmissionLedger
+from .maintenance_release import (
+    PURPOSE_OFFLINE,
+    MaintenanceConfigError,
+    MaintenanceReleaseReader,
+    build_production_reader,
+)
 from .planner_capabilities import PlannerSelection, select_planner
 from .policy import ProposalPolicy
 from .store import RUN_FAILED, RUN_SUCCEEDED, OntologyRunStore, RunClaimConflict
@@ -410,9 +429,25 @@ class EligibleConnectionScheduler:
         try:
             result = await self.processor(connection, claimed)
         except Exception as exc:  # noqa: BLE001 - one member cannot abort the epoch
+            current_run = self.run_store.get(claimed["run_id"])
+            if not _run_lease_matches(current_run, claimed):
+                updated = self.run_store.record_epoch_outcome(
+                    epoch["epoch_id"],
+                    connection_id,
+                    outcome="pending",
+                    reason_code="run_lease_lost",
+                    next_attempt_at=moment + timedelta(seconds=1),
+                    actor=self.owner,
+                    authorization_receipt=authorization,
+                    now=moment,
+                )
+                counts["lease_lost"] = 1
+                counts["epoch_drained"] = updated["status"] == "drained"
+                del exc
+                return counts
             failed_run = self.run_store.fail(
                 claimed["run_id"],
-                expected_revision=claimed["revision"],
+                expected_revision=int(current_run["revision"]),
                 owner=self.owner,
                 fencing_token=claimed["fencing_token"],
                 failure_class="connection_processing_failed",
@@ -439,9 +474,24 @@ class EligibleConnectionScheduler:
             counts["epoch_drained"] = updated["status"] == "drained"
             del exc  # Raw provider errors never enter closed scheduler output.
             return counts
+        current_run = self.run_store.get(claimed["run_id"])
+        if not _run_lease_matches(current_run, claimed):
+            updated = self.run_store.record_epoch_outcome(
+                epoch["epoch_id"],
+                connection_id,
+                outcome="pending",
+                reason_code="run_lease_lost",
+                next_attempt_at=moment + timedelta(seconds=1),
+                actor=self.owner,
+                authorization_receipt=authorization,
+                now=moment,
+            )
+            counts["lease_lost"] = 1
+            counts["epoch_drained"] = updated["status"] == "drained"
+            return counts
         completed = self.run_store.succeed(
             claimed["run_id"],
-            expected_revision=claimed["revision"],
+            expected_revision=int(current_run["revision"]),
             owner=self.owner,
             fencing_token=claimed["fencing_token"],
             checkpoint="publisher_dispatch_created",
@@ -539,8 +589,57 @@ class ProductionConnectionProcessor:
         curator: Curator,
         planner_selection: PlannerSelection | None = None,
         resolver: CredentialResolver | None = None,
+        monitor_dependency_reader: Callable[
+            [SubscriptionConnection], list[Mapping[str, Any]] | None
+        ]
+        | None = None,
+        monitor_identity_bindings: Callable[
+            [SubscriptionConnection], Mapping[str, str | list[str] | tuple[str, ...]]
+        ]
+        | None = None,
         now: Callable[[], datetime] | None = None,
+        maintenance: MaintenanceAdmission | None = None,
+        first_admission_ledger: FirstAdmissionLedger | None = None,
+        budget_ledger: BudgetLedger | None = None,
+        pricing: Mapping[str, Any] | None = None,
+        max_total_seconds: float = 1800.0,
+        max_cost_usd: float | None = None,
+        input_overhead_tokens: int | None = None,
     ) -> None:
+        self.budget_ledger = budget_ledger
+        self.pricing = pricing
+        self.max_total_seconds = max_total_seconds
+        self.max_cost_usd = max_cost_usd
+        self.input_overhead_tokens = input_overhead_tokens
+        if maintenance is not None and first_admission_ledger is None:
+            raise MaintenanceConfigError("maintenance_first_admission_ledger_required")
+        offline_budget = (
+            isinstance(maintenance, MaintenanceAdmission)
+            and isinstance(maintenance.reader, MaintenanceReleaseReader)
+            and maintenance.reader.purpose == PURPOSE_OFFLINE
+        )
+        if maintenance is not None and (
+            not isinstance(budget_ledger, BudgetLedger)
+            or not isinstance(curator, OntologyCurator)
+            or getattr(curator._request, "__func__", None) is not OntologyCurator._request
+            or getattr(curator.budget_scope, "__func__", None) is not OntologyCurator.budget_scope
+            or (
+                not offline_budget
+                and getattr(curator.propose, "__func__", None) is not OntologyCurator.propose
+            )
+            or not isinstance(pricing, Mapping)
+            or not isinstance(pricing.get("version"), str)
+            or not 1 <= len(pricing["version"]) <= 128
+            or cost_usd({"input_tokens": 1, "output_tokens": 1}, pricing) is None
+            or max_cost_usd is None
+            or not math.isfinite(max_cost_usd) or max_cost_usd <= 0
+            or not math.isfinite(max_total_seconds) or max_total_seconds <= 0
+            or not isinstance(input_overhead_tokens, int)
+            or isinstance(input_overhead_tokens, bool) or input_overhead_tokens < 0
+        ):
+            raise MaintenanceConfigError("maintenance_budget_unqualified")
+        self.maintenance = maintenance
+        self.first_admission_ledger = first_admission_ledger
         self.store = store
         self.dispatch = dispatch
         self.connector_config = connector_config
@@ -555,6 +654,8 @@ class ProductionConnectionProcessor:
         self.resolver = resolver or CredentialResolver(
             provider=default_secret_provider()
         )
+        self.monitor_dependency_reader = monitor_dependency_reader
+        self.monitor_identity_bindings = monitor_identity_bindings
         self.now = now or (lambda: datetime.now(UTC))
         self.bounded_evidence: BoundedEvidenceProcessor | None = None
 
@@ -570,9 +671,15 @@ class ProductionConnectionProcessor:
         generation = pipeline.store.current_generation()
         if not generation:
             raise RuntimeError("inventory_generation_missing")
+        manifest = refreshed.manifest
+        if not isinstance(manifest, Mapping):
+            raise TypeError("inventory_manifest_missing")
+        inventory_generation = _required(
+            manifest.get("runId"), "inventory_manifest.runId"
+        )
         datasets = InventoryDatasetMapper().load(
             generation,
-            str(refreshed.manifest.get("runId") or run["source_generation_id"]),
+            inventory_generation,
             fs=pipeline.store.fs if pipeline.store.is_remote else None,
         )
         entities = sorted(
@@ -585,52 +692,210 @@ class ProductionConnectionProcessor:
         )
         scope = connection.scope_key.casefold()
         observed_at = self.now()
+        monitor_rows = (
+            None
+            if self.monitor_dependency_reader is None
+            else self.monitor_dependency_reader(connection)
+        )
+        identity_bindings = (
+            {}
+            if self.monitor_identity_bindings is None
+            else self.monitor_identity_bindings(connection)
+        )
+        monitor_generation = "monitor-window-" + _hash_json(
+            {
+                "date": observed_at.astimezone(UTC).date().isoformat(),
+                "rows": [
+                    {
+                        key: row.get(key)
+                        for key in (
+                            "TimeGenerated",
+                            "Id",
+                            "OperationId",
+                            "_ResourceId",
+                            "_SubscriptionId",
+                            "AppRoleName",
+                            "Target",
+                            "DependencyType",
+                            "Success",
+                            "SyntheticSource",
+                        )
+                    }
+                    for row in (monitor_rows or ())
+                ],
+            }
+        )
+        manifest_fingerprint = _hash_json(manifest)
+        inventory_fingerprint = _hash_json(
+            {
+                "entities": [_hash_json(row) for row in entities],
+                "relationships": [_hash_json(row) for row in relationships],
+                "resources": [
+                    _hash_json(row) for row in datasets.get("bronze_resources", ())
+                ],
+            }
+        )
+        source_binding = {
+            "run_source_generation_id": str(run["source_generation_id"]),
+            "inventory_generation_id": inventory_generation,
+            "manifest_fingerprint": manifest_fingerprint,
+            "inventory_fingerprint": inventory_fingerprint,
+            "monitor_generation_id": monitor_generation,
+            "monitor_fingerprint": _hash_json(monitor_rows)
+            if monitor_rows is not None
+            else "unavailable",
+            "scope": scope,
+        }
+        checkpoint_payload = dict(run.get("checkpoint", {}).get("payload") or {})
+        prior_binding = checkpoint_payload.get("source_binding")
+        if prior_binding is not None and prior_binding != source_binding:
+            raise RuntimeError("inventory_source_generation_binding_conflict")
+        if (
+            prior_binding is None
+            and self.store.list_evidence_batches(run_id=str(run["run_id"]))
+        ):
+            raise RuntimeError("existing_evidence_run_has_no_source_binding")
+        bound_run = dict(run)
+        if prior_binding is None:
+            checkpoint_payload["source_binding"] = source_binding
+            bound_run = self.store.checkpoint(
+                str(run["run_id"]),
+                expected_revision=int(run["revision"]),
+                owner=str(run["lease_owner"]),
+                fencing_token=int(run["fencing_token"]),
+                name="source_snapshot_bound",
+                payload=checkpoint_payload,
+                now=observed_at,
+            )
+
+        projection = project_application_dependency_evidence(
+            scope=scope,
+            batch_source_generation_id=str(run["source_generation_id"]),
+            observed_at=observed_at,
+            application_entities=entities,
+            deterministic_relationships=relationships,
+            inventory_records=datasets.get("bronze_resources", ()),
+            app_dependency_rows=monitor_rows,
+            monitor_identity_bindings=identity_bindings,
+            inventory_generation_id=inventory_generation,
+            monitor_generation_id=monitor_generation,
+            generation_binding_verified=True,
+            inventory_observed_at=_manifest_time(manifest, observed_at),
+        )
+        checkpoint_payload = dict(bound_run.get("checkpoint", {}).get("payload") or {})
+        checkpoint_payload["source_projection"] = {
+            "coverage": projection["coverage"],
+            "uncertainties": projection["uncertainties"],
+            "candidate_count": len(projection["candidate_pairs"]),
+            "evidence_count": len(projection["evidence_records"]),
+        }
+        bound_run = self.store.checkpoint(
+            str(bound_run["run_id"]),
+            expected_revision=int(bound_run["revision"]),
+            owner=str(bound_run["lease_owner"]),
+            fencing_token=int(bound_run["fencing_token"]),
+            name="source_observations_projected",
+            payload=checkpoint_payload,
+            now=observed_at,
+        )
+
+        lineage_key = "inventory+appdependencies:v1"
+        try:
+            baseline = self.store.get_committed_baseline(
+                connection_id=connection.connection_id,
+                scope=scope,
+                lineage_key=lineage_key,
+            )
+        except ValueError:
+            baseline = None
         control = self.store.select_reconciliation_mode(
             connection_id=connection.connection_id,
             now=observed_at,
+            baseline_scope=scope,
+            baseline_lineage_key=lineage_key,
         )
-        row_hashes = {
-            str(row["resource_id"]).casefold(): _hash_json(row)
-            for row in entities
-        }
+        source_graph = normalize_graph_state(
+            entities=entities,
+            relationships=relationships,
+            pending_relationships=self.store.list_pending_relationships(),
+        )
         delta = classify_incremental(
-            previous_row_hashes={},
-            current_row_hashes=row_hashes,
-            source_generation_id=run["source_generation_id"],
+            previous_row_hashes=(
+                dict(baseline["row_hashes"])
+                if baseline is not None and control["selected_mode"] == "incremental"
+                else {}
+            ),
+            current_row_hashes=graph_row_hashes(source_graph),
+            source_generation_id=str(run["source_generation_id"]),
             observed_at=observed_at,
-            freshness="current",
-            coverage="complete",
+            freshness=(
+                "current" if projection["coverage"] == "complete" else "degraded"
+            ),
+            coverage=str(projection["coverage"]),
         )
-        evidence_records = [
-            {
-                "scope": scope,
-                "evidence_id": "E-" + _hash_json(row)[:20],
-                "entity_ids": [
-                    str(row.get("subject_id") or ""),
-                    str(row.get("object_id") or ""),
-                ],
-                "source": "authoritative_inventory",
-            }
-            for row in relationships
-        ]
-        evidence = {
-            "changed_entities": [
-                {**row, "scope": scope, "entity_id": row["resource_id"]}
+        changed_ids = set(delta.added) | set(delta.changed)
+        if control["selected_mode"] == "full":
+            changed_entities = entities
+            candidate_relationships = relationships
+        else:
+            changed_entities = [
+                row
                 for row in entities
-            ],
-            "candidate_pairs": [
-                {
-                    **row,
-                    "scope": scope,
-                    "pair_id": str(row.get("resource_id") or ""),
-                }
+                if f"entities/{str(row.get('resource_id') or '').casefold()}"
+                in changed_ids
+            ]
+            candidate_relationships = [
+                row
                 for row in relationships
-            ],
+                if f"relationships/{str(row.get('resource_id') or '').casefold()}"
+                in changed_ids
+            ]
+        endpoint_ids = {
+            str(pair.get(field) or "").casefold()
+            for pair in projection["candidate_pairs"]
+            for field in ("subject_id", "object_id")
+        }
+        contexts = {
+            str(row.get("resource_id") or "").casefold(): row for row in entities
+        }
+        changed_by_id = {
+            str(row.get("resource_id") or "").casefold(): row
+            for row in changed_entities
+        }
+        changed_by_id.update(
+            {
+                endpoint: contexts[endpoint]
+                for endpoint in endpoint_ids
+                if endpoint in contexts
+            }
+        )
+        batch_entities = [
+            {**row, "scope": scope, "entity_id": row["resource_id"]}
+            for row in changed_by_id.values()
+        ]
+        deterministic_pairs = [
+            {
+                **row,
+                "scope": scope,
+                "pair_id": str(row.get("resource_id") or ""),
+            }
+            for row in candidate_relationships
+        ]
+        candidate_pairs = _merge_candidate_pairs(
+            deterministic_pairs, projection["candidate_pairs"]
+        )
+        evidence_records = projection["evidence_records"]
+        evidence = {
+            "changed_entities": batch_entities,
+            "candidate_pairs": candidate_pairs,
             "evidence_records": evidence_records,
             "source_generation_id": run["source_generation_id"],
             "observed_at": observed_at,
-            "freshness": "current",
-            "coverage": "complete",
+            "freshness": (
+                "current" if projection["coverage"] == "complete" else "degraded"
+            ),
+            "coverage": projection["coverage"],
+            "uncertainties": projection["uncertainties"],
             "reconciliation_mode": control["selected_mode"],
             "incremental_delta": delta.to_dict(),
         }
@@ -641,8 +906,39 @@ class ProductionConnectionProcessor:
             planner_selection=self.planner_selection,
             now=self.now,
         )
-        await self.bounded_evidence.advance(run)
+        maintenance_denial = (
+            "" if self.maintenance is None else self.maintenance.check_open("admit")
+        )
+        if self.maintenance is None:
+            await self.bounded_evidence.advance(bound_run)
+        elif not maintenance_denial:
+            # Outer remaining-run deadline bounds every nested retry/repair/tool
+            # attempt; late work can neither persist nor be admitted.
+            remaining = (
+                datetime.fromisoformat(str(bound_run["deadline_at"])) - self.now()
+            ).total_seconds()
+            if remaining <= 0:
+                raise RuntimeError("maintenance_run_deadline_exceeded")
+            try:
+                # Binding is task-local; concurrent connections cannot exchange
+                # usage attribution. Every nested transport retry reserves first
+                # and settles in finally, including timeout/cancellation.
+                assert isinstance(self.curator, OntologyCurator)
+                assert self.budget_ledger is not None
+                with self.curator.budget_scope(
+                    str(run["run_id"]), self.budget_ledger,
+                    pricing=self.pricing, max_cost_usd=self.max_cost_usd,
+                    max_total_seconds=self.max_total_seconds,
+                    input_overhead_tokens=self.input_overhead_tokens,
+                ):
+                    await asyncio.wait_for(
+                        self.bounded_evidence.advance(bound_run), timeout=remaining
+                    )
+            except TimeoutError:
+                raise RuntimeError("maintenance_run_deadline_exceeded") from None
+        # Kill/revocation: deterministic refresh continues with no new model call.
         proposal_records: list[dict[str, Any]] = []
+        receipts_by_proposal: dict[str, Mapping[str, Any]] = {}
         for batch in self.store.list_evidence_batches(run_id=run["run_id"]):
             result = batch.get("result", {})
             for proposal in result.get("proposals", ()):
@@ -655,6 +951,9 @@ class ProductionConnectionProcessor:
                     now=observed_at,
                 )
                 proposal_records.append(record)
+                receipts_by_proposal[str(record["proposal_id"])] = (
+                    result.get("provider_receipt") or {}
+                )
         entity_index = {
             str(row["resource_id"]).casefold(): row for row in entities
         }
@@ -670,6 +969,56 @@ class ProductionConnectionProcessor:
             source_generation_id=run["source_generation_id"],
         )
         candidate_relationships = governed["candidate"]
+        maintenance_decisions: list[Any] = []
+        maintenance_authorization: dict[str, Any] | None = None
+        if self.maintenance is not None and not maintenance_denial:
+            maintenance_decisions = self._admit(
+                proposal_records,
+                receipts_by_proposal,
+                connection=connection,
+                scope=scope,
+                source_generation_id=str(run["source_generation_id"]),
+                entity_index=entity_index,
+                evidence_index=evidence_index,
+            )
+            observation = self.first_admission_ledger.record_source_observation(
+                str(run["source_generation_id"]),
+                observed_at=_manifest_time(manifest, observed_at),
+                ingestion_run_id=inventory_generation,
+                manifest_digest=_hash_json(manifest),
+            )
+            rows = self.maintenance.canonical_rows(
+                maintenance_decisions,
+                deterministic_edges=relationships,
+                records_by_id={str(r["proposal_id"]): r for r in proposal_records},
+                entities=entity_index,
+                evidence_records=evidence_index,
+                source_observed_at=datetime.fromisoformat(
+                    observation["source_observed_at"]
+                ),
+                ingestion_run_id=str(observation["ingestion_run_id"]),
+                first_admission=lambda rid, instant: (
+                    self.first_admission_ledger.get_or_record(
+                        rid,
+                        instant,
+                        provenance={
+                            "source_generation_id": str(run["source_generation_id"]),
+                            "ingestion_run_id": str(observation["ingestion_run_id"]),
+                        },
+                    )
+                ),
+                source_generation_id=str(run["source_generation_id"]),
+            )
+            if rows:
+                candidate_relationships = [*candidate_relationships, *rows]
+                admitted = [d for d in maintenance_decisions if d.admitted]
+                release = admitted[0].release
+                maintenance_authorization = {
+                    "release_id": release.release_id,
+                    "attestation_digest": release.attestation_digest,
+                    "proposal_ids": sorted(d.proposal_id for d in admitted),
+                    "model_edge_ids": sorted(r["resource_id"] for r in rows),
+                }
         report = self.validator.validate(entities, candidate_relationships)
         if not report.passed:
             raise RuntimeError("ontology_candidate_validation_failed")
@@ -680,6 +1029,13 @@ class ProductionConnectionProcessor:
                 "source_generation_id": run["source_generation_id"],
             }
         )[:24]
+        if maintenance_authorization is not None:
+            # Re-read authenticated release, kill/revocation and freshness
+            # immediately before the durable dispatch.
+            denial = self.maintenance.check_open("admit")
+            if denial:
+                raise RuntimeError("maintenance_authorization_lost:" + denial)
+        admitted_ids = {d.proposal_id for d in maintenance_decisions if d.admitted}
         dispatch, _ = self.dispatch.create_publish(
             run_id=run["run_id"],
             connection_id=connection.connection_id,
@@ -692,12 +1048,24 @@ class ProductionConnectionProcessor:
                     row["proposal_id"] for row in proposal_records
                 ],
                 "decision_lineage": [
-                    f"decision:{decision.proposal_id}:{'admitted' if decision.admitted else 'shadow-excluded'}"
+                    f"decision:{decision.proposal_id}:"
+                    + (
+                        "maintenance-admitted"
+                        if decision.proposal_id in admitted_ids
+                        else "admitted"
+                        if decision.admitted
+                        else "shadow-excluded"
+                    )
                     for decision in governed["decisions"]
                 ],
                 "policy_version": "proposal-policy-v1",
                 "schema_version": "ontology-generation/v1",
                 "validation": report.to_dict(),
+                **(
+                    {"maintenance_authorization": maintenance_authorization}
+                    if maintenance_authorization is not None
+                    else {}
+                ),
             },
             now=observed_at,
         )
@@ -706,24 +1074,95 @@ class ProductionConnectionProcessor:
             relationships=candidate_relationships,
             pending_relationships=self.store.list_pending_relationships(),
         )
-        # Replay is built independently through canonical incremental state.
-        # The current authoritative inventory is complete, so this generation
-        # is also the exact replay target after additions/changes/retirements.
-        incremental_graph = normalize_graph_state(
-            entities=entities,
-            relationships=candidate_relationships,
-            pending_relationships=self.store.list_pending_relationships(),
+        replay_delta = classify_incremental(
+            previous_row_hashes=(
+                dict(baseline["row_hashes"])
+                if baseline is not None and control["selected_mode"] == "incremental"
+                else {}
+            ),
+            current_row_hashes=graph_row_hashes(full_graph),
+            source_generation_id=str(run["source_generation_id"]),
+            observed_at=observed_at,
+            freshness=(
+                "current" if projection["coverage"] == "complete" else "degraded"
+            ),
+            coverage=str(projection["coverage"]),
+        )
+        incremental_graph = apply_incremental_graph(
+            previous_graph=(
+                baseline["graph"]
+                if baseline is not None and control["selected_mode"] == "incremental"
+                else {"entities": [], "relationships": [], "pending": []}
+            ),
+            current_graph=full_graph,
+            delta=replay_delta,
         )
         self.store.commit_reconciliation(
             connection_id=connection.connection_id,
             predecessor_watermark=control["committed_watermark"],
-            committed_watermark=run["source_generation_id"],
+            committed_watermark=str(run["source_generation_id"]),
             full_graph=full_graph,
             incremental_graph=incremental_graph,
             dispatch_id=dispatch["dispatch_id"],
+            baseline={
+                "scope": scope,
+                "lineage_key": lineage_key,
+                "schema_version": "ontology-graph-v1",
+                "coverage": str(projection["coverage"]),
+                "row_hashes": graph_row_hashes(incremental_graph),
+                "graph": incremental_graph,
+                "source_fingerprint": _hash_json(source_binding),
+            },
+            baseline_expected_revision=(
+                baseline["revision"] if baseline is not None else None
+            ),
             now=observed_at,
         )
         return {"status": "dispatch_created", "dispatch_id": dispatch["dispatch_id"]}
+
+
+    def _admit(
+        self,
+        proposal_records: list[dict[str, Any]],
+        receipts: Mapping[str, Mapping[str, Any]],
+        *,
+        connection: SubscriptionConnection,
+        scope: str,
+        source_generation_id: str,
+        entity_index: Mapping[str, Mapping[str, Any]],
+        evidence_index: Mapping[str, Mapping[str, Any]],
+    ) -> list[Any]:
+        assert self.maintenance is not None
+        decisions = []
+        for record in proposal_records:
+            receipt = receipts.get(str(record["proposal_id"])) or {}
+            observed = {
+                "provider": str(receipt.get("selected_provider") or ""),
+                "agent_version": str(receipt.get("agent_version") or ""),
+                "prompt_hash": str(receipt.get("prompt_hash") or ""),
+                "schema_hash": str(receipt.get("schema_hash") or ""),
+                "policy_version": str(record.get("policy_version") or ""),
+                "schema_version": str(record.get("schema_version") or ""),
+                "definition_fingerprint": vocabulary_fingerprint(),
+            }
+            # Exact model is obligatory maintenance evidence: absent/empty is
+            # carried as "" and denied by the admission check.
+            observed["model"] = str(receipt.get("model") or "")
+            decisions.append(
+                self.maintenance.evaluate(
+                    record,
+                    entities=entity_index,
+                    evidence_records=evidence_index,
+                    scope=scope,
+                    source_generation_id=source_generation_id,
+                    review_status=str(
+                        self.store.get_review(str(record["proposal_id"]))["status"]
+                    ),
+                    observed_lineage=observed,
+                    connection=connection,
+                )
+            )
+        return decisions
 
 
 class ProductionCoordinatorRuntime:
@@ -759,6 +1198,7 @@ class ProductionCoordinatorRuntime:
         }
 
     async def aclose(self) -> None:
+        """Close only the default curator created and owned by this runtime."""
         if self._owned_curator is not None:
             await self._owned_curator.aclose()
 
@@ -1077,6 +1517,14 @@ def build_production_runtime(
     owner: str,
     curator: Curator | None = None,
     planner_selection: PlannerSelection | None = None,
+    monitor_dependency_reader: Callable[
+        [SubscriptionConnection], list[Mapping[str, Any]] | None
+    ]
+    | None = None,
+    monitor_identity_bindings: Callable[
+        [SubscriptionConnection], Mapping[str, str | list[str] | tuple[str, ...]]
+    ]
+    | None = None,
 ) -> ProductionCoordinatorRuntime:
     """Build the existing graph, optionally borrowing a protocol-only curator.
 
@@ -1108,12 +1556,58 @@ def build_production_runtime(
     )
     selected_curator = curator if curator is not None else owned_curator
     assert selected_curator is not None
+    # Default-off, server-selected.  A selected maintenance mode without the
+    # approved ledger binding fails startup closed; no caller/model flag exists.
+    maintenance_reader = build_production_reader(environ if environ is not None else os.environ)
+    maintenance = None
+    ledger = None
+    budget_ledger = None
+    pricing = None
+    max_cost_usd = None
+    max_total_seconds = 1800.0
+    input_overhead_tokens = None
+    if maintenance_reader is not None:
+        # Production cannot qualify an arbitrary protocol implementation (or a
+        # subclass overriding the bounded attempt seam) by a caller boolean.
+        if type(selected_curator) is not OntologyCurator:
+            raise MaintenanceConfigError("maintenance_budget_unqualified")
+        ledger_path = str(
+            (environ if environ is not None else os.environ).get(
+                "ONTOLOGY_MAINTENANCE_LEDGER_PATH"
+            )
+            or ""
+        ).strip()
+        if not ledger_path:
+            raise MaintenanceConfigError("maintenance_first_admission_ledger_required")
+        maintenance = MaintenanceAdmission(reader=maintenance_reader)
+        ledger = FirstAdmissionLedger(ledger_path)
+        bindings = environ if environ is not None else os.environ
+        try:
+            budget_path = str(bindings.get("ONTOLOGY_MAINTENANCE_BUDGET_PATH") or "").strip()
+            pricing = json.loads(str(bindings.get("ONTOLOGY_MAINTENANCE_PRICING_JSON") or "null"))
+            max_cost_usd = float(bindings.get("ONTOLOGY_MAINTENANCE_MAX_COST_USD") or "nan")
+            max_total_seconds = float(bindings.get("ONTOLOGY_MAINTENANCE_MAX_SECONDS") or "1800")
+            input_overhead_tokens = int(bindings.get("ONTOLOGY_MAINTENANCE_INPUT_OVERHEAD_TOKENS") or "")
+            if not budget_path or not isinstance(pricing, Mapping):
+                raise ValueError
+            budget_ledger = BudgetLedger(budget_path)
+        except (TypeError, ValueError):
+            raise MaintenanceConfigError("maintenance_budget_unqualified") from None
     processor = ProductionConnectionProcessor(
         store=run_store,
         dispatch=dispatch,
         connector_config=connector_config,
         curator=selected_curator,
         planner_selection=selection,
+        monitor_dependency_reader=monitor_dependency_reader,
+        monitor_identity_bindings=monitor_identity_bindings,
+        maintenance=maintenance,
+        first_admission_ledger=ledger,
+        budget_ledger=budget_ledger,
+        pricing=pricing,
+        max_cost_usd=max_cost_usd,
+        max_total_seconds=max_total_seconds,
+        input_overhead_tokens=input_overhead_tokens,
     )
     source_generation = _source_generation
     intake = CoordinatorIntakeAdapter(
@@ -1172,6 +1666,54 @@ def _hash_json(value: object) -> str:
         value, sort_keys=True, separators=(",", ":"), default=str
     )
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _manifest_time(manifest: Mapping[str, Any], fallback: datetime) -> datetime:
+    value = manifest.get("startedAt") or manifest.get("completedAt")
+    if not value:
+        return fallback
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return fallback
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return fallback
+    return parsed
+
+
+def _run_lease_matches(
+    current: Mapping[str, Any] | None, claimed: Mapping[str, Any]
+) -> bool:
+    return bool(
+        current is not None
+        and current.get("status") == "running"
+        and current.get("lease_owner") == claimed.get("lease_owner")
+        and current.get("fencing_token") == claimed.get("fencing_token")
+    )
+
+
+def _merge_candidate_pairs(
+    deterministic: list[Mapping[str, Any]],
+    projected: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep one scoped record per exact directional triple."""
+
+    by_pair: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for record in (*deterministic, *projected):
+        key = (
+            str(record.get("subject_id") or "").casefold(),
+            str(record.get("predicate") or ""),
+            str(record.get("object_id") or "").casefold(),
+        )
+        if not all(key):
+            continue
+        current = by_pair.get(key)
+        if current is None or record.get("evidence_ids"):
+            by_pair[key] = {**dict(record), "scope": str(record.get("scope") or "")}
+    return [
+        by_pair[key]
+        for key in sorted(by_pair)
+    ]
 
 
 def _required(value: object, name: str) -> str:

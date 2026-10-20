@@ -34,6 +34,16 @@ union isfuzzy=true
 | order by _ResourceId asc, SoftwareName asc, CurrentVersion asc
 """.strip()
 
+APP_DEPENDENCIES_QUERY = """
+AppDependencies
+| where TimeGenerated > ago(1d)
+| project TimeGenerated, Id, OperationId, _ResourceId, _SubscriptionId, AppRoleName,
+          Target, DependencyType, Success, SyntheticSource
+| order by TimeGenerated desc
+| take 5000
+""".strip()
+
+
 # Virtual network flow logs processed through Traffic Analytics land in
 # ``NTANetAnalytics``: one row per observed flow bucket, already
 # deduplicated/aggregated by Traffic Analytics's own pipeline (unlike raw
@@ -153,6 +163,15 @@ class AzureMonitorLogsClient:
         return self._execute(workspace_id, CONFIGURATION_DATA_QUERY, "ConfigurationData")
 
     query = query_configuration_data
+
+    def query_application_dependencies(self, workspace_id: str) -> list[dict[str, Any]]:
+        """Return a fixed narrow, bounded AppDependencies sample for projection."""
+        return self._execute(
+            workspace_id,
+            APP_DEPENDENCIES_QUERY,
+            "AppDependencies",
+        )
+
 
     def query_nsg_flow_logs(self, workspace_id: str) -> list[dict[str, Any]]:
         """Latest observed NSG flow records from Traffic Analytics, one per

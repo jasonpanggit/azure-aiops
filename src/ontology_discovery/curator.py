@@ -16,6 +16,8 @@ import re
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -23,6 +25,7 @@ import httpx
 from pydantic import ValidationError
 
 from ontology_discovery.contracts import EvidenceBatch, ProposalBatch
+from ontology_discovery.maintenance_consumers import BudgetLedger
 
 LOGGER = logging.getLogger(__name__)
 
@@ -462,6 +465,22 @@ class OntologyCurator:
         self._sleep = sleep
         self._breaker = circuit_breaker or _CircuitBreaker()
         self.last_attempt: dict[str, Any] | None = None
+        # Cumulative, bounded usage including failures/repairs/transport tries,
+        # consumed by the maintenance budget ledger (never raw prompts/output).
+        self.usage_log: list[dict[str, Any]] = []
+        self.transport_attempts = 0
+        self._budget: ContextVar[tuple[str, BudgetLedger, dict[str, Any]] | None] = (
+            ContextVar("ontology_curator_budget", default=None)
+        )
+
+    @contextmanager
+    def budget_scope(self, run_id: str, ledger: BudgetLedger, **caps: Any):
+        """Task-local server binding; never add run authority to model context."""
+        token = self._budget.set((run_id, ledger, caps))
+        try:
+            yield
+        finally:
+            self._budget.reset(token)
 
     def _prompt(
         self,
@@ -503,6 +522,28 @@ class OntologyCurator:
         self._breaker.before_call()
         attempt = 0
         while True:
+            budget = self._budget.get()
+            attempt_id = ""
+            if budget is not None:
+                run_id, ledger, configured_caps = budget
+                caps = dict(configured_caps)
+                overhead = caps.pop("input_overhead_tokens", None)
+                if not isinstance(overhead, int) or isinstance(overhead, bool) or overhead < 0:
+                    raise CuratorInputTooLarge("maintenance_input_bound_unknown")
+                # UTF-8 bytes conservatively bound tokenizer input rather than
+                # treating the advisory chars/4 estimate as a hard upper bound.
+                upper_input = len(str(payload["input"][0]["content"]).encode("utf-8")) + overhead
+                if upper_input > MAX_INPUT_TOKENS:
+                    raise CuratorInputTooLarge("maintenance_input_bound_exceeded")
+                attempt_id = ledger.reserve(
+                    run_id, input_tokens=upper_input,
+                    output_tokens=int(payload["max_output_tokens"]),
+                    timeout_seconds=self.timeout_seconds, **caps,
+                )
+            started = time.monotonic()
+            response: Mapping[str, Any] | None = None
+            ok = False
+            self.transport_attempts += 1
             try:
                 async with asyncio.timeout(self.timeout_seconds):
                     response = await self._transport(
@@ -525,13 +566,42 @@ class OntologyCurator:
                     "Curator transport failed safely"
                 ) from exc
             else:
+                ok = True
                 self._breaker.record_success()
                 return response
+            finally:
+                elapsed_ms = (time.monotonic() - started) * 1000
+                usage = response.get("usage") if response is not None else None
+                safe_usage = {
+                    key: value for key, value in (usage.items() if isinstance(usage, Mapping) else ())
+                    if key in {"input_tokens", "output_tokens"}
+                    and isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                }
+                if budget is not None:
+                    ledger.settle(
+                        run_id, attempt_id, usage=safe_usage,
+                        elapsed_ms=elapsed_ms, ok=ok,
+                    )
+                # Bounded diagnostic history only; never a source of admission
+                # accounting. Each retry has its own durable reservation.
+                self.usage_log.append({
+                    "attempt_id": attempt_id,
+                    "run_id": budget[0] if budget else None,
+                    "usage": safe_usage, "latency_ms": elapsed_ms, "ok": ok,
+                })
+                del self.usage_log[:-64]
+                if not ok:
+                    LOGGER.warning("ontology_curator_attempt_failed")
 
             attempt += 1
             if attempt > self.max_transport_retries:
                 self._breaker.record_failure()
-                raise CuratorTransportError(str(failure)) from failure
+                message = (
+                    "Curator transport attempt exceeded its deadline"
+                    if isinstance(failure.__cause__, TimeoutError)
+                    else "Curator transport retry limit exceeded"
+                )
+                raise CuratorTransportError(message) from failure
             await self._sleep(self.retry_backoff_seconds * (2 ** (attempt - 1)))
 
     async def propose(
@@ -623,8 +693,7 @@ class OntologyCurator:
                     "error": repair_errors,
                 }
                 LOGGER.warning(
-                    "ontology_curator_invalid_output response_id=%s repair_attempt=%d",
-                    response_id,
+                    "ontology_curator_invalid_output repair_attempt=%d",
                     repair_attempt,
                 )
                 if repair_attempt >= MAX_REPAIR_ATTEMPTS:
