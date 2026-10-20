@@ -40,6 +40,7 @@ class _Coordinator:
             text=self.answers.pop(0),
             agent_name=self.agent_name,
             agent_version=self.agent_version,
+            usage=getattr(self, "usage", None),
         )
 
 
@@ -162,12 +163,14 @@ def test_operations_copilot_synthesis_requires_citation_closed_json() -> None:
         })
     ])
 
+    coordinator.usage = {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15}
     answer = FoundryCoordinatorSynthesisAgent(coordinator).answer(
         question="Show inspection bypass paths.",
         context={"findings": [{"evidence_refs": ["tool:network:0"]}]},
     )
 
     assert "network-1" in answer.text
+    assert answer.usage == coordinator.usage
     assert "Return ONLY JSON" in coordinator.calls[0]["question"]
 
 
@@ -846,6 +849,98 @@ def test_maf_foundry_agent_invokes_sdk_agent_with_existing_contract(monkeypatch)
     assert answer.agent_name == "operations-copilot"
     assert answer.model == "microsoft-agent-framework"
     assert "What depends on demo-vnet?" in calls[0]
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        ({"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+         {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15}),
+        ({"input_tokens": 0, "output_tokens": None}, {"input_tokens": 0}),
+        (None, None),
+    ],
+)
+def test_rest_answer_retains_only_reported_provider_usage(monkeypatch, usage, expected):
+    agent = FoundryPromptAgent(project_endpoint="https://example", agent_name="network-agent")
+    monkeypatch.setattr(
+        agent, "_post",
+        lambda *_args, **_kwargs: {
+            "output_text": "Observed answer", "model": "reported-model", "usage": usage,
+        },
+    )
+
+    answer = agent.answer(question="Review evidence", context={})
+
+    assert answer.usage == expected
+    assert answer.to_dict().get("usage") == expected
+    assert ("usage" in answer.to_dict()) is (expected is not None)
+    assert answer.model == "reported-model"
+
+
+def test_specialist_findings_validation_preserves_provider_usage(monkeypatch):
+    agent = FoundryPromptAgent(
+        project_endpoint="https://example", agent_name="network-agent",
+    )
+    monkeypatch.setattr(
+        agent, "_post",
+        lambda *_args, **_kwargs: {
+            "output_text": '{"findings":[]}', "model": "reported-model",
+            "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+        },
+    )
+
+    answer = agent.answer_findings(
+        question="Review evidence", context={}, evidence_refs=set(), resource_ids=set(),
+    )
+
+    assert answer.usage == {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15}
+    serialized = answer.to_dict()
+    serialized["usage"]["input_tokens"] = 99
+    assert answer.usage["input_tokens"] == 12
+
+
+@pytest.mark.parametrize("count", [True, -1, 1.5, "12"])
+def test_provider_usage_rejects_invalid_measured_counts(monkeypatch, count):
+    agent = FoundryPromptAgent(project_endpoint="https://example", agent_name="network-agent")
+    monkeypatch.setattr(
+        agent, "_post",
+        lambda *_args, **_kwargs: {
+            "output_text": "Observed answer", "usage": {"input_tokens": count},
+        },
+    )
+
+    with pytest.raises(FoundryAgentError, match="usage"):
+        agent.answer(question="Review evidence", context={})
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        ({"input_token_count": 12, "output_token_count": 3, "total_token_count": 15},
+         {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15}),
+        ({"input_token_count": 0, "total_token_count": None}, {"input_tokens": 0}),
+        (None, None),
+    ],
+)
+def test_maf_answer_retains_locked_sdk_usage_details(monkeypatch, usage, expected):
+    from types import SimpleNamespace
+
+    class SdkAgent:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def run(self, _prompt):
+            return SimpleNamespace(text="Observed SDK answer", usage_details=usage)
+
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example")
+    monkeypatch.setenv("FOUNDRY_AGENT_NAME", "network-agent")
+    agent = MicrosoftAgentFrameworkFoundryAgent.from_env(agent_factory=SdkAgent)
+    assert agent is not None
+
+    answer = agent.answer(question="Review evidence", context={})
+
+    assert answer.usage == expected
+    assert answer.to_dict().get("usage") == expected
 
 
 def test_versioned_rest_agent_sends_exact_provider_version(monkeypatch) -> None:

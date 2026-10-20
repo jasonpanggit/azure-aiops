@@ -26,7 +26,11 @@ from operations.cve_response import (
     canonical_cve_id,
     deterministic_cve_narrative,
 )
-from operations.foundry_agent import SPECIALIST_CONTRACT_VERSION, specialist_catalog
+from operations.foundry_agent import (
+    SPECIALIST_CONTRACT_VERSION,
+    provider_usage_receipt,
+    specialist_catalog,
+)
 from operations.investigation_jobs import InvestigationExecutionControl
 from operations.investigation_thread_store import (
     OBSERVATION_HISTORICAL,
@@ -804,6 +808,9 @@ def _synthesis(
         )
         return synthesis
 
+    receipt = provider_usage_receipt(answer)
+    if receipt is not None:
+        synthesis["provider_usage"] = receipt
     text = getattr(answer, "text", "") or ""
     if text.strip():
         synthesis["narration"] = text.strip()
@@ -839,7 +846,14 @@ def _quality_metrics(
     }
 
 
-def _evaluate(started: float, agent_runs: list[dict[str, Any]], reconciliation: dict[str, Any], scope: Scope, llm_calls: int = 0) -> dict[str, Any]:
+def _evaluate(
+    started: float,
+    agent_runs: list[dict[str, Any]],
+    reconciliation: dict[str, Any],
+    scope: Scope,
+    llm_calls: int = 0,
+    provider_usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     tool_calls = [call for run in agent_runs for call in run.get("tool_calls", [])]
     grounded = [finding for run in agent_runs for finding in run.get("findings", []) if finding.get("evidence_count", 0) > 0]
     return {
@@ -849,6 +863,7 @@ def _evaluate(started: float, agent_runs: list[dict[str, Any]], reconciliation: 
         "convergence": "converged_with_open_questions" if reconciliation["missing_providers"] else "converged",
         "latency_ms": round((time.monotonic() - started) * 1000, 2),
         "cost": {"tool_calls": len(tool_calls), "agent_runs": len(agent_runs), "llm_calls": llm_calls},
+        **({"provider_usage": provider_usage} if provider_usage is not None else {}),
     }
 
 
@@ -1007,7 +1022,10 @@ def run_autonomous_investigation(
         "approvals": [],
         "outcome": "",
         "stop_reason": stop_reason,
-        "evaluation": _evaluate(started, agent_runs, reconciliation, scope, int(synthesis.get("llm_calls", 0))),
+        "evaluation": _evaluate(
+            started, agent_runs, reconciliation, scope,
+            int(synthesis.get("llm_calls", 0)), synthesis.get("provider_usage"),
+        ),
     }
 
 
@@ -1242,6 +1260,7 @@ def run_context_investigation(
     )
     synthesis_mode = "deterministic"
     narration = ""
+    provider_usage = None
     cve_recheck_status = next(
         (
             str(call.get("status") or "")
@@ -1270,6 +1289,7 @@ def run_context_investigation(
                 ][:3],
             }
             answer = agent.answer(question=snapshot.question, context=grounding)
+            provider_usage = provider_usage_receipt(answer)
             narration = str(getattr(answer, "text", "") or "").strip()
             if narration:
                 synthesis_mode = "foundry"
@@ -1330,6 +1350,7 @@ def run_context_investigation(
         "decisions": [],
         "approvals": [],
         "evaluation": {
+            **({"provider_usage": provider_usage} if provider_usage is not None else {}),
             "step_count": len(stages[:MAX_CONTEXT_STEPS]),
             "tool_calls": len(tool_calls),
             "specialists": len(agent_runs),

@@ -87,7 +87,9 @@ def test_patch_failures_join_only_authorized_identity() -> None:
     class ScopedPort:
         def list_resources(self, scope, *, limit):
             assert scope == Scope.from_mapping({"subscription": ["sub-a"]})
+            assert limit is None
             return {
+                "total": 1,
                 "resources": [
                     {
                         "family": "os",

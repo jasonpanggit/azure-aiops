@@ -71,6 +71,15 @@ read. A response for a different dataset or inconsistent contract is rejected.
 
 ## Fabric capability readiness evidence
 
+Connection-backed medallion reads check the effective scope against registry
+connection details before opening that connection's dataset root. Source status,
+publication manifests, and quality reports read only their required dataset;
+publication-attempt visibility checks use registry details without reading source
+status. Empty visible connection data still uses the existing Lakehouse fallback
+and its row-level scope rules. Registry identity remains authoritative for
+connection-backed source status and manifests. This request-isolation behavior
+does not establish the cause or resolution of shared-provider/OneLake latency.
+
 `GET /api/v1/fabric-medallion/capabilities` preserves its read authorization,
 selected scope, evidence envelope, and existing capability fields.
 `semantic_readiness` returns `status=unknown` with

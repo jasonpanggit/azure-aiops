@@ -2193,15 +2193,221 @@ def test_every_integrated_fixture_uses_exact_canonical_v2_dispatch(monkeypatch):
         assert body["snapshot"]["material_claims"] == []
 
 
+def test_diagnostic_replay_preserves_valid_inventory_page_context():
+    from dataclasses import replace
+
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "route.inv.coverage"
+    )
+    captured = {
+        "version": "2",
+        "page_kind": "inventory",
+        "page_id": "inventory:azure",
+        "coverage": {"visible_count": 1, "total_count": 2, "complete": False},
+        "evidence": [{
+            "evidence_id": "inventory-row-1",
+            "source": "inventory/resource_observations",
+            "status": "ok",
+            "data": {
+                "inventory_context": {"tab": "azure", "filters": {}},
+                "name": "authorized-resource",
+            },
+        }],
+    }
+    bound = replace(case, diagnostic_snapshot=captured)
+    body = evaluate_agents._canonical_evaluation_body(
+        bound, {"subscription": ["sub-a"]},
+    )
+
+    from api.routers.copilot import CanonicalInvestigationPayload, _inventory_selector
+
+    request = CanonicalInvestigationPayload.model_validate(body)
+    assert _inventory_selector(request.snapshot).family == "paas"
+    assert body["snapshot"]["coverage"] == captured["coverage"]
+    assert body["snapshot"]["evidence"][0]["data"] == captured["evidence"][0]["data"]
+    body["snapshot"]["evidence"][0]["data"]["name"] = "changed"
+    assert captured["evidence"][0]["data"]["name"] == "authorized-resource"
+
+
+def test_diagnostic_replay_retains_selected_vnet_dependency_context():
+    from dataclasses import replace
+
+    from api.routers.copilot import (
+        CanonicalInvestigationPayload,
+        _validated_or_derived_network_hint,
+    )
+
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "route.network.depends"
+    )
+    vnet_id = (
+        "/subscriptions/sub-a/resourceGroups/rg/"
+        "providers/Microsoft.Network/virtualNetworks/observed-vnet"
+    )
+    captured = {
+        "version": "2",
+        "page_kind": "network",
+        "page_id": "network-topology",
+        "coverage": {"visible_count": 1, "total_count": 2, "complete": False},
+        "selected_entities": [{"type": "azure", "resource_id": vnet_id}],
+    }
+    bound = replace(
+        case, question="What depends on observed-vnet?", diagnostic_snapshot=captured,
+    )
+    body = evaluate_agents._canonical_evaluation_body(
+        bound, {"subscription": ["sub-a"]},
+    )
+    request = CanonicalInvestigationPayload.model_validate(body)
+    hint = _validated_or_derived_network_hint(request, request.snapshot)
+
+    assert hint is not None
+    assert hint.specialist_id == "network"
+    assert hint.tool == "hub_dependents"
+    assert hint.arguments == {"vnet_id": vnet_id}
+    assert "hint" not in body
+
+
+@pytest.mark.parametrize("change", [{"page_kind": "network"}, {"version": "invalid"}])
+def test_invalid_diagnostic_page_binding_fails_before_dispatch(change):
+    from dataclasses import replace
+
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "route.inv.coverage"
+    )
+    captured = {
+        "version": "2",
+        "page_kind": "inventory",
+        "page_id": "inventory:azure",
+        "coverage": {"visible_count": 0, "total_count": 0, "complete": False},
+        **change,
+    }
+    bound = replace(case, diagnostic_snapshot=captured)
+
+    with pytest.raises(evaluate_agents.EvaluationConfigurationError, match="diagnostic snapshot"):
+        evaluate_agents._canonical_evaluation_body(bound, {"subscription": ["sub-a"]})
+
+
+def test_diagnostic_page_replay_cannot_rewrite_release_corpus_provenance():
+    from dataclasses import replace
+
+    evaluate_agents = _load_evaluate_agents()
+    case = evaluate_agents.load_cases(_CASES_PATH)[0]
+    bound = replace(case, diagnostic_snapshot={})
+
+    with pytest.raises(ValueError, match="diagnostic"):
+        evaluate_agents.build_release_artifact(
+            [], cases=[bound], dataset={},
+            thresholds={}, revision="immutable-revision",
+            provider_availability={},
+        )
+
+
+@pytest.mark.parametrize("native_narration", ["", "Canonical narration"])
+def test_production_parser_reads_actual_compatibility_answer_without_scoring_it(
+    monkeypatch, native_narration,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "route.network.depends"
+    )
+    data = {
+        "selected_specialists": ["network"],
+        "selected_tools": [],
+        "tool_results": [],
+        "citations": [],
+        "synthesis": {
+            "status": "compatibility",
+            "claims": [],
+            "narration": native_narration,
+            "compatibility_answer": {
+                "text": "Observed Foundry narration",
+                "agent_name": "network-agent",
+                "model": "gpt-5.4-mini",
+                "grounded": True,
+            },
+        },
+    }
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(
+        evaluate_agents, "_investigate", lambda *_args: (data, 1.0),
+    )
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid", "resource", case, {"subscription": ["sub-a"]},
+    )
+
+    assert result.narration == (native_narration or "Observed Foundry narration")
+    assert result.narrated is True
+    assert result.groundedness is None
+    assert result.spend_usd is None
+
+
+@pytest.mark.parametrize("location", ["compatibility", "canonical", "evaluation"])
+@pytest.mark.parametrize("status", ["compatibility", "deterministic"])
+def test_evaluator_retains_attributable_usage_without_inventing_currency(
+    monkeypatch, location, status,
+):
+    evaluate_agents = _load_evaluate_agents()
+    case = next(
+        case for case in evaluate_agents.load_cases(_CASES_PATH)
+        if case.case_id == "route.network.depends"
+    )
+    receipt = {
+        "agent_name": "network-agent", "agent_version": "1", "model": "reported-model",
+        "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+    }
+    data = {
+        "selected_specialists": ["network"], "selected_tools": [],
+        "tool_results": [], "citations": [],
+        "synthesis": {"status": status, "claims": []},
+        "evaluation": {"cost": {"llm_calls": 0}},
+    }
+    if location == "compatibility":
+        data["synthesis"]["compatibility_answer"] = {**receipt, "text": "Observed answer"}
+    elif location == "canonical":
+        data["synthesis"]["provider_usage"] = receipt
+    else:
+        data["evaluation"]["provider_usage"] = receipt
+    monkeypatch.setattr(evaluate_agents, "_token", lambda _resource: "token")
+    monkeypatch.setattr(evaluate_agents, "_investigate", lambda *_args: (data, 1.0))
+
+    result = evaluate_agents._run_case(
+        "https://example.invalid", "resource", case, {"subscription": ["sub-a"]},
+    )
+
+    assert result.provider_usage == receipt
+    assert result.to_dict()["provider_usage"] == receipt
+    assert result.spend_usd is None
+    assert result.groundedness is None
+
+
 def test_production_dispatch_propagates_canonical_continuity_state(
     monkeypatch,
 ):
+    from dataclasses import replace
+
     evaluate_agents = _load_evaluate_agents()
     cases = [
         case
         for case in evaluate_agents.load_cases(_CASES_PATH)
         if case.continuity_group == "cont-inv-cve"
     ]
+    cases[0] = replace(
+        cases[0],
+        diagnostic_snapshot={
+            "version": "2",
+            "page_kind": "inventory",
+            "page_id": "inventory:azure",
+            "coverage": {"visible_count": 0, "total_count": 0, "complete": False},
+        },
+    )
     requests: list[tuple[str, dict[str, Any], str]] = []
     thread_id = "thr-" + "a" * 32
 
@@ -2264,6 +2470,8 @@ def test_production_dispatch_propagates_canonical_continuity_state(
     assert first_authorization == second_authorization == "Bearer token"
     assert "thread_id" not in first_body
     assert "expected_thread_revision" not in first_body
+    assert first_body["snapshot"]["page_id"] == "inventory:azure"
+    assert second_body["snapshot"]["page_id"] == "eval-cont.inv.turn2"
     assert second_body["thread_id"] == thread_id
     assert second_body["expected_thread_revision"] == 1
     assert first_body["requested_scope"] == second_body["requested_scope"] == {

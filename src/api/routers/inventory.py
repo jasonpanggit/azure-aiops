@@ -27,6 +27,9 @@ from intelligence.inventory.mapping_repository import (
     MappingStatusConflict,
 )
 from intelligence.inventory.narrative import build_inventory_narrative
+from intelligence.inventory.public_projection import (
+    public_inventory_asset as _public_asset,
+)
 from intelligence.inventory.read_port import InventoryReadPort
 from intelligence.inventory.service import InventoryService
 from storage.onelake_documents import DocumentConflictError
@@ -44,17 +47,6 @@ from ..models import (
 router = APIRouter(prefix="/api/v1", tags=["inventory"])
 _GROUP_KEY = re.compile(r"^[^|/\\]{1,120}\|[^|/\\]{1,120}$")
 _PAAS_GROUP_KEY = re.compile(r"^[^|/\\]{1,160}\|[^|/\\]{1,120}\|[^|/\\]{1,120}$")
-_ASSET_FIELDS = (
-    "family", "resource_id", "resource_name", "resource_type", "subscription_id",
-    "resource_group", "environment", "location", "sku", "tier", "runtime",
-    "provisioning_state", "os_name", "os_version", "source_type", "observed_at",
-    "query_version", "containment",
-)
-
-
-def _public_asset(row: dict[str, Any]) -> dict[str, Any]:
-    # Internal adapters retain raw properties/tags. Portal reads never expose them.
-    return {"environment": "", **{key: row[key] for key in _ASSET_FIELDS if key in row}}
 
 
 def _service(context: Context) -> InventoryService:
@@ -447,7 +439,10 @@ def paas_inventory_detail(
     if result is None:
         raise ApiError(ErrorCode.NOT_FOUND, "No PaaS inventory group matches this scope")
     return envelope(
-        result["data"],
+        {
+            **result["data"],
+            "resources": [_public_asset(row) for row in result["data"]["resources"]],
+        },
         evidence=_resource_evidence(service),
         scope=scope.to_dict(),
         knowledge_version=result["data"]["query_version"],

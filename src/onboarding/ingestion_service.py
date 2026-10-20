@@ -832,7 +832,7 @@ class IngestionService:
         from api.scope import Scope
 
         scope = Scope.from_mapping({"subscription": sorted(subscriptions)})
-        resource_rows = self.inventory_read_port.list_resources(scope, limit=10_000)["resources"]
+        resource_rows = InventoryReadAdapter(self.inventory_read_port).resources(scope)
         containment_rows = self.inventory_read_port.list_containment(scope)
         return InventoryReadAdapter.to_arg_rows(containment_rows, resource_rows)
 

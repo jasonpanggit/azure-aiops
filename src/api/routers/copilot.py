@@ -672,6 +672,8 @@ def _inventory_selector(snapshot: Any) -> CanonicalInventorySelector:
 
 
 def _server_inventory_result(result: Mapping[str, Any] | None) -> ToolResult:
+    from intelligence.inventory.public_projection import public_inventory_asset
+
     if result is None:
         return ToolResult(status=STATUS_EMPTY)
     raw_evidence = [
@@ -714,6 +716,8 @@ def _server_inventory_result(result: Mapping[str, Any] | None) -> ToolResult:
         if isinstance(raw_data, Mapping)
         else {"items": raw_data, "total": total}
     )
+    if isinstance(data.get("resources"), list):
+        data["resources"] = [public_inventory_asset(row) for row in data["resources"]]
     return ToolResult(
         status=STATUS_OK if total else STATUS_EMPTY,
         data=data,

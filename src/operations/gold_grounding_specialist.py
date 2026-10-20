@@ -21,6 +21,7 @@ from operations.foundry_agent import (
     FoundryAgentError,
     MicrosoftAgentFrameworkFoundryAgent,
     parse_specialist_findings,
+    provider_usage_from_response,
 )
 from operations.gold_grounding_metrics import GoldGroundingMetrics
 
@@ -497,6 +498,7 @@ async def _answer_maf_findings_async(
         model="microsoft-agent-framework",
         grounded=True,
         agent_version=agent.agent_version,
+        usage=provider_usage_from_response(response),
     )
 
 

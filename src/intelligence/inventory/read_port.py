@@ -22,8 +22,9 @@ class InventoryReadPort:
         query: str | None = None,
         resource_group: str | None = None,
         offset: int = 0,
-        limit: int = 100,
+        limit: int | None = 100,
     ) -> dict[str, Any]:
+        """Read scoped identities; internal full-snapshot consumers use ``limit=None``."""
         _require_scope(scope)
         result = self.service.resources(scope, offset=0, limit=None)
         rows = list(result["data"]["resources"])
@@ -83,7 +84,7 @@ class InventoryReadPort:
             ]
         rows.sort(key=lambda row: (str(row.get("family") or ""), str(row.get("resource_id") or "")))
         return {
-            "resources": rows[offset : offset + limit],
+            "resources": rows[offset : None if limit is None else offset + limit],
             "total": len(rows),
             "groups": groups,
             "group_total": (

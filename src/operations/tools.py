@@ -46,6 +46,7 @@ from api.governance_snapshot import (
 )
 from api.scope import Scope, scope_attributes, subscription_ids_for_scope
 from fabric.dataset_mapper import ONTOLOGY_RELATIONSHIP_TYPES
+from intelligence.inventory.public_projection import public_inventory_asset
 from intelligence.vulnerability.exposure_contracts import (
     ExposureApiPage,
     exposure_page_from_read_port,
@@ -1731,7 +1732,7 @@ def _tool_inventory_resources(tool_context: ToolContext, args: Mapping[str, Any]
             status=STATUS_OK if rows or groups else STATUS_EMPTY,
             data=_bound(
                 {
-                    "resources": rows,
+                    "resources": [public_inventory_asset(row) for row in rows],
                     "total": result.get("total", len(rows)),
                     "groups": groups,
                     "group_total": result.get("group_total"),
@@ -2188,7 +2189,11 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         ),
         ToolSpec(
             name="inventory_resources",
-            description="Scoped inventory resource listing (e.g. VMs, storage accounts), optionally filtered by ARM resource type or family.",
+            description=(
+                "Scoped public inventory resource identities (e.g. VMs, storage accounts), "
+                "optionally filtered by ARM resource type or family. Uses the HTTP public "
+                "identity fields; raw provider properties and tags are not returned."
+            ),
             parameters={
                 "resource_type": "Optional ARM resource type, e.g. Microsoft.Compute/virtualMachines",
                 "family": "Optional inventory family (e.g. os, paas)",

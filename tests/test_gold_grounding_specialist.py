@@ -100,6 +100,34 @@ def _finding_line(
     return GoldGroundedFinding.model_validate(payload).model_dump_json()
 
 
+def test_async_maf_wrapper_preserves_reported_usage_without_changing_findings():
+    from types import SimpleNamespace
+
+    from operations.gold_grounding_specialist import _answer_maf_findings_async
+
+    async def run_agent(_prompt, **_kwargs):
+        return SimpleNamespace(
+            text='{"findings":[]}',
+            usage_details={"input_token_count": 12, "output_token_count": 3},
+        )
+
+    agent = SimpleNamespace(
+        build_prompt=lambda *_args, **_kwargs: "bounded prompt",
+        _run_agent=run_agent,
+        specialist_id="network",
+        agent_name="network-agent",
+        agent_version="1",
+    )
+    answer = asyncio.run(_answer_maf_findings_async(
+        agent=agent, question="Review evidence", merged_context={},
+        evidence_refs=set(), resource_ids=set(), max_output_tokens=20,
+    ))
+
+    assert answer.text == '{"findings":[]}'
+    assert answer.usage == {"input_tokens": 12, "output_tokens": 3}
+    assert "total_tokens" not in answer.usage
+
+
 def test_successful_query_merges_gold_evidence_into_existing_context(monkeypatch) -> None:
     def fake_query_gold_grounding(**_kwargs):
         return {

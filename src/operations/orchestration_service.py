@@ -32,6 +32,7 @@ from operations.foundry_agent import (
     executive_synthesis_input,
     is_highest_risk_compliance_question,
     normalize_cited_findings,
+    provider_usage_receipt,
     validate_executive_synthesis,
 )
 
@@ -809,6 +810,7 @@ class ExecutiveSynthesis:
     narration_budget_seconds: float = 0.0
     provider_error_class: str = ""
     provider_error_reason: str = ""
+    provider_usage: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -833,6 +835,7 @@ def _executive_synthesis_payload(
         "mode": synthesis.mode,
         "narration": synthesis.narration,
         "agent": synthesis.agent,
+        **({"provider_usage": synthesis.provider_usage} if synthesis.provider_usage is not None else {}),
         "degraded_reason": synthesis.degraded_reason,
         "narration_budget_seconds": synthesis.narration_budget_seconds,
         "provider_error_class": synthesis.provider_error_class,
@@ -3024,6 +3027,7 @@ class OrchestrationService:
             if narration_deadline is not None
             else remaining_seconds
         )
+        measured_usage = None
         try:
             answer_kwargs = {
                 "question": question,
@@ -3032,6 +3036,7 @@ class OrchestrationService:
             if narration_remaining_seconds is not None:
                 answer_kwargs["timeout_seconds"] = narration_remaining_seconds
             answer = self.executive_agent.answer(**answer_kwargs)
+            measured_usage = provider_usage_receipt(answer)
             claims = validate_executive_synthesis(
                 getattr(answer, "text", ""),
                 evidence_refs=evidence_refs,
@@ -3073,6 +3078,7 @@ class OrchestrationService:
                 narration_budget_seconds=narration_remaining_seconds or 0.0,
                 provider_error_class=error_class,
                 provider_error_reason=error_reason,
+                provider_usage=measured_usage,
             )
         except TimeoutError as exc:
             error_class, error_reason = _log_narration_failure(
@@ -3095,6 +3101,7 @@ class OrchestrationService:
                 narration_budget_seconds=narration_remaining_seconds or 0.0,
                 provider_error_class=error_class,
                 provider_error_reason=error_reason,
+                provider_usage=measured_usage,
             )
         except (AttributeError, ConnectionError, TypeError, ValueError) as exc:
             error_class, error_reason = _log_narration_failure(
@@ -3117,6 +3124,7 @@ class OrchestrationService:
                 narration_budget_seconds=narration_remaining_seconds or 0.0,
                 provider_error_class=error_class,
                 provider_error_reason=error_reason,
+                provider_usage=measured_usage,
             )
         else:
             used_refs = {
@@ -3148,6 +3156,7 @@ class OrchestrationService:
                 ),
                 agent=str(getattr(answer, "agent_name", "") or "").strip(),
                 narration_budget_seconds=narration_remaining_seconds or 0.0,
+                provider_usage=measured_usage,
             )
         self._record_stage_metric("synthesis", stage_started)
         self._record_synthesis_metric(synthesis)

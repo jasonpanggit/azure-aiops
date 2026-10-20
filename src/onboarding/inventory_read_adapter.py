@@ -65,7 +65,11 @@ class InventoryReadAdapter:
         self.legacy = legacy
 
     def resources(self, scope: Any) -> list[dict[str, Any]]:
-        """Return identity rows restricted to the caller's effective scope."""
+        """Return every identity from one immutable scoped read-port snapshot.
+
+        Capture once rather than repeatedly project/sort the full snapshot for
+        every page. Reject incomplete results instead of silently truncating.
+        """
         from api.scope import scope_attributes
 
         if scope is None or not hasattr(scope, "matches") or not hasattr(scope, "to_dict"):
@@ -91,7 +95,20 @@ class InventoryReadAdapter:
                 for row in rows
                 if scope.matches(scope_attributes(row))
             ]
-        return list(self.port.list_resources(scope, limit=10_000)["resources"])
+        snapshot = self.port.list_resources(scope, limit=None)
+        total = snapshot.get("total")
+        if type(total) is not int or total < 0:
+            raise RuntimeError("Inventory identity snapshot requires a nonnegative exact total")
+        rows = snapshot.get("resources")
+        if not isinstance(rows, list) or len(rows) != total:
+            raise RuntimeError("Inventory identity snapshot is incomplete")
+        identities: set[str] = set()
+        for row in rows:
+            identity = str(row.get("resource_id") or "").casefold()
+            if not identity or identity in identities:
+                raise RuntimeError("Inventory identity snapshot contains a missing or duplicate identity")
+            identities.add(identity)
+        return list(rows)
 
     def patch_assessments(self) -> list[dict[str, Any]]:
         """Read patch-domain rows for the compatibility query projection.

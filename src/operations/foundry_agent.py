@@ -237,22 +237,68 @@ class _CircuitBreaker:
 
 @dataclass(frozen=True)
 class AgentAnswer:
-    """A narrated answer plus the provenance needed to render it honestly."""
+    """A narrated answer and optional reported usage, never total turn spend."""
 
     text: str
     agent_name: str
     model: str = ""
     grounded: bool = True
     agent_version: str = ""
+    usage: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        """Serialize attribution and measured tokens without inventing usage."""
+        payload: dict[str, Any] = {
             "text": self.text,
             "agent_name": self.agent_name,
             "model": self.model,
             "grounded": self.grounded,
             "agent_version": self.agent_version,
         }
+        if self.usage is not None:
+            payload["usage"] = dict(self.usage)
+        return payload
+
+
+def _token_usage(raw: Any, *, framework: bool = False) -> dict[str, int] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise FoundryResponseContractError("Provider usage must be a token-count mapping")
+    usage: dict[str, int] = {}
+    for kind in ("input", "output", "total"):
+        key = f"{kind}_token_count" if framework else f"{kind}_tokens"
+        count = raw.get(key)
+        if count is None:
+            continue
+        if type(count) is not int or count < 0:
+            raise FoundryResponseContractError("Provider usage contains an invalid token count")
+        usage[f"{kind}_tokens"] = count
+    return usage or None
+
+
+def provider_usage_from_response(response: Any) -> dict[str, int] | None:
+    """Retain reported REST or Agent Framework token counts, never estimates."""
+    if isinstance(response, Mapping):
+        return _token_usage(response.get("usage"))
+    return _token_usage(getattr(response, "usage_details", None), framework=True)
+
+
+def provider_usage_receipt(answer: Any) -> dict[str, Any] | None:
+    """Attribute one measured invocation without claiming total turn spend."""
+    values = answer if isinstance(answer, Mapping) else {
+        key: getattr(answer, key, None)
+        for key in ("agent_name", "agent_version", "model", "usage")
+    }
+    usage = _token_usage(values.get("usage"))
+    if usage is None:
+        return None
+    return {
+        "agent_name": str(values.get("agent_name") or ""),
+        "agent_version": str(values.get("agent_version") or ""),
+        "model": str(values.get("model") or ""),
+        "usage": usage,
+    }
 
 
 def _agent_contract(agent_id: str) -> dict[str, Any]:
@@ -955,6 +1001,7 @@ class FoundryPromptAgent:
             model=str(response.get("model") or ""),
             grounded=True,
             agent_version=self.agent_version,
+            usage=provider_usage_from_response(response),
         )
 
     def answer_findings(
@@ -988,6 +1035,7 @@ class FoundryPromptAgent:
             model=answer.model,
             grounded=True,
             agent_version=self.agent_version,
+            usage=answer.usage,
         )
 
     def build_prompt(self, question: str, context: Any) -> str:
@@ -1141,6 +1189,7 @@ class MicrosoftAgentFrameworkFoundryAgent:
             model="microsoft-agent-framework",
             grounded=True,
             agent_version=self.agent_version,
+            usage=provider_usage_from_response(response),
         )
 
     def answer_findings(
@@ -1710,6 +1759,7 @@ class FoundryCoordinatorSynthesisAgent:
             model=answer.model,
             grounded=answer.grounded,
             agent_version=answer.agent_version,
+            usage=getattr(answer, "usage", None),
         )
 
 

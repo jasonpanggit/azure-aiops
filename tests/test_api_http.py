@@ -644,12 +644,12 @@ class TestFabricMedallionRouterTask1:
         monkeypatch.setattr(
             fabric_medallion_router,
             "_metadata_source_status_rows",
-            lambda _context: source_rows,
+            lambda _context, _scope: source_rows,
         )
         monkeypatch.setattr(
             fabric_medallion_router,
             "_metadata_publication_manifest_rows",
-            lambda _context: manifest_rows,
+            lambda _context, _scope: manifest_rows,
         )
         return TestClient(app, raise_server_exceptions=False)
 
@@ -700,7 +700,7 @@ class TestFabricMedallionRouterTask1:
             "error": "sensitive provider response must not enter receipt",
             "lineage_ref": "opaque-partition-reference",
         }
-        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _context: [
+        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _context, _scope: [
             row,
             {
                 **row, "partition_key": "partition-b", "effective_generation": "other-retained",
@@ -787,7 +787,7 @@ class TestFabricMedallionRouterTask1:
             "attempted_generation": "unorderable", "effective_generation": "",
         }
         rows = [newer, row] + ([unknown_clock] if include_unorderable else [])
-        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _context: rows)
+        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _context, _scope: rows)
         response = fabric_medallion_client.get(
             "/api/v1/fabric-medallion/datasets/bronze_resources", headers=_auth(ADMIN_TOKEN)
         )
@@ -823,7 +823,7 @@ class TestFabricMedallionRouterTask1:
         monkeypatch.setattr(
             fabric_medallion_router,
             "_metadata_source_status_rows",
-            lambda _context: generated_rows,
+            lambda _context, _scope: generated_rows,
         )
 
         response = fabric_medallion_client.get(
@@ -897,7 +897,7 @@ class TestFabricMedallionRouterTask1:
         monkeypatch.setattr(
             fabric_medallion_router,
             "_metadata_publication_manifest_rows",
-            lambda _context: [
+            lambda _context, _scope: [
                 {
                     "projection_name": "system_projection",
                     "disposition": "deployment-blocked",
@@ -955,7 +955,7 @@ class TestFabricMedallionRouterTask1:
             "row_count": 5, "subscription_id": SUB_A,
             "requested_scope": {"subscription": [SUB_B], "subscription_connection": ["obsolete"]},
         }
-        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _: [
+        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _, _scope: [
             {**base, "subscription_connection": "one", "ingested_at": (now - timedelta(days=2)).isoformat()},
             {**base, "subscription_connection": "two", "ingested_at": now.isoformat()},
             {**base, "subscription_id": SUB_B, "subscription_connection": "hidden", "ingested_at": now.isoformat()},
@@ -983,7 +983,7 @@ class TestFabricMedallionRouterTask1:
         self, fabric_medallion_client, monkeypatch
     ):
         from api.routers import fabric_medallion as routes
-        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _: [
+        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _, _scope: [
             {"source_family": "bronze_resources", "requested_scope": {"subscription": [SUB_A, SUB_B]},
              "row_count": 42, "ingested_at": datetime.now(UTC).isoformat()},
         ])
@@ -1021,7 +1021,7 @@ class TestFabricMedallionRouterTask1:
         self, fabric_medallion_client, monkeypatch
     ):
         from api.routers import fabric_medallion as routes
-        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _: [
+        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _, _scope: [
             {"source_family": "bronze_resources", "subscription_id": SUB_A, "subscription_connection": "one"},
             {"source_family": "bronze_resources", "subscription_id": SUB_A, "subscription_connection": "two",
              "ingested_at": datetime.now(UTC).isoformat()},
