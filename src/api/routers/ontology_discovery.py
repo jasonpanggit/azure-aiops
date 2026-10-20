@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -23,6 +24,7 @@ from ontology_discovery.evaluation_store import (
     EvaluationSnapshotStore,
     SnapshotIntegrityError,
 )
+from ontology_discovery.native_agent import native_agent_capabilities
 from ontology_discovery.store import (
     RUN_CANCELLED,
     RUN_FAILED,
@@ -840,6 +842,27 @@ def _run_conflict(exc: RunClaimConflict) -> ApiError:
             "reason": exc.reason,
             "current_revision": int(exc.record.get("revision") or 0),
         },
+    )
+
+
+@router.get("/agent-capabilities", summary="Get native interactive ontology entry point")
+def agent_capabilities(
+    connection_id: ConnectionId,
+    context: Context,
+    scope: ReadScope,
+) -> dict[str, Any]:
+    """Authorize the connection before exposing configured native navigation."""
+
+    service = _provider(context)
+    _connection(service, connection_id, scope)
+    return envelope(
+        native_agent_capabilities(os.environ),
+        evidence=Evidence(
+            source_engine="ontology_discovery.native_agent",
+            source_table="server_configuration",
+            subscription_connection=connection_id,
+        ),
+        scope=scope.to_dict(),
     )
 
 

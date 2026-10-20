@@ -1109,6 +1109,23 @@ variable "fabric_ontology_name" {
   default     = "Operational_Context_Ontology_v2"
 }
 
+variable "fabric_native_ontology_target" {
+  description = "Reviewed native interactive navigation target, independent of all publisher targets. Null leaves navigation unconfigured; setting it grants no access and proves no availability."
+  type = object({
+    workspace_id = string
+    item_id      = string
+  })
+  default = null
+
+  validation {
+    condition = var.fabric_native_ontology_target == null ? true : alltrue([
+      for value in [var.fabric_native_ontology_target.workspace_id, var.fabric_native_ontology_target.item_id] :
+      can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", value))
+    ])
+    error_message = "fabric_native_ontology_target must be null or contain both reviewed workspace and ontology item UUIDs."
+  }
+}
+
 variable "alert_email_addresses" {
   description = <<-EOT
     Email addresses notified by Azure Monitor when platform observability

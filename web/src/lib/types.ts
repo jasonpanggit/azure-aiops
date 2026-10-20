@@ -2300,6 +2300,22 @@ export interface OntologyIncrementalStatus {
   last_reconciliation_result?: string;
 }
 
+/** Documented capabilities and configured navigation, never an execution receipt. */
+export interface OntologyAgentCapabilities {
+  primary_mode: "native_interactive";
+  native_interactive: {
+    status: "not_configured" | "invalid_configuration" | "configured_unverified";
+    portal_url: string | null;
+    authentication: "delegated_user";
+    default_mode: "plan";
+    plan_operations: Array<"discover" | "draft" | "validate" | "preview" | "query">;
+    apply_requires_review: true;
+    unattended_authoring: "unavailable";
+    execution_verified: false;
+  };
+  foundry_fallback: { selection_required: true; selected: false };
+}
+
 export interface OntologyAutomationStatus {
   scheduler: OntologySchedulerStatus;
   current_run: OntologyRun | null;

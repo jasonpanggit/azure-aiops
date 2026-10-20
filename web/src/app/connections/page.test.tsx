@@ -54,6 +54,7 @@ const {
   ontologyRunNow,
   ontologyRuns,
   ontologyStatus,
+  ontologyAgentCapabilities,
   sync,
   updateConnection,
 } = vi.hoisted(() => ({
@@ -84,6 +85,7 @@ const {
   ontologyRunNow: vi.fn(),
   ontologyRuns: vi.fn(),
   ontologyStatus: vi.fn(),
+  ontologyAgentCapabilities: vi.fn(),
   sync: vi.fn(),
   updateConnection: vi.fn(),
 }));
@@ -114,6 +116,7 @@ vi.mock("@/lib/services", async (importOriginal) => {
     capabilities: fabricCapabilities,
   },
   ontologyAutomationApi: {
+    agentCapabilities: ontologyAgentCapabilities,
     status: ontologyStatus,
     runs: ontologyRuns,
     run: vi.fn(),
@@ -133,6 +136,26 @@ vi.mock("@/lib/services", async (importOriginal) => {
 });
 
 import ConnectionsPage from "./page";
+
+async function openFoundryAutomation() {
+  fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+  await screen.findByRole("heading", { name: "Native Fabric Ontology Agent" });
+  fireEvent.change(screen.getByRole("combobox", { name: "Ontology discovery mode" }), {
+    target: { value: "foundry" },
+  });
+}
+
+beforeEach(() => {
+  ontologyAgentCapabilities.mockReset();
+  ontologyAgentCapabilities.mockResolvedValue({
+    data: {
+      primary_mode: "native_interactive",
+      native_interactive: { status: "not_configured", portal_url: null },
+    },
+    evidence: [],
+    scope: {},
+  });
+});
 
 const apiTransportError = new ApiError(0, "unknown", "Network request failed");
 
@@ -255,13 +278,17 @@ function capabilitiesFor(tableNames: string[]) {
         <ScopeSwitch />
       </ScopeProvider>,
     );
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
     expect(await screen.findByRole("combobox", { name: "Connection" })).toHaveValue(connection.connection_id);
 
     fireEvent.click(screen.getByRole("button", { name: "Narrow scope" }));
 
     await waitFor(() => {
       expect(screen.getByRole("combobox", { name: "Connection" })).toHaveValue(secondConnection.connection_id);
+    });
+    expect(screen.getByRole("combobox", { name: "Ontology discovery mode" })).toHaveValue("native");
+    fireEvent.change(screen.getByRole("combobox", { name: "Ontology discovery mode" }), { target: { value: "foundry" } });
+    await waitFor(() => {
       expect(ontologyEvaluation).toHaveBeenLastCalledWith(
         secondConnection.connection_id,
         { subscription: [secondConnection.subscription_id] },
@@ -512,10 +539,97 @@ describe("Connections page Ontology automation tab", () => {
     mockOntologyAutomation();
   });
 
+  it("defaults to native interactive without reading or invoking Foundry discovery", async () => {
+    renderConnectionsPageWithScope(connection.subscription_id);
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    expect(await screen.findByRole("heading", { name: "Native Fabric Ontology Agent" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Ontology discovery mode" })).toHaveValue("native");
+    await screen.findByText("Native target is not configured");
+    expect(screen.queryByRole("button", { name: "Run discovery now" })).not.toBeInTheDocument();
+    expect(ontologyStatus).not.toHaveBeenCalled();
+    expect(ontologyRuns).not.toHaveBeenCalled();
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+  });
+
+  it("keeps native failure visible without silently selecting Foundry", async () => {
+    ontologyAgentCapabilities.mockRejectedValue(new Error("Native configuration unavailable"));
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    expect(await screen.findByText("Native entry point is unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/No agent was invoked and Foundry was not selected/)).toBeInTheDocument();
+    expect(ontologyStatus).not.toHaveBeenCalled();
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+  });
+
+  it("opens only the configured native item without claiming current availability", async () => {
+    const portal = "https://app.fabric.microsoft.com/groups/2c1fea36-104d-4c26-86db-12e09e432b41/ontologies/bb479201-8ab1-4fde-ab6c-9f9a16477115";
+    ontologyAgentCapabilities.mockResolvedValue(envelope({
+      primary_mode: "native_interactive",
+      native_interactive: { status: "configured_unverified", portal_url: portal },
+    }));
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    const link = await screen.findByRole("link", { name: "Open native Ontology Agent in Fabric" });
+    expect(link).toHaveAttribute("href", portal);
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByText(/not a live availability or execution check/)).toBeInTheDocument();
+    expect(screen.getByText(/Do not apply changes/)).toBeInTheDocument();
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit fallback selection and returns to native without mutation", async () => {
+    renderConnectionsPage();
+    await openFoundryAutomation();
+    expect(await screen.findByRole("heading", { name: "Ontology automation" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Ontology discovery mode" }), {
+      target: { value: "native" },
+    });
+    expect(await screen.findByRole("heading", { name: "Native Fabric Ontology Agent" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run discovery now" })).not.toBeInTheDocument();
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+  });
+
+  it("does not carry explicit Foundry selection into another connection", async () => {
+    const second = { ...connection, connection_id: "other", name: "Other authorized" };
+    list.mockResolvedValue({ ...emptyEnvelope, data: [connection, second] });
+    renderConnectionsPage();
+    await openFoundryAutomation();
+    fireEvent.change(screen.getByRole("combobox", { name: "Connection" }), {
+      target: { value: second.connection_id },
+    });
+    expect(await screen.findByRole("heading", { name: "Native Fabric Ontology Agent" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Ontology discovery mode" })).toHaveValue("native");
+    await waitFor(() => expect(ontologyAgentCapabilities).toHaveBeenLastCalledWith(second.connection_id, {}));
+    expect(screen.queryByRole("button", { name: "Run discovery now" })).not.toBeInTheDocument();
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+  });
+
+  it("rejects a delayed native target response from the prior connection", async () => {
+    const second = { ...connection, connection_id: "other", name: "Other authorized" };
+    list.mockResolvedValue({ ...emptyEnvelope, data: [connection, second] });
+    let resolveOld: ((value: unknown) => void) | undefined;
+    ontologyAgentCapabilities.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await waitFor(() => expect(ontologyAgentCapabilities).toHaveBeenCalledWith(connection.connection_id, {}));
+    fireEvent.change(screen.getByRole("combobox", { name: "Connection" }), {
+      target: { value: second.connection_id },
+    });
+    await screen.findByText("Native target is not configured");
+    await act(async () => resolveOld?.(envelope({
+      native_interactive: {
+        status: "configured_unverified",
+        portal_url: "https://app.fabric.microsoft.com/groups/old/ontologies/stale",
+      },
+    })));
+    expect(screen.queryByRole("link", { name: "Open native Ontology Agent in Fabric" })).not.toBeInTheDocument();
+    expect(ontologyRunNow).not.toHaveBeenCalled();
+  });
+
   it("adds the approved tab and binds every durable section to the selected in-scope connection", async () => {
     renderConnectionsPageWithScope(connection.subscription_id);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
 
     expect(await screen.findByRole("heading", { name: "Ontology automation" })).toBeInTheDocument();
     expect(screen.getByText("Monitor scheduled discovery, review proposed relationships, and manage validated Fabric ontology generations for one onboarded connection.")).toBeInTheDocument();
@@ -634,8 +748,8 @@ describe("Connections page Ontology automation tab", () => {
     list.mockResolvedValue({ ...emptyEnvelope, data: [connection, second] });
     navigation.query = "tab=ontology-automation&connection=other";
     renderConnectionsPage();
-    await waitFor(() => expect(ontologyStatus).toHaveBeenCalledWith("other", {}));
-    expect(ontologyStatus).not.toHaveBeenCalledWith(connection.connection_id, {});
+    await waitFor(() => expect(ontologyAgentCapabilities).toHaveBeenCalledWith("other", {}));
+    expect(ontologyStatus).not.toHaveBeenCalled();
     expect(await screen.findByRole("combobox", { name: "Connection" })).toHaveValue("other");
     expect(ontologyRunNow).not.toHaveBeenCalled();
   });
@@ -657,7 +771,8 @@ describe("Connections page Ontology automation tab", () => {
     expect(await screen.findByRole("heading", { name: "Subscription connections" })).toBeInTheDocument();
     navigation.query = "tab=ontology-automation&connection=prod";
     view.rerender(<ScopeProvider><ConnectionsPage /></ScopeProvider>);
-    await waitFor(() => expect(ontologyStatus).toHaveBeenCalledWith("prod", {}));
+    await waitFor(() => expect(ontologyAgentCapabilities).toHaveBeenCalledWith("prod", {}));
+    expect(ontologyStatus).not.toHaveBeenCalled();
     navigation.query = "";
     view.rerender(<ScopeProvider><ConnectionsPage /></ScopeProvider>);
     expect(await screen.findByRole("heading", { name: "Subscription connections" })).toBeInTheDocument();
@@ -680,7 +795,8 @@ describe("Connections page Ontology automation tab", () => {
       return <><button onClick={() => setScope({ subscription: ["sub-b"] })}>Change scope</button><ConnectionsPage /></>;
     }
     const view = render(<ScopeProvider><ScopedPage /></ScopeProvider>);
-    await waitFor(() => expect(ontologyStatus).toHaveBeenCalledWith("prod", {}));
+    await waitFor(() => expect(ontologyAgentCapabilities).toHaveBeenCalledWith("prod", {}));
+    ontologyAgentCapabilities.mockClear();
     ontologyStatus.mockClear();
     ontologyRuns.mockClear();
     ontologyProposals.mockClear();
@@ -690,6 +806,7 @@ describe("Connections page Ontology automation tab", () => {
     expect(ontologyStatus).not.toHaveBeenCalled();
     expect(ontologyRuns).not.toHaveBeenCalled();
     expect(ontologyProposals).not.toHaveBeenCalled();
+    expect(ontologyAgentCapabilities).not.toHaveBeenCalled();
     view.unmount();
   });
 
@@ -722,7 +839,7 @@ describe("Connections page Ontology automation tab", () => {
     }));
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
 
     expect(await screen.findByText(ontologySnapshot.snapshot_id)).toBeInTheDocument();
     expect(screen.getByText("Evaluation snapshot is stale. Release remains disabled until fresh evaluation evidence is restored.")).toBeInTheDocument();
@@ -743,7 +860,7 @@ describe("Connections page Ontology automation tab", () => {
     ontologyEvaluation.mockRejectedValue(new Error("evaluation store offline"));
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
 
     expect(await screen.findByText("Relationship proposals are unavailable. No review decision was changed. Refresh proposals before acting.")).toBeInTheDocument();
     expect(screen.getByText("Ontology generation status is unavailable. Do not assume publication completed. Refresh generation status.")).toBeInTheDocument();
@@ -780,7 +897,7 @@ describe("Connections page Ontology automation tab", () => {
     ontologyEvaluations.mockResolvedValue(envelope([]));
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
 
     expect(await screen.findByText("Ontology discovery has not run for this connection")).toBeInTheDocument();
     expect(screen.getByText("No relationship proposals need review")).toBeInTheDocument();
@@ -803,7 +920,7 @@ describe("Connections page Ontology automation tab", () => {
     }));
     ontologyProposals.mockResolvedValue(envelope([]));
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
     expect(await screen.findByText("The latest completed run produced no proposals requiring a decision for this scope.")).toBeInTheDocument();
   });
 
@@ -831,7 +948,7 @@ describe("Connections page Ontology automation tab", () => {
       ]));
       ontologyProposals.mockResolvedValue(envelope([]));
       renderConnectionsPage();
-      fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+      await openFoundryAutomation();
       expect(await screen.findByText("No relationship proposals need review")).toBeInTheDocument();
       expect(screen.queryByText("The latest completed run produced no proposals requiring a decision for this scope.")).not.toBeInTheDocument();
       expect(screen.getByText("No proposals are currently available for review. A completed zero-proposal result has not been verified.")).toBeInTheDocument();
@@ -852,7 +969,7 @@ describe("Connections page Ontology automation tab", () => {
     ]));
     ontologyProposals.mockResolvedValue(envelope([]));
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
     expect(await screen.findByText("No relationship proposals need review")).toBeInTheDocument();
     expect(screen.queryByText("The latest completed run produced no proposals requiring a decision for this scope.")).not.toBeInTheDocument();
     expect(screen.getByText("No proposals are currently available for review. A completed zero-proposal result has not been verified.")).toBeInTheDocument();
@@ -867,7 +984,7 @@ describe("Connections page Ontology automation tab", () => {
     }]));
     ontologyProposals.mockResolvedValue(envelope([]));
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
     expect(await screen.findByText("The latest completed run produced no proposals requiring a decision for this scope.")).toBeInTheDocument();
   });
 
@@ -876,7 +993,7 @@ describe("Connections page Ontology automation tab", () => {
     ontologyRuns.mockRejectedValue(new Error("history unavailable"));
     ontologyProposals.mockResolvedValue(envelope([]));
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
     expect(await screen.findByText("Discovery run history is unavailable. Current run state was not changed. Refresh run history.")).toBeInTheDocument();
     expect(screen.queryByText("The latest completed run produced no proposals requiring a decision for this scope.")).not.toBeInTheDocument();
     expect(screen.queryByText("No completed discovery run has been observed for this connection. Run discovery to collect proposal evidence.")).not.toBeInTheDocument();
@@ -894,7 +1011,7 @@ describe("Connections page Ontology automation tab", () => {
       validation: { passed, observed, errors: [], model_derived_relationships: 0 },
     }));
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
     const region = await screen.findByRole("region", { name: "Generation and publication" });
     await waitFor(() => {
       const term = within(region).getByText("Validation", { exact: true });
@@ -906,7 +1023,7 @@ describe("Connections page Ontology automation tab", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderConnectionsPage();
-    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    await openFoundryAutomation();
 
     fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
     expect(confirm).toHaveBeenCalledWith(

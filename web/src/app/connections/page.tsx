@@ -25,6 +25,7 @@ import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
 import { ApiError, type ConnectionCreateRequest, type ConnectionPreflightReport, type SubscriptionConnection, type SyncState } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
 import { ConnectionReadiness } from "@/components/ConnectionReadiness";
+import { NativeOntologyAgentPanel } from "@/components/ontology/NativeOntologyAgentPanel";
 
 const EMPTY_FORM = {
   connectionId: "",
@@ -135,6 +136,12 @@ function ConnectionsPageContent() {
     loading: false,
   });
   const scopeKey = JSON.stringify(scope);
+  const [foundrySelection, setFoundrySelection] = useState<string | null>(null);
+  const ontologySelectionKey = JSON.stringify([selectedOntologyConnectionId, scopeKey]);
+  const foundrySelected = foundrySelection === ontologySelectionKey;
+  useEffect(() => {
+    setFoundrySelection(null);
+  }, [ontologySelectionKey]);
   const currentScope = useRef(scopeKey);
   currentScope.current = scopeKey;
   useEffect(() => {
@@ -210,7 +217,7 @@ function ConnectionsPageContent() {
 
   useEffect(() => {
     let cancelled = false;
-    if (tab !== "ontology-automation" || !selectedOntologyConnectionId || !activeConnections.some(connection => connection.connection_id === selectedOntologyConnectionId)) {
+    if (tab !== "ontology-automation" || !foundrySelected || !selectedOntologyConnectionId || !activeConnections.some(connection => connection.connection_id === selectedOntologyConnectionId)) {
       setOntologyStatus({ data: null, error: null, loading: false });
       return () => {
         cancelled = true;
@@ -234,7 +241,7 @@ function ConnectionsPageContent() {
     return () => {
       cancelled = true;
     };
-  }, [ontologyRefreshKey, scope, selectedOntologyConnectionId, tab, activeConnections]);
+  }, [ontologyRefreshKey, scope, selectedOntologyConnectionId, tab, activeConnections, foundrySelected]);
 
   /** Polls connection health until the background sync reaches a terminal stage. */
   const pollSyncState = useCallback(async (
@@ -417,7 +424,7 @@ function ConnectionsPageContent() {
 
   async function runOntologyDiscovery() {
     const scheduler = ontologyStatus.data?.data.scheduler;
-    if (!selectedOntologyConnectionId || !activeConnections.some(connection => connection.connection_id === selectedOntologyConnectionId) || !scheduler?.can_run_now) return;
+    if (!foundrySelected || !selectedOntologyConnectionId || !activeConnections.some(connection => connection.connection_id === selectedOntologyConnectionId) || !scheduler?.can_run_now) return;
     setActionError("");
     setActionMessage("");
     setRunningAction(`ontology-run:${selectedOntologyConnectionId}`);
@@ -557,7 +564,18 @@ function ConnectionsPageContent() {
                   ))}
                 </select>
               </label>
-              <div className="ontology-header-action">
+              <label className="ontology-connection-selector">
+                <span>Ontology discovery mode</span>
+                <select
+                  className="form-control"
+                  value={foundrySelected ? "foundry" : "native"}
+                  onChange={(event) => setFoundrySelection(event.target.value === "foundry" ? ontologySelectionKey : null)}
+                >
+                  <option value="native">Native Fabric Ontology Agent</option>
+                  <option value="foundry">Foundry discovery (explicit fallback)</option>
+                </select>
+              </label>
+              {foundrySelected ? <div className="ontology-header-action">
                 <button
                   type="button"
                   className="button button-primary"
@@ -571,8 +589,8 @@ function ConnectionsPageContent() {
                 >
                   {runningAction.startsWith("ontology-run:") ? "Starting discovery…" : "Run discovery now"}
                 </button>
-                <span>Uses the same durable coordinator as scheduled discovery. Closing this page does not stop the run.</span>
-              </div>
+                <span>Explicit Foundry fallback. Uses the existing durable coordinator, not the native Fabric agent.</span>
+              </div> : null}
             </div>
           ) : null}
           </div>
@@ -812,6 +830,12 @@ function ConnectionsPageContent() {
             tone={connections.loading ? "loading" : "empty"}
           />
         </section>
+      ) : !foundrySelected ? (
+        <NativeOntologyAgentPanel
+          key={ontologySelectionKey}
+          connectionId={selectedOntologyConnectionId}
+          scope={scope}
+        />
       ) : (
         <OntologyAutomationPanel
           connectionId={selectedOntologyConnectionId}
