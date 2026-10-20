@@ -90,6 +90,8 @@ def test_network_page_retained_evidence_is_sent_to_executive_synthesis(
                 }),
                 agent_name="operations-copilot",
                 agent_version="5",
+                model="reported-model",
+                usage={"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
             )
 
     coordinator = Coordinator()
@@ -116,6 +118,12 @@ def test_network_page_retained_evidence_is_sent_to_executive_synthesis(
         and "Create a private endpoint" in finding["summary"]
         for finding in coordinator.context["findings"]
     )
+    assert _executive_synthesis_payload(synthesis)["provider_usage"] == {
+        "agent_name": "operations-copilot",
+        "agent_version": "5",
+        "model": "reported-model",
+        "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+    }
     if invalid_next_check:
         assert synthesis.status == "degraded"
         assert synthesis.mode == "deterministic"

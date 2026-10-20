@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -151,6 +153,151 @@ def test_list_containment_returns_strict_parent_chain() -> None:
     assert by_id[rg_id]["parent_id"] == subscription_id
 
 
+def test_paas_detail_uses_public_projection_but_preserves_internal_payload(tmp_path: Path) -> None:
+    service = _service()
+    scope = Scope.from_mapping({"subscription": ["sub-a"]})
+    context = ApiContext(
+        authenticator=StaticTokenAuthenticator(
+            {TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        onboarding=SubscriptionOnboardingService(tmp_path / "onboarding"),
+        inventory_provider=lambda: service,
+    )
+    group = service.paas_collection(scope)["data"]["groups"][0]
+    internal = service.paas_detail(group["key"], scope)
+    assert internal is not None
+    assert internal["data"]["resources"][0]["properties"] == {"secret": "internal"}
+    response = TestClient(create_app(context), raise_server_exceptions=False).get(
+        f"/api/v1/inventory/paas/{group['key']}",
+        params={"subscription": "sub-a"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    rows = payload["data"]["resources"]
+    assert len(rows) == 1
+    assert not ({"properties", "tags", "tenant_id", "provider_payload_json"} & rows[0].keys())
+    assert "internal" not in response.text
+    assert rows[0]["resource_id"] == internal["data"]["resources"][0]["resource_id"]
+    assert payload["data"]["generation_id"] == service.generation_id
+    assert payload["scope"] == scope.to_dict()
+    assert payload["pagination"]["total"] == internal["total"]
+    assert InventoryReadPort(service).get_resource(
+        scope, rows[0]["resource_id"],
+    )["properties"] == {"secret": "internal"}
+
+
+def test_inventory_tools_and_group_executor_share_http_public_projection(tmp_path: Path) -> None:
+    from api.routers.copilot import CanonicalInventorySelector, _inventory_executor
+    from operations.orchestration_contract import OrchestrationResult, SnapshotCoverage
+    from operations.tools import call_tool
+
+    service = _service()
+    foreign_ids = [
+        f"/subscriptions/sub-b/resourceGroups/foreign/providers/Microsoft.Network/virtualNetworks/vnet/subnets/subnet-{i}"
+        for i in range(2)
+    ]
+    nested_properties = {
+        "backendAddressPools": [{
+            "properties": {"loadBalancerBackendAddresses": [
+                {"properties": {"subnet": {"id": resource_id}}}
+                for resource_id in foreign_ids
+            ]},
+        }],
+    }
+    observation = service.snapshot.resource_observations[0]
+    service = InventoryService(replace(
+        service.snapshot,
+        resource_observations=(replace(
+            observation,
+            resource_type="microsoft.network/loadbalancers",
+            provider_payload=nested_properties,
+            tags={"private": "raw"},
+        ), replace(
+            observation,
+            resource_id=foreign_ids[0],
+            subscription_id="sub-b",
+            provider_payload={},
+        )),
+    ))
+    scope = Scope.from_mapping({"subscription": ["sub-a"]})
+    port = InventoryReadPort(service)
+    context = SimpleNamespace(
+        provider_runtime=None,
+        resolve_provider=lambda name: port if name == "inventory_read_port" else service,
+    )
+    internal = port.list_resources(scope, family="paas")["resources"]
+    assert internal[0]["properties"] == nested_properties
+    assert all(port.get_resource(scope, resource_id) is None for resource_id in foreign_ids)
+    api_context = ApiContext(
+        authenticator=StaticTokenAuthenticator(
+            {TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        onboarding=SubscriptionOnboardingService(tmp_path / "onboarding"),
+        inventory_provider=lambda: service,
+    )
+    response = TestClient(create_app(api_context), raise_server_exceptions=False).get(
+        "/api/v1/inventory/resources",
+        params={"subscription": "sub-a", "family": "paas"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert response.status_code == 200
+    expected = response.json()["data"]["resources"]
+    assert len(expected) == 1
+    tool = call_tool(
+        "inventory_resources", {"family": "paas"}, context=context, scope=scope,
+    )
+    assert tool.status == "ok"
+    assert tool.data["resources"] == expected
+    assert tool.data["total"] == 1
+    group = service.paas_collection(scope)["data"]["groups"][0]
+    selector = CanonicalInventorySelector(family="paas", resource_selector=f"group:{group['key']}")
+    grouped = _inventory_executor(selector)(
+        "inventory_resources", {}, context=context, scope=scope,
+    )
+    assert grouped.status == "ok"
+    assert grouped.data["resources"] == expected
+    assert grouped.data["total"] == 1
+    for data in (tool.data, grouped.data):
+        assert "properties" not in data["resources"][0]
+        assert "tags" not in data["resources"][0]
+        assert all(resource_id not in str(data) for resource_id in foreign_ids)
+    assert all(row["subscription_id"] == "sub-a" for row in internal)
+    assert port.list_resources(scope, family="paas")["resources"][0]["properties"] == nested_properties
+    assert port.list_resources(scope, family="paas")["resources"][0]["tags"] == {"private": "raw"}
+    usage = {
+        "agent_name": "operations-copilot",
+        "agent_version": "5",
+        "model": "reported-model",
+        "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+    }
+    public_answer = OrchestrationResult(
+        status="ok",
+        policy_status="accepted",
+        selected_specialists=["inventory-data-health"],
+        selected_tools=["inventory_resources"],
+        tool_results=[{
+            "tool": "inventory_resources",
+            "status": grouped.status,
+            "data": grouped.data,
+        }],
+        coverage=SnapshotCoverage(visible_count=1, total_count=1, complete=True),
+        thread_id=f"thr-{'a' * 32}",
+        thread_revision=1,
+        synthesis={"provider_usage": usage},
+    ).model_dump(mode="json")
+    assert public_answer["synthesis"]["provider_usage"] == usage
+    answer_resources = public_answer["tool_results"][0]["data"]["resources"]
+    assert answer_resources == expected
+    assert all(resource_id not in str(public_answer) for resource_id in foreign_ids)
+    assert "properties" not in answer_resources[0]
+    assert "tags" not in answer_resources[0]
+
+
 def test_list_containment_requires_scope() -> None:
     port = InventoryReadPort(_service())
     try:
@@ -159,6 +306,30 @@ def test_list_containment_requires_scope() -> None:
         pass
     else:
         raise AssertionError("list_containment(None) should raise TypeError")
+
+
+def test_public_legacy_answer_projection_preserves_reported_provider_usage() -> None:
+    from api.routers.multi_agent import _project_deterministic_activation
+
+    usage = {
+        "agent_name": "operations-copilot",
+        "agent_version": "5",
+        "model": "reported-model",
+        "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+    }
+    ledger = {
+        "selected_agents": [],
+        "agent_runs": [],
+        "synthesis": {"provider_usage": usage},
+        "evaluation": {"provider_usage": usage},
+    }
+
+    projected = _project_deterministic_activation(ledger, context=SimpleNamespace())
+
+    assert projected["synthesis"]["provider_usage"] == usage
+    assert projected["evaluation"]["provider_usage"] == usage
+    assert ledger["synthesis"]["provider_usage"] == usage
+    assert ledger["evaluation"]["provider_usage"] == usage
 
 
 def test_get_resource_includes_containment_sub_object() -> None:

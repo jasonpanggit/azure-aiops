@@ -157,14 +157,20 @@ def _lakehouse_delta_rows(table_name: str) -> list[dict[str, Any]]:
     ).read(onelake.table_uri(layer, logical_name))
 
 
-def _connection_rows(context: Context) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
-    rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+def _connection_details(context: Context, scope: Scope) -> list[dict[str, Any]]:
+    """Select visible registry details without opening any connection dataset."""
+    details = []
     for summary in context.onboarding.list(include_disabled=False):
         detail = context.onboarding.detail(str(summary.get("connection_id") or ""))
-        dataset_root = str(detail.get("dataset_root") or "")
-        if not dataset_root:
-            continue
-        status_rows = DatasetStore(dataset_root).read_dataset("metadata_source_status")
+        if _connection_visible(scope, detail) and str(detail.get("dataset_root") or ""):
+            details.append(detail)
+    return details
+
+
+def _connection_rows(context: Context, scope: Scope) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    for detail in _connection_details(context, scope):
+        status_rows = DatasetStore(str(detail["dataset_root"])).read_dataset("metadata_source_status")
         normalized = []
         for row in status_rows:
             current = dict(row)
@@ -178,9 +184,9 @@ def _connection_rows(context: Context) -> list[tuple[dict[str, Any], list[dict[s
     return rows
 
 
-def _metadata_source_status_rows(context: Context) -> list[dict[str, Any]]:
+def _metadata_source_status_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for _detail, status_rows in _connection_rows(context):
+    for _detail, status_rows in _connection_rows(context, scope):
         rows.extend(status_rows)
     if not rows:
         rows.extend(_lakehouse_delta_rows("metadata_source_status"))
@@ -214,9 +220,9 @@ def _manifest_subscription_id(scope: Scope, row: dict[str, Any]) -> str:
     return subscription
 
 
-def _metadata_publication_manifest_rows(context: Context) -> list[dict[str, Any]]:
+def _metadata_publication_manifest_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
     latest_by_projection: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for detail, _status_rows in _connection_rows(context):
+    for detail in _connection_details(context, scope):
         dataset_root = str(detail.get("dataset_root") or "")
         if not dataset_root:
             continue
@@ -280,9 +286,7 @@ def _connection_visible(scope: Scope, detail: dict[str, Any]) -> bool:
 
 def _metadata_quality_report_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for detail, _status_rows in _connection_rows(context):
-        if not _connection_visible(scope, detail):
-            continue
+    for detail in _connection_details(context, scope):
         dataset_root = str(detail.get("dataset_root") or "")
         if not dataset_root:
             continue
@@ -334,7 +338,7 @@ def _int_value(value: Any) -> int:
 
 
 def _publication_attempt_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
-    if not any(_connection_visible(scope, detail) for detail, _rows in _connection_rows(context)):
+    if not _connection_details(context, scope):
         return []
     coordinator = getattr(context.onboarding, "sync_coordinator", None)
     store = getattr(coordinator, "publication_state_store", None)
@@ -425,7 +429,7 @@ def _semantic_readiness(context: Context, scope: Scope) -> dict[str, str]:
 
 
 def _scoped_source_rows(context: Context, scope: Scope) -> list[dict[str, Any]]:
-    return [row for row in _metadata_source_status_rows(context) if _row_visible(scope, row)]
+    return [row for row in _metadata_source_status_rows(context, scope) if _row_visible(scope, row)]
 
 
 def _recorded_dataset_evidence(
@@ -584,7 +588,7 @@ def medallion_dataset_contract(table_name: str, context: Context, scope: ReadSco
 def medallion_manifest(context: Context, scope: ReadScope) -> dict[str, Any]:
     rows = [
         row
-        for row in _metadata_publication_manifest_rows(context)
+        for row in _metadata_publication_manifest_rows(context, scope)
         if _manifest_row_visible(scope, row)
     ]
     entries = [

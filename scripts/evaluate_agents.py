@@ -347,6 +347,7 @@ class Result:
     citation_reference_integrity_ok: bool | None = None
     mutation_denied: bool | None = None
     spend_usd: float | None = None
+    provider_usage: dict[str, Any] | None = None
     scope_ok: bool | None = None
     unknown_id_denied: bool | None = None
     disposition_ok: bool | None = None
@@ -381,6 +382,7 @@ class Result:
             "citation_reference_integrity_ok": self.citation_reference_integrity_ok,
             "mutation_denied": self.mutation_denied,
             "spend_usd": self.spend_usd,
+            "provider_usage": self.provider_usage,
             "scope_ok": self.scope_ok,
             "unknown_id_denied": self.unknown_id_denied,
             "disposition_ok": self.disposition_ok,
@@ -434,7 +436,7 @@ def _canonical_evaluation_body(
         if provider_state in {"stale", "partial", "unavailable"}
         else "fresh"
     )
-    return {
+    body = {
         "contract_version": "1",
         "question": case.question,
         "requested_scope": requested_scope,
@@ -461,6 +463,18 @@ def _canonical_evaluation_body(
             "material_claims": [],
         },
     }
+    captured = getattr(case, "diagnostic_snapshot", None)
+    if captured is not None:
+        from operations.orchestration_contract import EvidenceSnapshotV2
+
+        try:
+            snapshot = EvidenceSnapshotV2.model_validate(captured)
+        except (TypeError, ValueError) as exc:
+            raise EvaluationConfigurationError("invalid diagnostic snapshot") from exc
+        if snapshot.page_kind != case.page_kind:
+            raise EvaluationConfigurationError("diagnostic snapshot page kind differs from case")
+        body["snapshot"] = snapshot.model_dump(mode="json")
+    return body
 
 
 def _send_evaluation_request(
@@ -1318,7 +1332,21 @@ def _run_case(
         for claim in synthesis_claims
         if str(claim.get("summary") or "").strip()
     )
-    narration = str(synthesis.get("narration") or canonical_narration)
+    compatibility_answer = synthesis.get("compatibility_answer")
+    compatibility_text = (
+        compatibility_answer.get("text")
+        if isinstance(compatibility_answer, dict)
+        else ""
+    )
+    from operations.foundry_agent import provider_usage_receipt
+
+    observed_usage = synthesis.get("provider_usage") or evaluation.get("provider_usage")
+    if observed_usage is None and isinstance(compatibility_answer, dict):
+        observed_usage = compatibility_answer
+    measured_usage = provider_usage_receipt(observed_usage)
+    narration = str(
+        synthesis.get("narration") or canonical_narration or compatibility_text or ""
+    )
     stop_reason = str(data.get("stop_reason") or "")
     # A wall-clock timeout drops specialists that would otherwise have run, so
     # reporting it as a routing miss blames the router for a budget problem.
@@ -1394,12 +1422,13 @@ def _run_case(
     groundedness = claim_support.score
     deterministic_spend = (
         0.0
-        if synthesis.get("status") in {"deterministic", "skipped"}
+        if measured_usage is None and synthesis.get("status") in {"deterministic", "skipped"}
         else None
     )
     legacy_cost = evaluation.get("cost")
     if (
         deterministic_spend is None
+        and measured_usage is None
         and isinstance(legacy_cost, dict)
         and legacy_cost.get("llm_calls") == 0
     ):
@@ -1441,6 +1470,7 @@ def _run_case(
                 else deterministic_spend
             )
         ),
+        provider_usage=measured_usage,
         scope_ok=(
             evaluation.get("scope_ok")
             if evaluation.get("scope_ok") is not None
@@ -1542,7 +1572,7 @@ def _load_summary(path: Path) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class EvalCase:
-    """One reviewed evaluation case loaded from the versioned corpus."""
+    """Reviewed case, optionally bound to an observed page for diagnostic replay."""
 
     case_id: str
     category: str
@@ -1557,6 +1587,7 @@ class EvalCase:
     continuity_group: str | None = None
     continuity_turn: int | None = None
     note: str = ""
+    diagnostic_snapshot: dict[str, Any] | None = None
 
     def expected_for(self, runtime: str, strategy: str) -> frozenset[str]:
         """Return the reviewed specialist set for every deployed runtime."""
@@ -2209,6 +2240,8 @@ def build_release_artifact(
     validation_evidence: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
     """Build the immutable fail-closed release decision artifact."""
+    if any(case.diagnostic_snapshot is not None for case in cases):
+        raise ValueError("diagnostic page bindings cannot produce a release artifact")
     validation_evidence = validation_evidence or {}
     controlled_results = [
         {field: result.get(field) for field in _CONTROLLED_CASE_FIELDS}

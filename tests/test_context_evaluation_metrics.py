@@ -68,6 +68,65 @@ def test_contextual_evaluation_reports_tool_correctness(tmp_path) -> None:
         assert 0.0 <= evaluation["tool_correctness"] <= 1.0
 
 
+def test_context_ledger_retains_provider_usage_without_currency_inference(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from operations.foundry_agent import AgentAnswer
+
+    answer = AgentAnswer(
+        text="Observed narration", agent_name="network-agent",
+        agent_version="1", model="reported-model",
+        usage={"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+    )
+    monkeypatch.setattr(
+        "operations.autonomous_investigation._resolve_context_narrator",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(answer=lambda **_kwargs: answer), "network",
+        ),
+    )
+
+    ledger = _run(tmp_path)
+
+    assert ledger["synthesis"]["mode"] == "foundry"
+    assert ledger["evaluation"]["provider_usage"] == {
+        "agent_name": "network-agent", "agent_version": "1", "model": "reported-model",
+        "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+    }
+    assert ledger["evaluation"].get("spend_usd") is None
+    assert ledger["evaluation"].get("estimated_cost_usd") is None
+
+
+def test_autonomous_evaluation_keeps_narrator_usage_separate_from_call_counts():
+    import time
+    from types import SimpleNamespace
+
+    from operations.autonomous_investigation import _evaluate, _synthesis
+    from operations.foundry_agent import AgentAnswer
+
+    answer = AgentAnswer(
+        text="Observed narration", agent_name="operations-copilot",
+        usage={"input_tokens": 12, "output_tokens": 3},
+    )
+    reconciliation = {
+        "reconciled_confidence": "unknown", "missing_providers": [],
+        "conflicts": [], "evidence_count": 0, "unsupported_conclusions": [],
+    }
+    synthesis = _synthesis(
+        "Review evidence", [], reconciliation,
+        foundry_agent=SimpleNamespace(answer=lambda **_kwargs: answer),
+    )
+    evaluation = _evaluate(
+        time.monotonic(), [], reconciliation, Scope(),
+        synthesis["llm_calls"], synthesis["provider_usage"],
+    )
+
+    assert evaluation["provider_usage"]["usage"] == {
+        "input_tokens": 12, "output_tokens": 3,
+    }
+    assert evaluation["cost"] == {"tool_calls": 0, "agent_runs": 0, "llm_calls": 1}
+    assert evaluation.get("spend_usd") is None
+
+
 def test_groundedness_is_scored_over_specialist_findings(tmp_path) -> None:
     """The score must reflect what the specialists found, not what was posted.
 
