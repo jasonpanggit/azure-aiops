@@ -442,9 +442,21 @@ function ConnectionsPageContent() {
     }
   }
 
+  const copilotConnection = hasRequestedConnection
+    ? activeConnections.find(connection => connection.connection_id === requestedConnectionId)
+    : tab === "ontology-automation"
+      ? activeConnections.find(connection => connection.connection_id === selectedOntologyConnectionId)
+      : tab === "fabric-medallion"
+        ? activeConnections.find(connection => connection.subscription_id === selectedSubscriptionId)
+        : readinessConnection;
+  const copilotScope = copilotConnection ? {
+    ...scope,
+    subscription: [copilotConnection.subscription_id],
+    subscription_connection: [copilotConnection.connection_id],
+  } : scope;
   const connectionsCopilot = buildConnectionsCopilotContext({
-    scope,
-    connections: rows.map((connection) => ({
+    scope: copilotScope,
+    connections: (copilotConnection ? [copilotConnection] : []).map((connection) => ({
       connection_id: connection.connection_id,
       name: connection.name,
       subscription_id: connection.subscription_id,
@@ -457,12 +469,12 @@ function ConnectionsPageContent() {
       last_successful_sync_at: connection.last_successful_sync_at,
       is_active: connection.is_active,
     })),
-    loadedCount: rows.length,
-    totalCount: connections.data?.pagination?.total ?? rows.length,
+    loadedCount: copilotConnection ? 1 : 0,
+    totalCount: copilotConnection ? 1 : 0,
     available: !connections.error && Boolean(connections.data),
     freshness: connections.error || !connections.data ? "unavailable" : "fresh",
-    selectedConnectionId:
-      rows.find((connection) => connection.subscription_id === selectedSubscriptionId)?.connection_id ?? null,
+    selectedConnectionId: copilotConnection?.connection_id ?? null,
+    filters: { view: [tab] },
     evidence: connections.data?.evidence ?? [],
   });
 
@@ -486,10 +498,10 @@ function ConnectionsPageContent() {
         }
         actions={
           <div className="page-header-actions-group">
-            <CopilotDrawerButton
+            {copilotConnection ? <CopilotDrawerButton
               onClick={() => setCopilotOpen(true)}
               label="Ask Copilot about data health"
-            />
+            /> : null}
             {tab === "subscriptions" && (
               <button
                 type="button"
@@ -507,13 +519,13 @@ function ConnectionsPageContent() {
               <select 
                 name="subscriptionId"
                 className="form-control"
-                value={selectedSubscriptionId}
-                onChange={(event) => continueWorkflow(tab, activeConnections.find(connection => connection.subscription_id === event.target.value)?.connection_id ?? "")}
-                disabled={rows.length === 0}
+                value={copilotConnection?.connection_id ?? ""}
+                onChange={(event) => continueWorkflow(tab, event.target.value)}
+                disabled={activeConnections.length === 0}
               >
                 <option value="">Select a subscription</option>
-                {rows.map((conn) => (
-                  <option key={conn.subscription_id} value={conn.subscription_id}>
+                {activeConnections.map((conn) => (
+                  <option key={conn.connection_id} value={conn.connection_id}>
                     {conn.name} ({conn.subscription_id})
                   </option>
                 ))}
@@ -567,13 +579,17 @@ function ConnectionsPageContent() {
         }
       />
 
-      <CopilotInsights
+      {copilotConnection ? <CopilotInsights
         snapshot={connectionsCopilot.snapshot}
         ready={!connections.loading}
         requestedScope={connectionsCopilot.requestedScope}
         contextLabel="Data & integrations"
         onOpenCopilot={() => setCopilotOpen(true)}
-      />
+      /> : <StatePanel
+        title="Select a connection for Copilot insights"
+        message="Choose an available connection above. Copilot will use the same connection scope as the readiness journey."
+        tone={connections.loading ? "loading" : "empty"}
+      />}
 
       <div role="tablist" aria-label="Data & integrations views" className="tab-list">
         <button
@@ -808,7 +824,7 @@ function ConnectionsPageContent() {
       ))}
 
       <CopilotDrawer
-        open={copilotOpen}
+        open={copilotOpen && Boolean(copilotConnection)}
         onClose={() => setCopilotOpen(false)}
         contextLabel="Data & integrations"
         requestedScope={connectionsCopilot.requestedScope}

@@ -160,6 +160,20 @@ Sync state per connection tracks `status`, `last_synced_at`,
 `attempts`. A failed sync never overwrites `last_successful_sync_at`, so
 freshness stays accurate through outages. Disabled connections refuse to sync.
 
+### Container Insights tenant provenance
+
+New workload observations, deployment projections and source checkpoints bind
+their tenant to the connector's authenticated `tenant_id` configuration, not to
+arbitrary labels in Logs rows. A conflicting explicit Defender tenant stops
+projection rather than relabelling its evidence.
+
+Tenant-qualified acquisition failures may carry only same-tenant LKG rows.
+Legacy `system`-tenant or other-tenant rows are never promoted into the
+configured tenant by a failed query. Existing immutable generations remain
+unchanged; fresh successful source acquisition is required to produce new
+tenant-bound checkpoints. Missing workspace discovery does not reattribute
+older checkpoints or establish current coverage.
+
 ### Health
 
 ```bash

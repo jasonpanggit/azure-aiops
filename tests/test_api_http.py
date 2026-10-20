@@ -38,6 +38,39 @@ TENANT = "33333333-3333-3333-3333-333333333333"
 CLIENT = "44444444-4444-4444-4444-444444444444"
 
 
+def _fabric_delta_api_client(tmp_path, monkeypatch):
+    config_path = tmp_path / "fabric.config.yaml"
+    lakehouse_root = tmp_path / "onelake"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    config_path.write_text(
+        "\n".join(
+            [
+                "fabric:",
+                f"  source_data_root: {source_root}",
+                "  workspace_id: workspace-a",
+                "  lakehouse_id: lakehouse-a",
+                f"  local_onelake_root: {lakehouse_root}",
+                "",
+            ]
+        )
+    )
+    monkeypatch.setenv("AIOPS_FABRIC_CONFIG", str(config_path))
+    context = ApiContext(
+        onboarding=SubscriptionOnboardingService(tmp_path / "aiops"),
+        authenticator=StaticTokenAuthenticator(_principals()),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+    )
+    return TestClient(
+        create_app(context), raise_server_exceptions=False
+    ), OneLakeWriter(
+        "workspace-a",
+        "lakehouse-a",
+        local_root=lakehouse_root,
+    )
+
+
 class FakeSecretWriter:
     def __init__(self) -> None:
         self.stored: list[tuple[str, str]] = []
@@ -50,7 +83,9 @@ class FakeSecretWriter:
 def _principals() -> dict[str, Principal]:
     return {
         ADMIN_TOKEN: Principal(subject="admin@example.com", grants=(Grant("admin"),)),
-        READER_TOKEN: Principal(subject="reader@example.com", grants=(Grant("reader"),)),
+        READER_TOKEN: Principal(
+            subject="reader@example.com", grants=(Grant("reader"),)
+        ),
         OPERATOR_TOKEN: Principal(
             subject="operator@example.com", grants=(Grant("operator"),)
         ),
@@ -64,9 +99,7 @@ def _principals() -> dict[str, Principal]:
         ),
         SCOPED_OPERATOR_TOKEN: Principal(
             subject="scoped-operator@example.com",
-            grants=(
-                Grant("operator", Scope.from_mapping({"subscription": [SUB_A]})),
-            ),
+            grants=(Grant("operator", Scope.from_mapping({"subscription": [SUB_A]})),),
         ),
         SERVICE_ADMIN_TOKEN: Principal(
             subject="service-admin@example.com",
@@ -159,7 +192,8 @@ class TestAuthentication:
 
     def test_bad_token_is_401(self, client):
         response = client.get(
-            "/api/v1/subscription-connections", headers=_auth("wrong-token-aaaaaaaaaaaa")
+            "/api/v1/subscription-connections",
+            headers=_auth("wrong-token-aaaaaaaaaaaa"),
         )
         assert response.status_code == 401
 
@@ -245,7 +279,9 @@ class TestAuthorization:
 
         assert response.status_code == 404
 
-    def test_scoped_admin_cannot_remap_connection_outside_business_service(self, client):
+    def test_scoped_admin_cannot_remap_connection_outside_business_service(
+        self, client
+    ):
         _create(client, "conn-a", SUB_A)
         client.put(
             "/api/v1/subscription-connections/conn-a/metadata",
@@ -285,9 +321,11 @@ class TestAuthorization:
     ):
         observed = datetime.now(UTC)
         observed_at = observed.isoformat()
-        lexically_later_but_older = (observed - timedelta(hours=2)).astimezone(
-            timezone(timedelta(hours=14))
-        ).isoformat()
+        lexically_later_but_older = (
+            (observed - timedelta(hours=2))
+            .astimezone(timezone(timedelta(hours=14)))
+            .isoformat()
+        )
         assert lexically_later_but_older > observed_at
         monkeypatch.setattr(
             onboarding,
@@ -306,7 +344,7 @@ class TestAuthorization:
                     "subscription_id": SUB_B,
                     "last_synced_at": lexically_later_but_older,
                     "last_successful_sync_at": lexically_later_but_older,
-                }
+                },
             ],
         )
 
@@ -330,9 +368,10 @@ class TestAuthorization:
     def test_error_carries_a_correlation_id(self, client):
         response = client.get("/api/v1/subscription-connections")
         assert response.status_code == 401
-        assert response.json()["error"]["details"]["correlation_id"] == response.headers[
-            "x-correlation-id"
-        ]
+        assert (
+            response.json()["error"]["details"]["correlation_id"]
+            == response.headers["x-correlation-id"]
+        )
 
     def test_scoped_reader_gets_404_on_out_of_scope_detail(self, client):
         _create(client, "conn-b", SUB_B)
@@ -428,7 +467,8 @@ class TestConnectionsCrud:
     def test_disable_and_enable(self, client):
         _create(client, "conn-a", SUB_A)
         disabled = client.post(
-            "/api/v1/subscription-connections/conn-a/disable", headers=_auth(ADMIN_TOKEN)
+            "/api/v1/subscription-connections/conn-a/disable",
+            headers=_auth(ADMIN_TOKEN),
         )
         assert disabled.status_code == 200
         assert disabled.json()["data"]["is_active"] is False
@@ -468,7 +508,9 @@ class TestConnectionsCrud:
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "invalid_request"
 
-    def test_create_accepts_client_secret_and_persists_key_vault_reference(self, client):
+    def test_create_accepts_client_secret_and_persists_key_vault_reference(
+        self, client
+    ):
         response = client.post(
             "/api/v1/subscription-connections",
             json={
@@ -568,7 +610,9 @@ class TestFabricMedallionRouterTask1:
         )
         app = create_app(context)
 
-        now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        now = (
+            datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
         source_rows = [
             {
                 "source_family": "bronze_resources",
@@ -700,17 +744,26 @@ class TestFabricMedallionRouterTask1:
             "error": "sensitive provider response must not enter receipt",
             "lineage_ref": "opaque-partition-reference",
         }
-        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _context, _scope: [
-            row,
-            {
-                **row, "partition_key": "partition-b", "effective_generation": "other-retained",
-                "last_success_at": (now - timedelta(hours=2)).isoformat(),
-            },
-            {
-                **row, "subscription_id": SUB_B, "subscription_connection": "conn-hidden",
-                "partition_key": "hidden", "effective_generation": "hidden-generation",
-            },
-        ])
+        monkeypatch.setattr(
+            routes,
+            "_metadata_source_status_rows",
+            lambda _context, _scope: [
+                row,
+                {
+                    **row,
+                    "partition_key": "partition-b",
+                    "effective_generation": "other-retained",
+                    "last_success_at": (now - timedelta(hours=2)).isoformat(),
+                },
+                {
+                    **row,
+                    "subscription_id": SUB_B,
+                    "subscription_connection": "conn-hidden",
+                    "partition_key": "hidden",
+                    "effective_generation": "hidden-generation",
+                },
+            ],
+        )
         response = fabric_medallion_client.get(
             f"/api/v1/fabric-medallion/datasets/bronze_resources?subscription={SUB_A}",
             headers=_auth(SCOPED_TOKEN),
@@ -733,12 +786,16 @@ class TestFabricMedallionRouterTask1:
             "recorded_status": "partial",
             "provider_status": "failed",
             "last_attempt": {
-                "status": "partial", "generation_id": "attempt-new",
-                "attempted_at": attempted, "reason_code": "provider_timeout",
+                "status": "partial",
+                "generation_id": "attempt-new",
+                "attempted_at": attempted,
+                "reason_code": "provider_timeout",
             },
             "last_good": {
-                "status": "recorded", "generation_id": "retained-old",
-                "observed_at": previous, "reason_code": "source_last_good_recorded",
+                "status": "recorded",
+                "generation_id": "retained-old",
+                "observed_at": previous,
+                "reason_code": "source_last_good_recorded",
             },
             "lineage_ref": "opaque-partition-reference",
         }
@@ -752,17 +809,23 @@ class TestFabricMedallionRouterTask1:
         self, fabric_medallion_client
     ):
         response = fabric_medallion_client.get(
-            "/api/v1/fabric-medallion/datasets/bronze_resources", headers=_auth(ADMIN_TOKEN)
+            "/api/v1/fabric-medallion/datasets/bronze_resources",
+            headers=_auth(ADMIN_TOKEN),
         )
         assert response.status_code == 200
         source = response.json()["data"]["recorded_evidence"]["sources"][0]
         assert source["partition_key"] is None
         assert source["last_attempt"] == {
-            "status": "succeeded", "generation_id": None, "attempted_at": None, "reason_code": None,
+            "status": "succeeded",
+            "generation_id": None,
+            "attempted_at": None,
+            "reason_code": None,
         }
         assert source["last_good"] == {
-            "status": "unknown", "generation_id": None,
-            "observed_at": None, "reason_code": "no_recorded_source_last_good",
+            "status": "unknown",
+            "generation_id": None,
+            "observed_at": None,
+            "reason_code": "no_recorded_source_last_good",
         }
 
     @pytest.mark.parametrize("include_unorderable", [False, True])
@@ -772,24 +835,36 @@ class TestFabricMedallionRouterTask1:
         from api.routers import fabric_medallion as routes
 
         row = {
-            "source_family": "bronze_resources", "subscription_id": SUB_A,
-            "subscription_connection": "conn-a", "partition_key": "partition-a",
-            "status": "succeeded", "ingested_at": "2026-10-19T12:00:00+00:00",
-            "attempted_generation": "obsolete", "effective_generation": "retained",
+            "source_family": "bronze_resources",
+            "subscription_id": SUB_A,
+            "subscription_connection": "conn-a",
+            "partition_key": "partition-a",
+            "status": "succeeded",
+            "ingested_at": "2026-10-19T12:00:00+00:00",
+            "attempted_generation": "obsolete",
+            "effective_generation": "retained",
             "last_success_at": "2026-10-19T12:00:00+00:00",
         }
         newer = {
-            **row, "status": "failed", "ingested_at": "2026-10-19T08:30:00-04:00",
+            **row,
+            "status": "failed",
+            "ingested_at": "2026-10-19T08:30:00-04:00",
             "attempted_generation": "latest",
         }
         unknown_clock = {
-            **row, "status": "failed", "ingested_at": "invalid-clock",
-            "attempted_generation": "unorderable", "effective_generation": "",
+            **row,
+            "status": "failed",
+            "ingested_at": "invalid-clock",
+            "attempted_generation": "unorderable",
+            "effective_generation": "",
         }
         rows = [newer, row] + ([unknown_clock] if include_unorderable else [])
-        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _context, _scope: rows)
+        monkeypatch.setattr(
+            routes, "_metadata_source_status_rows", lambda _context, _scope: rows
+        )
         response = fabric_medallion_client.get(
-            "/api/v1/fabric-medallion/datasets/bronze_resources", headers=_auth(ADMIN_TOKEN)
+            "/api/v1/fabric-medallion/datasets/bronze_resources",
+            headers=_auth(ADMIN_TOKEN),
         )
         assert response.status_code == 200
         data = response.json()["data"]
@@ -802,7 +877,9 @@ class TestFabricMedallionRouterTask1:
         assert sources[0]["last_good"]["status"] == (
             "unknown" if include_unorderable else "recorded"
         )
-        assert sources[0]["freshness"] == data["freshness_budget"]["sources"][0]["state"]
+        assert (
+            sources[0]["freshness"] == data["freshness_budget"]["sources"][0]["state"]
+        )
         if include_unorderable:
             assert sources[0]["freshness"] == data["freshness"] == "unknown"
 
@@ -929,7 +1006,9 @@ class TestFabricMedallionRouterTask1:
             }
         ]
 
-    def test_fabric_medallion_routes_enforce_auth_and_scope(self, fabric_medallion_client):
+    def test_fabric_medallion_routes_enforce_auth_and_scope(
+        self, fabric_medallion_client
+    ):
         unauthenticated = fabric_medallion_client.get("/api/v1/fabric-medallion/layers")
         assert unauthenticated.status_code == 401
 
@@ -949,17 +1028,41 @@ class TestFabricMedallionRouterTask1:
         self, fabric_medallion_client, monkeypatch
     ):
         from api.routers import fabric_medallion as routes
+
         now = datetime.now(UTC)
         base = {
-            "source_family": "bronze_resources", "status": "succeeded", "quality": "complete",
-            "row_count": 5, "subscription_id": SUB_A,
-            "requested_scope": {"subscription": [SUB_B], "subscription_connection": ["obsolete"]},
+            "source_family": "bronze_resources",
+            "status": "succeeded",
+            "quality": "complete",
+            "row_count": 5,
+            "subscription_id": SUB_A,
+            "requested_scope": {
+                "subscription": [SUB_B],
+                "subscription_connection": ["obsolete"],
+            },
         }
-        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _, _scope: [
-            {**base, "subscription_connection": "one", "ingested_at": (now - timedelta(days=2)).isoformat()},
-            {**base, "subscription_connection": "two", "ingested_at": now.isoformat()},
-            {**base, "subscription_id": SUB_B, "subscription_connection": "hidden", "ingested_at": now.isoformat()},
-        ])
+        monkeypatch.setattr(
+            routes,
+            "_metadata_source_status_rows",
+            lambda _, _scope: [
+                {
+                    **base,
+                    "subscription_connection": "one",
+                    "ingested_at": (now - timedelta(days=2)).isoformat(),
+                },
+                {
+                    **base,
+                    "subscription_connection": "two",
+                    "ingested_at": now.isoformat(),
+                },
+                {
+                    **base,
+                    "subscription_id": SUB_B,
+                    "subscription_connection": "hidden",
+                    "ingested_at": now.isoformat(),
+                },
+            ],
+        )
         response = fabric_medallion_client.get(
             f"/api/v1/fabric-medallion/datasets/bronze_resources?subscription={SUB_A}",
             headers=_auth(SCOPED_TOKEN),
@@ -969,12 +1072,15 @@ class TestFabricMedallionRouterTask1:
         assert body["data"]["row_count"] == 10
         assert body["data"]["freshness"] == body["evidence"][0]["freshness"] == "stale"
         assert body["data"]["freshness_budget"]["source_count"] == 2
-        assert [source["scope"] for source in body["data"]["freshness_budget"]["sources"]] == [
+        assert [
+            source["scope"] for source in body["data"]["freshness_budget"]["sources"]
+        ] == [
             {"subscription": [SUB_A], "subscription_connection": ["one"]},
             {"subscription": [SUB_A], "subscription_connection": ["two"]},
         ]
         layers = fabric_medallion_client.get(
-            f"/api/v1/fabric-medallion/layers?subscription={SUB_A}", headers=_auth(SCOPED_TOKEN),
+            f"/api/v1/fabric-medallion/layers?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
         ).json()
         assert layers["data"]["layers"]["bronze"] == {"healthy": 0, "total": 1}
         assert layers["evidence"][0]["freshness"] == "stale"
@@ -983,34 +1089,57 @@ class TestFabricMedallionRouterTask1:
         self, fabric_medallion_client, monkeypatch
     ):
         from api.routers import fabric_medallion as routes
-        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _, _scope: [
-            {"source_family": "bronze_resources", "requested_scope": {"subscription": [SUB_A, SUB_B]},
-             "row_count": 42, "ingested_at": datetime.now(UTC).isoformat()},
-        ])
+
+        monkeypatch.setattr(
+            routes,
+            "_metadata_source_status_rows",
+            lambda _, _scope: [
+                {
+                    "source_family": "bronze_resources",
+                    "requested_scope": {"subscription": [SUB_A, SUB_B]},
+                    "row_count": 42,
+                    "ingested_at": datetime.now(UTC).isoformat(),
+                },
+            ],
+        )
         response = fabric_medallion_client.get(
             f"/api/v1/fabric-medallion/datasets/bronze_resources?subscription={SUB_A}",
             headers=_auth(SCOPED_TOKEN),
         )
         assert response.status_code == 404
 
-    def test_fabric_declared_contract_requires_authorization_and_registered_scope(self, fabric_medallion_client):
-        assert fabric_medallion_client.get("/api/v1/fabric-medallion/datasets/bronze_resources/contract").status_code == 401
+    def test_fabric_declared_contract_requires_authorization_and_registered_scope(
+        self, fabric_medallion_client
+    ):
+        assert (
+            fabric_medallion_client.get(
+                "/api/v1/fabric-medallion/datasets/bronze_resources/contract"
+            ).status_code
+            == 401
+        )
         hidden = fabric_medallion_client.get(
-            "/api/v1/fabric-medallion/datasets/gold_hidden/contract", headers=_auth(SCOPED_TOKEN),
+            "/api/v1/fabric-medallion/datasets/gold_hidden/contract",
+            headers=_auth(SCOPED_TOKEN),
         )
         assert hidden.status_code == 404
         forbidden = fabric_medallion_client.get(
-            f"/api/v1/fabric-medallion/datasets/bronze_resources/contract?subscription={SUB_B}", headers=_auth(SCOPED_TOKEN),
+            f"/api/v1/fabric-medallion/datasets/bronze_resources/contract?subscription={SUB_B}",
+            headers=_auth(SCOPED_TOKEN),
         )
         assert forbidden.status_code == 403
         response = fabric_medallion_client.get(
-            f"/api/v1/fabric-medallion/datasets/bronze_resources/contract?subscription={SUB_A}", headers=_auth(SCOPED_TOKEN),
+            f"/api/v1/fabric-medallion/datasets/bronze_resources/contract?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
         )
         assert response.status_code == 200
         body = response.json()
         assert body["data"]["declared_schema"]["status"] == "available"
         assert body["data"]["declared_schema"]["fields"]
-        assert body["data"]["deployed_schema_validation"] == body["data"]["dataset_dependency_graph"] == "not_collected"
+        assert (
+            body["data"]["deployed_schema_validation"]
+            == body["data"]["dataset_dependency_graph"]
+            == "not_collected"
+        )
         assert body["scope"] == {"subscription": [SUB_A]}
         assert body["evidence"][0]["source_engine"] == "fabric.schema_registry"
         assert body["evidence"][1]["source_table"] == "metadata_source_status"
@@ -1021,16 +1150,31 @@ class TestFabricMedallionRouterTask1:
         self, fabric_medallion_client, monkeypatch
     ):
         from api.routers import fabric_medallion as routes
-        monkeypatch.setattr(routes, "_metadata_source_status_rows", lambda _, _scope: [
-            {"source_family": "bronze_resources", "subscription_id": SUB_A, "subscription_connection": "one"},
-            {"source_family": "bronze_resources", "subscription_id": SUB_A, "subscription_connection": "two",
-             "ingested_at": datetime.now(UTC).isoformat()},
-        ])
+
+        monkeypatch.setattr(
+            routes,
+            "_metadata_source_status_rows",
+            lambda _, _scope: [
+                {
+                    "source_family": "bronze_resources",
+                    "subscription_id": SUB_A,
+                    "subscription_connection": "one",
+                },
+                {
+                    "source_family": "bronze_resources",
+                    "subscription_id": SUB_A,
+                    "subscription_connection": "two",
+                    "ingested_at": datetime.now(UTC).isoformat(),
+                },
+            ],
+        )
         body = fabric_medallion_client.get(
             f"/api/v1/fabric-medallion/datasets/bronze_resources?subscription={SUB_A}",
             headers=_auth(SCOPED_TOKEN),
         ).json()
-        assert body["data"]["freshness"] == body["evidence"][0]["freshness"] == "unknown"
+        assert (
+            body["data"]["freshness"] == body["evidence"][0]["freshness"] == "unknown"
+        )
         assert body["evidence"][0]["timestamp"] == ""
 
 
@@ -1062,7 +1206,9 @@ def test_fabric_medallion_reads_live_delta_metadata_when_json_snapshot_is_empty(
         local_root=lakehouse_root,
     )
     delta = DeltaWriter()
-    observed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    observed_at = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
     base = {
         "tenant_id": "tenant-a",
         "subscription_id": SUB_A,
@@ -1150,8 +1296,12 @@ def test_fabric_medallion_reads_live_delta_metadata_when_json_snapshot_is_empty(
     client = TestClient(app, raise_server_exceptions=False)
 
     layers = client.get("/api/v1/fabric-medallion/layers", headers=_auth(ADMIN_TOKEN))
-    manifest = client.get("/api/v1/fabric-medallion/manifest", headers=_auth(ADMIN_TOKEN))
-    governance = client.get("/api/v1/fabric-medallion/governance", headers=_auth(ADMIN_TOKEN))
+    manifest = client.get(
+        "/api/v1/fabric-medallion/manifest", headers=_auth(ADMIN_TOKEN)
+    )
+    governance = client.get(
+        "/api/v1/fabric-medallion/governance", headers=_auth(ADMIN_TOKEN)
+    )
 
     assert layers.status_code == 200
     assert layers.json()["data"]["layers"]["gold"] == {"healthy": 1, "total": 1}
@@ -1200,7 +1350,9 @@ def test_fabric_medallion_governance_delta_fallback_filters_scope(
         "lakehouse-a",
         local_root=lakehouse_root,
     )
-    observed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    observed_at = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
     base = {
         "tenant_id": "tenant-a",
         "timestamp": observed_at,
@@ -1273,6 +1425,472 @@ def test_fabric_medallion_governance_delta_fallback_filters_scope(
     assert [gap["table_name"] for gap in data["gaps"]] == ["silver_allowed"]
 
 
+def test_fabric_medallion_manifest_reports_qualified_empty_delta_snapshot(
+    tmp_path, monkeypatch
+):
+    from fabric.schema_registry import schema_for
+
+    client, onelake = _fabric_delta_api_client(tmp_path, monkeypatch)
+    table_uri = onelake.table_uri("metadata", "publication_manifest")
+    timestamp = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    DeltaWriter().write(
+        table_uri,
+        [
+            {
+                "tenant_id": "tenant-a",
+                "subscription_id": "system",
+                "resource_id": "manifest://initial",
+                "timestamp": timestamp,
+                "change_version": "v1",
+                "ingestion_run_id": "run-a",
+                "projection_name": "initial",
+                "disposition": "active",
+                "compatibility_version": "1",
+                "retired_reason": "",
+                "registered_at": timestamp,
+                "updated_at": timestamp,
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_publication_manifest"),
+    )
+    DeltaWriter().write(
+        table_uri,
+        [],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_publication_manifest"),
+    )
+
+    response = client.get(
+        "/api/v1/fabric-medallion/manifest",
+        headers=_auth(ADMIN_TOKEN),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["entries"] == []
+    assert data["observation"] == {
+        "state": "observed_empty",
+        "evidence_mode": "recorded_metadata",
+        "source": {
+            "engine": "ontology.publication_manifest",
+            "table": "metadata_publication_manifest",
+            "version": 1,
+        },
+        "scope": {},
+        "observed_at": data["observation"]["observed_at"],
+        "freshness": "fresh",
+        "reason_code": "manifest_table_empty_at_recorded_version",
+    }
+    assert data["observation"]["observed_at"]
+
+
+def test_fabric_medallion_manifest_missing_source_is_unobserved(tmp_path, monkeypatch):
+    client, _onelake = _fabric_delta_api_client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/api/v1/fabric-medallion/manifest",
+        headers=_auth(ADMIN_TOKEN),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["entries"] == []
+    assert data["observation"] == {
+        "state": "unobserved",
+        "evidence_mode": "not_recorded",
+        "source": {
+            "engine": "ontology.publication_manifest",
+            "table": "metadata_publication_manifest",
+            "version": None,
+        },
+        "scope": {},
+        "observed_at": None,
+        "freshness": "unknown",
+        "reason_code": "manifest_source_not_observed",
+    }
+
+
+def test_fabric_medallion_manifest_unknown_freshness_does_not_qualify_empty(
+    tmp_path, monkeypatch
+):
+    from fabric.schema_registry import schema_for
+
+    client, onelake = _fabric_delta_api_client(tmp_path, monkeypatch)
+    table_uri = onelake.table_uri("metadata", "publication_manifest")
+    timestamp = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    DeltaWriter().write(
+        table_uri,
+        [
+            {
+                "tenant_id": "tenant-a",
+                "subscription_id": "system",
+                "resource_id": "manifest://initial",
+                "timestamp": timestamp,
+                "change_version": "v1",
+                "ingestion_run_id": "run-a",
+                "projection_name": "initial",
+                "disposition": "active",
+                "compatibility_version": "1",
+                "retired_reason": "",
+                "registered_at": timestamp,
+                "updated_at": timestamp,
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_publication_manifest"),
+    )
+    DeltaWriter().write(
+        table_uri,
+        [],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_publication_manifest"),
+    )
+    monkeypatch.setattr(
+        DeltaWriter,
+        "latest_commit_timestamp",
+        lambda _self, _table_uri, *, version=None: None,
+    )
+
+    response = client.get(
+        "/api/v1/fabric-medallion/manifest",
+        headers=_auth(ADMIN_TOKEN),
+    )
+
+    assert response.status_code == 200
+    observation = response.json()["data"]["observation"]
+    assert observation["state"] == "unobserved"
+    assert observation["freshness"] == "unknown"
+    assert observation["reason_code"] == "manifest_freshness_unknown"
+
+
+def test_fabric_medallion_manifest_hidden_scope_is_unobserved(tmp_path, monkeypatch):
+    from fabric.schema_registry import schema_for
+
+    client, onelake = _fabric_delta_api_client(tmp_path, monkeypatch)
+    timestamp = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    DeltaWriter().write(
+        onelake.table_uri("metadata", "publication_manifest"),
+        [
+            {
+                "tenant_id": "tenant-a",
+                "subscription_id": SUB_B,
+                "resource_id": "manifest://sub-b",
+                "timestamp": timestamp,
+                "change_version": "v1",
+                "ingestion_run_id": "run-b",
+                "projection_name": "hidden",
+                "disposition": "active",
+                "compatibility_version": "1",
+                "retired_reason": "",
+                "registered_at": timestamp,
+                "updated_at": timestamp,
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_publication_manifest"),
+    )
+
+    response = client.get(
+        f"/api/v1/fabric-medallion/manifest?subscription={SUB_A}",
+        headers=_auth(SCOPED_TOKEN),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["entries"] == []
+    assert data["observation"]["state"] == "unobserved"
+    assert data["observation"]["scope"] == {"subscription": [SUB_A]}
+    assert data["observation"]["reason_code"] == "no_scope_visible_manifest_entry"
+
+
+def test_fabric_medallion_manifest_storage_failure_is_not_hidden(tmp_path, monkeypatch):
+    from fabric.schema_registry import schema_for
+
+    client, onelake = _fabric_delta_api_client(tmp_path, monkeypatch)
+    table_uri = onelake.table_uri("metadata", "publication_manifest")
+    DeltaWriter().write(
+        table_uri,
+        [],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_publication_manifest"),
+    )
+
+    def fail_history(_self, _table_uri, *, version=None):
+        raise OSError("delta history read failed")
+
+    monkeypatch.setattr(DeltaWriter, "latest_commit_timestamp", fail_history)
+    response = client.get(
+        "/api/v1/fabric-medallion/manifest",
+        headers=_auth(ADMIN_TOKEN),
+    )
+
+    assert response.status_code == 500
+
+
+def test_fabric_medallion_governance_empty_table_is_not_a_zero_gap_report(
+    tmp_path, monkeypatch
+):
+    from fabric.schema_registry import schema_for
+
+    client, onelake = _fabric_delta_api_client(tmp_path, monkeypatch)
+    table_uri = onelake.table_uri("metadata", "quality_reports")
+    timestamp = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    DeltaWriter().write(
+        table_uri,
+        [
+            {
+                "tenant_id": "tenant-a",
+                "subscription_id": "system",
+                "resource_id": "quality://initial",
+                "timestamp": timestamp,
+                "change_version": "v1",
+                "ingestion_run_id": "run-a",
+                "source_run_id": "run-a",
+                "passed": True,
+                "failed_records": 0,
+                "report_json": "[]",
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_quality_reports"),
+    )
+    DeltaWriter().write(
+        table_uri,
+        [],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_quality_reports"),
+    )
+
+    response = client.get(
+        "/api/v1/fabric-medallion/governance",
+        headers=_auth(ADMIN_TOKEN),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["gaps"] == []
+    assert data["observation"]["state"] == "unobserved"
+    assert data["observation"]["evidence_mode"] == "not_recorded"
+    assert data["observation"]["reason_code"] == "no_scope_qualified_quality_report"
+
+
+def test_fabric_medallion_hidden_scope_does_not_qualify_empty_results(
+    tmp_path, monkeypatch
+):
+    from fabric.schema_registry import schema_for
+
+    client, onelake = _fabric_delta_api_client(tmp_path, monkeypatch)
+    timestamp = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    DeltaWriter().write(
+        onelake.table_uri("metadata", "quality_reports"),
+        [
+            {
+                "tenant_id": "tenant-a",
+                "subscription_id": SUB_B,
+                "resource_id": "quality://sub-b",
+                "timestamp": timestamp,
+                "change_version": "v1",
+                "ingestion_run_id": "run-b",
+                "source_run_id": "run-b",
+                "passed": True,
+                "failed_records": 0,
+                "report_json": json.dumps(
+                    [
+                        {
+                            "table_name": "silver_hidden",
+                            "rule_counts": {
+                                "ownership_coverage": 0,
+                                "tag_coverage": 0,
+                                "orphan_relationships": 0,
+                            },
+                        }
+                    ]
+                ),
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_quality_reports"),
+    )
+
+    response = client.get(
+        f"/api/v1/fabric-medallion/governance?subscription={SUB_A}",
+        headers=_auth(SCOPED_TOKEN),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["gaps"] == []
+    assert data["observation"]["state"] == "unobserved"
+    assert data["observation"]["scope"] == {"subscription": [SUB_A]}
+    assert data["observation"]["reason_code"] == "no_scope_qualified_quality_report"
+
+
+def test_fabric_medallion_governance_qualifies_fresh_scoped_zero_gap_report(
+    tmp_path, monkeypatch
+):
+    from fabric.schema_registry import schema_for
+
+    client, onelake = _fabric_delta_api_client(tmp_path, monkeypatch)
+    timestamp = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    DeltaWriter().write(
+        onelake.table_uri("metadata", "quality_reports"),
+        [
+            {
+                "tenant_id": "tenant-a",
+                "subscription_id": SUB_A,
+                "resource_id": "quality://sub-a",
+                "timestamp": timestamp,
+                "change_version": "v1",
+                "ingestion_run_id": "run-a",
+                "source_run_id": "run-a",
+                "passed": True,
+                "failed_records": 0,
+                "report_json": json.dumps(
+                    [
+                        {
+                            "table_name": "silver_allowed",
+                            "rule_counts": {
+                                "ownership_coverage": 0,
+                                "tag_coverage": 0,
+                                "orphan_relationships": 0,
+                            },
+                        }
+                    ]
+                ),
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_quality_reports"),
+    )
+
+    response = client.get(
+        f"/api/v1/fabric-medallion/governance?subscription={SUB_A}",
+        headers=_auth(SCOPED_TOKEN),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["gaps"] == []
+    assert data["observation"]["state"] == "observed_empty"
+    assert data["observation"]["scope"] == {"subscription": [SUB_A]}
+    assert data["observation"]["freshness"] == "fresh"
+    assert data["observation"]["observed_at"] == timestamp
+
+
+def test_fabric_medallion_preserves_positive_counts_from_partial_report(
+    tmp_path, monkeypatch
+):
+    from fabric.schema_registry import schema_for
+
+    client, onelake = _fabric_delta_api_client(tmp_path, monkeypatch)
+    timestamp = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    DeltaWriter().write(
+        onelake.table_uri("metadata", "quality_reports"),
+        [
+            {
+                "tenant_id": "tenant-a",
+                "subscription_id": SUB_A,
+                "resource_id": "quality://partial",
+                "timestamp": timestamp,
+                "change_version": "v1",
+                "ingestion_run_id": "run-a",
+                "source_run_id": "run-a",
+                "passed": True,
+                "failed_records": 0,
+                "report_json": json.dumps(
+                    [
+                        {
+                            "table_name": "silver_partial",
+                            "rule_counts": {"ownership_coverage": 5},
+                        }
+                    ]
+                ),
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_quality_reports"),
+    )
+
+    response = client.get(
+        f"/api/v1/fabric-medallion/governance?subscription={SUB_A}",
+        headers=_auth(SCOPED_TOKEN),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ownership_gap_count"] == 5
+    assert data["gaps"] == [
+        {
+            "table_name": "silver_partial",
+            "ownership_gap_count": 5,
+            "tag_gap_count": 0,
+            "referential_integrity_blockers": 0,
+        }
+    ]
+    assert data["observation"]["state"] == "observed_nonempty"
+    assert data["observation"]["reason_code"] == "quality_report_gaps_recorded"
+
+
+@pytest.mark.parametrize("invalid_count", ["0.5", "NaN", "true", "-1"])
+def test_fabric_medallion_invalid_gap_count_does_not_qualify_empty_report(
+    tmp_path, monkeypatch, invalid_count
+):
+    from fabric.schema_registry import schema_for
+
+    client, onelake = _fabric_delta_api_client(tmp_path, monkeypatch)
+    timestamp = (
+        datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    DeltaWriter().write(
+        onelake.table_uri("metadata", "quality_reports"),
+        [
+            {
+                "tenant_id": "tenant-a",
+                "subscription_id": SUB_A,
+                "resource_id": "quality://fractional",
+                "timestamp": timestamp,
+                "change_version": "v1",
+                "ingestion_run_id": "run-a",
+                "source_run_id": "run-a",
+                "passed": True,
+                "failed_records": 0,
+                "report_json": (
+                    '[{"table_name":"silver_invalid","rule_counts":'
+                    f'{{"ownership_coverage":{invalid_count},"tag_coverage":0,'
+                    '"orphan_relationships":0}}]'
+                ),
+            }
+        ],
+        mode=DeltaWriteMode.OVERWRITE,
+        schema=schema_for("metadata_quality_reports"),
+    )
+
+    response = client.get(
+        f"/api/v1/fabric-medallion/governance?subscription={SUB_A}",
+        headers=_auth(SCOPED_TOKEN),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["gaps"] == []
+    assert data["observation"]["state"] == "unobserved"
+
+
 class TestFabricMedallionRouterTask2:
     @pytest.fixture
     def fabric_medallion_capabilities_client(self, tmp_path, monkeypatch) -> TestClient:
@@ -1286,7 +1904,9 @@ class TestFabricMedallionRouterTask2:
         )
         app = create_app(context)
 
-        now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        now = (
+            datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
         source_rows = [
             {
                 "source_family": "gold_operational_context",
@@ -1508,7 +2128,9 @@ class TestFabricMedallionRouterTask2:
             {"name": "Lakehouse.Reader", "permission_count": 0},
             {"name": "Lakehouse.Contributor", "permission_count": 0},
         ]
-        assert all("principal" not in role for role in data["data_access_roles"]["roles"])
+        assert all(
+            "principal" not in role for role in data["data_access_roles"]["roles"]
+        )
         assert data["maintenance"]["status"] == "healthy"
         assert data["semantic_readiness"] == {
             "status": "unknown",
@@ -1526,22 +2148,34 @@ class TestFabricMedallionRouterTask2:
             for row in data["lineage"]["datasets"]
         )
 
-    @pytest.mark.parametrize("publication_status", ["succeeded", "failed", "unavailable", "unknown", None])
+    @pytest.mark.parametrize(
+        "publication_status", ["succeeded", "failed", "unavailable", "unknown", None]
+    )
     def test_fabric_readiness_does_not_promote_projection_publication_evidence(
         self, fabric_medallion_capabilities_client, monkeypatch, publication_status
     ):
         from api.routers import fabric_medallion as routes
 
-        rows = [] if publication_status is None else [{
-            "projection_name": "ontology_entities",
-            "status": publication_status,
-            "attempted_at": "2026-10-19T12:00:00Z",
-            "attempts": 2,
-            "retry_eligible": publication_status == "failed",
-            "message": "projection publication failed" if publication_status == "failed" else "",
-            "source": "publication-state",
-        }]
-        monkeypatch.setattr(routes, "_publication_attempt_rows", lambda _context, _scope: rows)
+        rows = (
+            []
+            if publication_status is None
+            else [
+                {
+                    "projection_name": "ontology_entities",
+                    "status": publication_status,
+                    "attempted_at": "2026-10-19T12:00:00Z",
+                    "attempts": 2,
+                    "retry_eligible": publication_status == "failed",
+                    "message": "projection publication failed"
+                    if publication_status == "failed"
+                    else "",
+                    "source": "publication-state",
+                }
+            ]
+        )
+        monkeypatch.setattr(
+            routes, "_publication_attempt_rows", lambda _context, _scope: rows
+        )
 
         response = fabric_medallion_capabilities_client.get(
             f"/api/v1/fabric-medallion/capabilities?subscription={SUB_A}",
@@ -1565,7 +2199,9 @@ class TestFabricMedallionRouterTask2:
         assert history_body["scope"] == body["scope"]
         assert history_body["evidence"][0]["source_engine"] == "onboarding.sync"
         assert [
-            row for row in history_body["data"]["runs"] if row["source"] == "publication-state"
+            row
+            for row in history_body["data"]["runs"]
+            if row["source"] == "publication-state"
         ] == rows
 
     @pytest.mark.parametrize("configured", [True, False])
@@ -1574,9 +2210,12 @@ class TestFabricMedallionRouterTask2:
     ):
         from api.routers import fabric_medallion as routes
 
-        monkeypatch.setattr(routes, "gold_grounding_configured", lambda _scope: configured)
+        monkeypatch.setattr(
+            routes, "gold_grounding_configured", lambda _scope: configured
+        )
         response = fabric_medallion_capabilities_client.get(
-            "/api/v1/fabric-medallion/capabilities", headers=_auth(ADMIN_TOKEN),
+            "/api/v1/fabric-medallion/capabilities",
+            headers=_auth(ADMIN_TOKEN),
         )
         assert response.status_code == 200
         assert response.json()["data"]["data_agent_readiness"] == {
@@ -1588,13 +2227,19 @@ class TestFabricMedallionRouterTask2:
     def test_fabric_readiness_capabilities_preserve_authorization(
         self, fabric_medallion_capabilities_client
     ):
-        assert fabric_medallion_capabilities_client.get(
-            "/api/v1/fabric-medallion/capabilities",
-        ).status_code == 401
-        assert fabric_medallion_capabilities_client.get(
-            f"/api/v1/fabric-medallion/capabilities?subscription={SUB_B}",
-            headers=_auth(SCOPED_TOKEN),
-        ).status_code == 403
+        assert (
+            fabric_medallion_capabilities_client.get(
+                "/api/v1/fabric-medallion/capabilities",
+            ).status_code
+            == 401
+        )
+        assert (
+            fabric_medallion_capabilities_client.get(
+                f"/api/v1/fabric-medallion/capabilities?subscription={SUB_B}",
+                headers=_auth(SCOPED_TOKEN),
+            ).status_code
+            == 403
+        )
 
     def test_fabric_capability_stage_receipts_stay_independently_unrecorded(
         self, fabric_medallion_capabilities_client
@@ -1607,21 +2252,39 @@ class TestFabricMedallionRouterTask2:
         body = response.json()
         assert body["scope"] == {"subscription": [SUB_A]}
         stages = body["data"]["readiness_evidence"]
-        assert set(stages) == {"projection_publication", "native_ontology", "semantic_model"}
+        assert set(stages) == {
+            "projection_publication",
+            "native_ontology",
+            "semantic_model",
+        }
         assert set(stages["semantic_model"]) == {
-            "definition_validation", "publication", "query_qualification",
+            "definition_validation",
+            "publication",
+            "query_qualification",
         }
         expected = [
             (stages["projection_publication"], "no_scoped_publication_recorder"),
             (stages["native_ontology"], "no_recorded_native_ontology_receipt"),
-            (stages["semantic_model"]["definition_validation"], "no_recorded_semantic_definition_validation"),
-            (stages["semantic_model"]["publication"], "no_recorded_semantic_model_publication"),
-            (stages["semantic_model"]["query_qualification"], "no_recorded_semantic_query_qualification"),
+            (
+                stages["semantic_model"]["definition_validation"],
+                "no_recorded_semantic_definition_validation",
+            ),
+            (
+                stages["semantic_model"]["publication"],
+                "no_recorded_semantic_model_publication",
+            ),
+            (
+                stages["semantic_model"]["query_qualification"],
+                "no_recorded_semantic_query_qualification",
+            ),
         ]
         for stage, reason in expected:
             assert stage == {
-                "status": "unknown", "evidence_mode": "not_recorded", "reason_code": reason,
-                "last_attempt": None, "last_good": None,
+                "status": "unknown",
+                "evidence_mode": "not_recorded",
+                "reason_code": reason,
+                "last_attempt": None,
+                "last_good": None,
             }
 
     def test_fabric_medallion_capacity_config_prefers_runtime_config(
@@ -1674,17 +2337,22 @@ fabric:
             )
         monkeypatch.setenv("AIOPS_FABRIC_CONFIG", str(config_path))
         monkeypatch.setenv("FABRIC_WORKSPACE_ID", "obsolete-env-workspace")
-        monkeypatch.setenv("AIOPS_FABRIC_CONFIG_JSON", json.dumps({
-            "fabric": {
-                "workspace_id": "effective-workspace",
-                "lakehouse_id": "effective-lakehouse",
-                "capacity": {
-                    "subscription_id": "effective-subscription",
-                    "resource_group": "effective-group",
-                    "capacity_name": "effective-capacity",
-                },
-            },
-        }))
+        monkeypatch.setenv(
+            "AIOPS_FABRIC_CONFIG_JSON",
+            json.dumps(
+                {
+                    "fabric": {
+                        "workspace_id": "effective-workspace",
+                        "lakehouse_id": "effective-lakehouse",
+                        "capacity": {
+                            "subscription_id": "effective-subscription",
+                            "resource_group": "effective-group",
+                            "capacity_name": "effective-capacity",
+                        },
+                    },
+                }
+            ),
+        )
         assert routes._capacity_config(object(), Scope()) == {
             "subscription_id": "effective-subscription",
             "resource_group": "effective-group",
@@ -1694,7 +2362,9 @@ fabric:
         }
 
     def test_fabric_capacity_probe_uses_configured_user_assigned_identity(
-        self, fabric_medallion_capabilities_client, monkeypatch,
+        self,
+        fabric_medallion_capabilities_client,
+        monkeypatch,
     ):
         from types import SimpleNamespace
 
@@ -1707,7 +2377,8 @@ fabric:
         )
         credential = object()
         monkeypatch.setattr(
-            fabric_medallion_router, "_runtime_config",
+            fabric_medallion_router,
+            "_runtime_config",
             lambda: SimpleNamespace(auth=auth),
         )
 
@@ -1723,7 +2394,8 @@ fabric:
         monkeypatch.setattr(fabric_medallion_router, "build_credential", build)
         monkeypatch.setattr(fabric_medallion_router, "check_capacity_state", probe)
         response = fabric_medallion_capabilities_client.get(
-            "/api/v1/fabric-medallion/capabilities", headers=_auth(ADMIN_TOKEN),
+            "/api/v1/fabric-medallion/capabilities",
+            headers=_auth(ADMIN_TOKEN),
         )
         assert response.status_code == 200, response.text
         assert response.json()["data"]["capacity"]["sku"] == "F4"

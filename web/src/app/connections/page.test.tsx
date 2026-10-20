@@ -39,6 +39,7 @@ const {
   fabricManifest,
   getConnection,
   health,
+  investigateCanonical,
   list,
   mapMetadata,
   ontologyCancelRun,
@@ -66,6 +67,9 @@ const {
   fabricManifest: vi.fn(),
   getConnection: vi.fn(),
   health: vi.fn(),
+  investigateCanonical: vi.fn<typeof import("@/lib/services").investigateCanonical>(
+    () => new Promise(() => undefined),
+  ),
   list: vi.fn(),
   mapMetadata: vi.fn(),
   ontologyCancelRun: vi.fn(),
@@ -89,7 +93,7 @@ vi.mock("@/lib/services", async (importOriginal) => {
   return {
     ...actual,
     buildCopilotSnapshot: actual.buildCopilotSnapshot,
-    investigateCanonical: vi.fn(() => new Promise(() => undefined)),
+    investigateCanonical,
     connectionsApi: {
       create,
       preflight,
@@ -490,6 +494,7 @@ describe("Ontology automation typed client contract", () => {
 
 describe("Connections page Ontology automation tab", () => {
   beforeEach(() => {
+    investigateCanonical.mockClear();
     list.mockReset();
     ontologyStatus.mockReset();
     ontologyRuns.mockReset();
@@ -528,6 +533,101 @@ describe("Connections page Ontology automation tab", () => {
       expect(ontologyEvaluations).toHaveBeenCalledWith(connection.connection_id, expectedScope);
     });
   });
+
+  it("binds automatic Copilot insights to the readiness connection, not the full authorized inventory", async () => {
+    const second = { ...connection, connection_id: "other", name: "Other authorized", subscription_id: "sub-b" };
+    list.mockResolvedValue({ ...emptyEnvelope, data: [connection, second] });
+    renderConnectionsPage();
+
+    await waitFor(() => expect(investigateCanonical).toHaveBeenCalled());
+    const [request, requestedScope] = investigateCanonical.mock.calls.at(-1)!;
+    const expectedScope = {
+      subscription: [connection.subscription_id],
+      subscription_connection: [connection.connection_id],
+    };
+    expect(requestedScope).toEqual(expectedScope);
+    expect(request.requested_scope).toEqual(expectedScope);
+    const registry = request.snapshot.evidence.filter((row: { source: string }) => row.source === "connections/registry");
+    expect(registry).toHaveLength(1);
+    expect(registry[0].data.connection_id).toBe("prod");
+    expect(JSON.stringify(request.snapshot)).not.toContain("Other authorized");
+  });
+
+  it.each(["subscriptions", "fabric-medallion", "ontology-automation"])(
+    "uses the exact bookmarked connection for Copilot on the %s tab",
+    async tab => {
+      const second = { ...connection, connection_id: "other", name: "Other authorized" };
+      list.mockResolvedValue({ ...emptyEnvelope, data: [connection, second] });
+      mockFabricHealth();
+      navigation.query = `tab=${tab}&connection=other`;
+      renderConnectionsPage();
+
+      await waitFor(() => expect(investigateCanonical).toHaveBeenCalled());
+      for (const [request, requestedScope] of investigateCanonical.mock.calls) {
+        expect(requestedScope).toEqual({
+          subscription: [second.subscription_id], subscription_connection: ["other"],
+        });
+        expect(request.requested_scope).toEqual(requestedScope);
+        const registry = request.snapshot.evidence.filter((row: { source: string }) => row.source === "connections/registry");
+        expect(registry).toHaveLength(1);
+        expect(registry[0].data.connection_id).toBe("other");
+      }
+    },
+  );
+
+  it.each(["forged", "prod" + "x".repeat(257), "prod\u0000"])(
+    "does not broaden Copilot when the bookmarked connection is unavailable (%s)",
+    async selected => {
+      navigation.query = `connection=${encodeURIComponent(selected)}`;
+      renderConnectionsPage();
+      await screen.findByText("Bookmarked connection is unavailable in this scope");
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 450)); });
+      expect(investigateCanonical).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: "Ask Copilot about data health" })).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["subscriptions", "fabric-medallion", "ontology-automation"])(
+    "updates the already-open Copilot drawer after selecting another same-subscription connection on %s",
+    async tab => {
+      const second = { ...connection, connection_id: "other", name: "Other authorized" };
+      list.mockResolvedValue({ ...emptyEnvelope, data: [connection, second] });
+      mockFabricHealth();
+      navigation.query = `tab=${tab}&connection=prod`;
+      const view = renderConnectionsPage();
+      await waitFor(() => expect(investigateCanonical).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole("button", { name: "Ask Copilot about data health" }));
+      const selector = tab === "subscriptions"
+        ? screen.getByRole("combobox", { name: "Connection readiness scope" })
+        : tab === "ontology-automation"
+          ? screen.getByRole("combobox", { name: "Connection" })
+          : screen.getAllByRole("combobox").find(element => element.getAttribute("name") === "subscriptionId")!;
+      const option = within(selector).getByRole("option", { name: /Other authorized/ });
+      fireEvent.change(selector, { target: { selectedIndex: Array.from(selector.children).indexOf(option) } });
+      const expectedUrl = `/connections?${tab === "subscriptions" ? "" : `tab=${tab}&`}connection=other`;
+      expect(navigation.push).toHaveBeenLastCalledWith(expectedUrl, { scroll: false });
+      navigation.query = expectedUrl.split("?")[1];
+      view.rerender(<ScopeProvider><ConnectionsPage /></ScopeProvider>);
+
+      await waitFor(() => expect(investigateCanonical).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          requested_scope: { subscription: [connection.subscription_id], subscription_connection: ["other"] },
+        }),
+        { subscription: [connection.subscription_id], subscription_connection: ["other"] },
+        expect.any(AbortSignal),
+      ));
+      investigateCanonical.mockClear();
+      fireEvent.change(screen.getByPlaceholderText("Ask about this record's impact, ownership, or recommended action"), {
+        target: { value: "Explain this selected connection." },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      await waitFor(() => expect(investigateCanonical).toHaveBeenCalled());
+      expect(investigateCanonical.mock.calls[0][0]).toMatchObject({
+        question: "Explain this selected connection.",
+        requested_scope: { subscription: [connection.subscription_id], subscription_connection: ["other"] },
+      });
+    },
+  );
 
   it("restores a bookmarked non-default connection only after authorized rows arrive", async () => {
     const second = { ...connection, connection_id: "other", name: "Other authorized", subscription_id: "sub-b" };
@@ -684,10 +784,122 @@ describe("Connections page Ontology automation tab", () => {
 
     expect(await screen.findByText("Ontology discovery has not run for this connection")).toBeInTheDocument();
     expect(screen.getByText("No relationship proposals need review")).toBeInTheDocument();
+    expect(screen.queryByText("The latest completed run produced no proposals requiring a decision for this scope.")).not.toBeInTheDocument();
+    expect(screen.getByText("No completed discovery run has been observed for this connection. Run discovery to collect proposal evidence.")).toBeInTheDocument();
     expect(screen.getByText("No discovery run history is available for this connection.")).toBeInTheDocument();
     expect(screen.getByText("No ontology publication attempts are available. Existing Fabric data is unchanged.")).toBeInTheDocument();
     expect(screen.getByText("No relationships are waiting for unresolved endpoints.")).toBeInTheDocument();
     expect(screen.getByText("Relationship proposal agent is unavailable. Deterministic discovery can continue; no model proposals will be promoted.")).toBeInTheDocument();
+  });
+
+  it("preserves the observed succeeded zero-proposal result", async () => {
+    ontologyStatus.mockResolvedValue(envelope({
+      ...ontologyStatusData(),
+      current_run: {
+        ...ontologyRun,
+        status: "succeeded",
+        checkpoint: { name: "complete", payload: { proposal_count: 0 } },
+      },
+    }));
+    ontologyProposals.mockResolvedValue(envelope([]));
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    expect(await screen.findByText("The latest completed run produced no proposals requiring a decision for this scope.")).toBeInTheDocument();
+  });
+
+  it.each(["running", "failed", "cancelled"] as const)(
+    "does not infer a completed zero-proposal result from an empty list during %s",
+    async (runStatus) => {
+      const run = {
+        ...ontologyRun,
+        status: runStatus,
+        checkpoint: { name: "discovering", payload: { proposal_count: 0 } },
+      };
+      ontologyStatus.mockResolvedValue(envelope({
+        ...ontologyStatusData(),
+        current_run: run,
+      }));
+      ontologyRuns.mockResolvedValue(envelope([
+        run,
+        {
+          ...ontologyRun,
+          run_id: "ODR-OLDER",
+          status: "succeeded",
+          created_at: "2025-12-31T00:00:00Z",
+          checkpoint: { name: "complete", payload: { proposal_count: 0 } },
+        },
+      ]));
+      ontologyProposals.mockResolvedValue(envelope([]));
+      renderConnectionsPage();
+      fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+      expect(await screen.findByText("No relationship proposals need review")).toBeInTheDocument();
+      expect(screen.queryByText("The latest completed run produced no proposals requiring a decision for this scope.")).not.toBeInTheDocument();
+      expect(screen.getByText("No proposals are currently available for review. A completed zero-proposal result has not been verified.")).toBeInTheDocument();
+    },
+  );
+
+  it("does not skip the latest failed history entry to use an older succeeded zero", async () => {
+    ontologyStatus.mockResolvedValue(envelope(ontologyStatusData(null)));
+    ontologyRuns.mockResolvedValue(envelope([
+      { ...ontologyRun, status: "failed" },
+      {
+        ...ontologyRun,
+        run_id: "ODR-OLDER",
+        status: "succeeded",
+        created_at: "2025-12-31T00:00:00Z",
+        checkpoint: { name: "complete", payload: { proposal_count: 0 } },
+      },
+    ]));
+    ontologyProposals.mockResolvedValue(envelope([]));
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    expect(await screen.findByText("No relationship proposals need review")).toBeInTheDocument();
+    expect(screen.queryByText("The latest completed run produced no proposals requiring a decision for this scope.")).not.toBeInTheDocument();
+    expect(screen.getByText("No proposals are currently available for review. A completed zero-proposal result has not been verified.")).toBeInTheDocument();
+  });
+
+  it("preserves a latest succeeded zero from history when no current run is reported", async () => {
+    ontologyStatus.mockResolvedValue(envelope(ontologyStatusData(null)));
+    ontologyRuns.mockResolvedValue(envelope([{
+      ...ontologyRun,
+      status: "succeeded",
+      checkpoint: { name: "complete", payload: { proposal_count: 0 } },
+    }]));
+    ontologyProposals.mockResolvedValue(envelope([]));
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    expect(await screen.findByText("The latest completed run produced no proposals requiring a decision for this scope.")).toBeInTheDocument();
+  });
+
+  it("does not equate unavailable history with an observed empty discovery", async () => {
+    ontologyStatus.mockResolvedValue(envelope(ontologyStatusData(null)));
+    ontologyRuns.mockRejectedValue(new Error("history unavailable"));
+    ontologyProposals.mockResolvedValue(envelope([]));
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    expect(await screen.findByText("Discovery run history is unavailable. Current run state was not changed. Refresh run history.")).toBeInTheDocument();
+    expect(screen.queryByText("The latest completed run produced no proposals requiring a decision for this scope.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No completed discovery run has been observed for this connection. Run discovery to collect proposal evidence.")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { status: "unavailable", observed: undefined, passed: false, label: "Not reported" },
+    { status: "active", observed: false, passed: false, label: "Not reported" },
+    { status: "active", observed: true, passed: false, label: "Failed" },
+    { status: "active", observed: true, passed: true, label: "Passed" },
+  ])("renders validation receipt state as $label for $status / $observed", async ({ status, observed, passed, label }) => {
+    ontologyGeneration.mockResolvedValue(envelope({
+      ...ontologyGenerationData,
+      status,
+      validation: { passed, observed, errors: [], model_derived_relationships: 0 },
+    }));
+    renderConnectionsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));
+    const region = await screen.findByRole("region", { name: "Generation and publication" });
+    await waitFor(() => {
+      const term = within(region).getByText("Validation", { exact: true });
+      expect(term.parentElement?.querySelector("dd")).toHaveTextContent(label);
+    });
   });
 
   it("uses exact destructive confirmations and observed concurrency values", async () => {

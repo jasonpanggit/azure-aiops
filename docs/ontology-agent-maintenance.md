@@ -63,6 +63,27 @@ non-authoritative. A live-schema positive test proves the verifier is not an
 always-failing stub; its synthetic keys, corpus and “live” receipt fields are
 test schema cases, never retained as actual live acceptance.
 
+### Exact Phase13 closeout reconciliation
+
+The required corpus is still **22 numbered plans and summaries**, not21 and
+not a count padded with targeted review artifacts. Historically only plans
+01..21 and summaries01..20 existed, with Plan20 partial. Newly assigned
+Plan22 closes the accepted evidence chain; its plan is not a completion receipt.
+Accepted Plan20 must precede Plan21; accepted Plan21 must precede Plan22.
+For live purpose, Plan22 must have `accepted: true`, genuine `started` and
+`completed` UTC times, and `plan21_acceptance_digest` equal to SHA256 of the
+exact accepted Plan21 summary bytes. The same authenticated corpus binds those
+bytes for the coordinator, publisher and local saved-evidence CLI.
+
+`phase13_count_diagnostic` additionally distinguishes `missing_plans`,
+`missing` summaries, `unfinished_summaries` and `verification_status`.
+`LOCAL_ONLY` means only that local inventory checks passed; it cannot turn
+failed authentication into success. Missing/malformed evidence reports
+`BLOCKED`; no summary, signature or cloud evidence is generated.
+The original strict 20->21 gate and all quality/deployment/trust requirements
+remain mandatory. Genuine Plan20 lifecycle and Plan21 API/UI/RBAC acceptance
+are the next executable predecessors, not blanket approval substitutes.
+
 ## One authentication contract, not a CLI interpretation
 
 The coordinator and publisher use `MaintenanceReleaseReader.read`; the CLI

@@ -48,6 +48,28 @@ Page/embedded subscription selectors must preserve every global scope constraint
 out-of-scope bookmarks are blocked before reads. Failed layer reads are unknown,
 not zero tables, and missing registration evidence is not an empty layer.
 
+### Qualified manifest and governance absence
+
+`GET /api/v1/fabric-medallion/manifest` and
+`GET /api/v1/fabric-medallion/governance` add an optional `data.observation`
+receipt. It identifies the observation `state` (`observed_nonempty`,
+`observed_empty`, or `unobserved`), `evidence_mode`, source engine/table and
+nullable source version, effective `scope`, nullable `observed_at`, `freshness`,
+and a stable `reason_code`. Existing entries, gap counts, envelopes, and scope
+fields remain unchanged; clients must treat a missing receipt from an older API
+as unverified rather than infer an empty source from an empty array or zero count.
+
+Manifest absence is qualified only when a pinned Delta table version is empty
+and its recorded commit time has known freshness. A missing table, unknown commit
+time, or source rows hidden by scope is `unobserved`. Governance absence requires
+a scope-visible, nonempty quality report with complete zero-valued rule counts,
+`passed=true`, no failed records, and known report freshness. An empty quality
+table, an empty/malformed report, or an unscoped report cannot establish zero
+governance gaps. Populated manifest entries and positive governance gaps remain
+visible independently of freshness; stale observations describe the last
+recorded state and do not guarantee the current state. Storage errors continue
+to fail the request rather than being converted to an empty result.
+
 `GET /api/v1/fabric-medallion/datasets/{table_name}/contract` uses the same current
 read authorization and scoped registered-table check. An unauthorized or absent
 dataset is not discoverable through the schema registry. It returns the exact
@@ -70,6 +92,28 @@ review perform no refresh/mutation; retry explicitly repeats only the contract
 read. A response for a different dataset or inconsistent contract is rejected.
 
 ## Fabric capability readiness evidence
+
+Inventory resource and OS/software/PaaS group responses include
+`scope_qualification`. A selected `subscription_connection` currently returns
+`status: unsupported`, `unsupported_dimensions: ["subscription_connection"]`,
+and `reason: connection_attribution_unavailable`: normalized inventory rows
+do not retain trusted connection attribution. Scope filtering remains
+fail-closed, and an empty result is not an authoritative connection resource
+count. Group drilldown and identity lookup retain their 404 denial, with the
+same qualification in error details. No subscription-to-connection inference
+or trust in arbitrary provider `connection_id` labels is introduced.
+Connections readiness shows the count as unavailable/unknown for unsupported
+or legacy-unqualified responses, while retaining reported publication
+generation and independent family availability. A supported subscription-only
+scope can still represent a genuine empty result. This qualification does
+not restore source attribution or establish publication freshness.
+
+Error details use flat `scope_qualification` (status) and
+`scope_qualification_reason` fields to preserve the existing redacted error
+contract. Governed inventory tools return `unavailable`, not an authoritative
+`empty`, when attribution is unsupported. Fabric readiness drill-through
+retains every selected scope dimension; Inventory drill-through is explicitly
+unavailable until that destination supports connection-scoped bookmarks.
 
 Connection-backed medallion reads check the effective scope against registry
 connection details before opening that connection's dataset root. Source status,

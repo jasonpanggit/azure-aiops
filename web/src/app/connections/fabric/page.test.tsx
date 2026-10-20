@@ -204,6 +204,109 @@ describe("Per-subscription Fabric medallion page", () => {
     expect(await screen.findByText("Production")).toBeInTheDocument();
   });
 
+  it("does not treat legacy empty manifest and governance arrays as observed absence", async () => {
+    renderPage();
+
+    expect(await screen.findByText("Fabric medallion dataset absence unverified")).toBeInTheDocument();
+    expect(await screen.findByText("Governance absence unverified")).toBeInTheDocument();
+    expect(screen.queryByText("No Fabric medallion datasets registered")).not.toBeInTheDocument();
+    expect(screen.queryByText("No governance gaps for this scope")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Governed relationships value")).toHaveTextContent("—");
+    expect(screen.getByLabelText("Governed relationships value").closest("article")).toHaveClass("metric-default");
+  });
+
+  it("renders a qualified empty observation as a last-recorded state", async () => {
+    const observation = {
+      state: "observed_empty",
+      evidence_mode: "recorded_metadata",
+      source: { engine: "fabric.test", table: "metadata_test", version: 12 },
+      scope: { subscription: [connections[0].subscription_id] },
+      observed_at: "2026-10-20T14:00:00Z",
+      freshness: "fresh",
+      reason_code: "test_observed_empty",
+    };
+    fabricManifest.mockResolvedValue(envelope({ entries: [], observation }));
+    fabricGovernance.mockResolvedValue(envelope({
+      ownership_gap_count: 0,
+      tag_gap_count: 0,
+      referential_integrity_blockers: 0,
+      gaps: [],
+      observation,
+    }));
+    searchParams.current = new URLSearchParams({ subscription: connections[0].subscription_id });
+    renderPage();
+
+    expect(await screen.findByText("No Fabric medallion datasets observed")).toBeInTheDocument();
+    expect(await screen.findByText("No governance gaps observed")).toBeInTheDocument();
+  });
+
+  it("does not qualify an empty observation with unknown freshness", async () => {
+    const observation = {
+      state: "observed_empty",
+      evidence_mode: "recorded_metadata",
+      source: { engine: "fabric.test", table: "metadata_test", version: null },
+      scope: {},
+      observed_at: null,
+      freshness: "unknown",
+      reason_code: "test_freshness_unknown",
+    };
+    fabricManifest.mockResolvedValue(envelope({ entries: [], observation }));
+    fabricGovernance.mockResolvedValue(envelope({
+      ownership_gap_count: 0,
+      tag_gap_count: 0,
+      referential_integrity_blockers: 0,
+      gaps: [],
+      observation,
+    }));
+    renderPage();
+
+    expect(await screen.findByText("Fabric medallion dataset absence unverified")).toBeInTheDocument();
+    expect(await screen.findByText("Governance absence unverified")).toBeInTheDocument();
+  });
+
+  it("keeps populated manifest and governance evidence visible when absence is unverified", async () => {
+    fabricManifest.mockResolvedValue(envelope({
+      entries: [{
+        projection_name: "topology_entities",
+        disposition: "active",
+        compatibility_version: "1",
+        retired_reason: null,
+        registered_at: "",
+        updated_at: "",
+      }],
+      observation: {
+        state: "unobserved",
+        evidence_mode: "not_recorded",
+        source: { engine: "ontology.publication_manifest", table: "metadata_publication_manifest", version: null },
+        scope: {},
+        observed_at: null,
+        freshness: "unknown",
+        reason_code: "test_scope_unverified",
+      },
+    }));
+    fabricGovernance.mockResolvedValue(envelope({
+      ownership_gap_count: 1,
+      tag_gap_count: 0,
+      referential_integrity_blockers: 0,
+      gaps: [{ table_name: "silver_incidents", ownership_gap_count: 1, tag_gap_count: 0, referential_integrity_blockers: 0 }],
+      observation: {
+        state: "unobserved",
+        evidence_mode: "not_recorded",
+        source: { engine: "fabric.data_quality", table: "metadata_quality_reports", version: null },
+        scope: {},
+        observed_at: null,
+        freshness: "unknown",
+        reason_code: "test_scope_unverified",
+      },
+    }));
+    renderPage();
+
+    expect(await screen.findByText("topology_entities")).toBeInTheDocument();
+    expect(screen.getByText("silver_incidents")).toBeInTheDocument();
+    expect(screen.queryByText("Fabric medallion dataset absence unverified")).not.toBeInTheDocument();
+    expect(screen.queryByText("Governance absence unverified")).not.toBeInTheDocument();
+  });
+
   it("pushes the chosen subscription into the URL when the operator switches subscriptions", async () => {
     renderPage();
 

@@ -808,7 +808,7 @@ Plans:
 **Requirements**: AUTO-ONT-01, AUTO-ONT-02, AUTO-ONT-03, AUTO-ONT-04, AUTO-ONT-05, AUTO-ONT-06, AUTO-ONT-07
 **Depends on:** Phase 10, Phase 12
 **Plans:** 19/22 plans executed
-**Targeted review artifacts:** 1 (`13-07-TARGETED-PLAN.md`; review-only and excluded from the 21 numbered-plan denominator)
+**Targeted review artifacts:** 1 (`13-07-TARGETED-PLAN.md`; review-only and excluded from the 22 numbered-plan denominator)
 
 Plans:
 
@@ -837,6 +837,7 @@ Targeted review artifact (not a numbered executable plan):
 - [x] 13-19-PLAN.md — Exact process RBAC/env matrix, explicit dispatch deployment allowlist, isolated drill workspace, and immutable targeted rollout
 - [ ] 13-20-PLAN.md — Three isolated live credential contexts plus deployed multi-connection drain, bounded maintenance, ARG, replacement, guarded stale-writer/rollback, and cleanup drills
 - [ ] 13-21-PLAN.md — Dedicated live Playwright/API/RBAC audit and deployed-only fairness/matrix/allowlist/credential/drill shadow closeout
+- [ ] 13-22-PLAN.md — Exact corrected-target acceptance-chain/corpus reconciliation after accepted20→21; bind genuine Plan21 bytes and chronology before downstream qualification (source checks do not complete live tasks)
 
 **Success Criteria** (what must be TRUE):
 

@@ -73,6 +73,23 @@ uv run aiops-inventory fabric \
 
 Replay records a new Fabric ingestion run and retains the original source run ID.
 
+### Empty workload products versus missing sources
+
+An explicitly present empty `exposure/workload_observations.jsonl`,
+`exposure/workload_deployments.jsonl`, or
+`exposure/workload_source_checkpoints.jsonl` retains its declared typed table
+during publication, including first publication. The legacy `workload/` path
+is used only when the corresponding canonical file is absent; an empty
+canonical file must not revive legacy rows. Missing product files remain
+missing inputs and do not request creation or clearing of those tables.
+Existing workload APPEND/MERGE modes and rollback version tracking remain
+unchanged.
+
+Table/schema availability is not evidence of a successful or fresh workload
+acquisition, authoritative zero workloads, tenant-qualified coverage, or an
+exact Defender-digest deployment match. Inspect checkpoint scope, source
+status, effective generation and provider observation times independently.
+
 ## Failed-run recovery
 
 1. Run `Show ingestion status` and locate the failed row.

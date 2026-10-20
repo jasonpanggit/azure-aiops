@@ -1069,6 +1069,10 @@ def test_ingestion_service_persists_the_exact_workload_slice(
         "container_inventory",
         "container_image_inventory",
     }
+    observations = service.store.read_dataset("exposure/workload_observations")
+    assert {row["tenant_id"] for row in checkpoints} == {"tenant1"}
+    assert {row["tenant_id"] for row in observations} == {"tenant1"}
+    assert {row["tenant_id"] for row in deployments} == {"tenant1"}
 
 
 def test_granular_container_pipeline_round_trips_and_projects_exact_impact(

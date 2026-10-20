@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -306,6 +307,148 @@ def test_list_containment_requires_scope() -> None:
         pass
     else:
         raise AssertionError("list_containment(None) should raise TypeError")
+
+
+def test_connection_scope_is_unqualified_not_authoritative_empty() -> None:
+    port = InventoryReadPort(_service())
+    subscription_scope = Scope.from_mapping({"subscription": ["sub-a"]})
+    connection_scope = subscription_scope.with_dimension("subscription_connection", ["demo"])
+
+    supported = port.list_resources(subscription_scope)
+    assert supported["total"] > 0
+    assert supported["scope_qualification"] == {
+        "status": "supported",
+        "unsupported_dimensions": [],
+    }
+    unavailable = port.list_resources(connection_scope)
+    assert unavailable["resources"] == []
+    assert unavailable["total"] == 0
+    assert unavailable["scope_qualification"] == {
+        "status": "unsupported",
+        "unsupported_dimensions": ["subscription_connection"],
+        "reason": "connection_attribution_unavailable",
+    }
+    assert any("connection attribution" in warning for warning in unavailable["warnings"])
+    assert port.get_resource(
+        connection_scope, supported["resources"][0]["resource_id"],
+    ) is None
+
+
+@pytest.mark.parametrize("family", ["os", "software", "paas"])
+def test_inventory_groups_qualify_missing_connection_attribution(family: str) -> None:
+    service = _service()
+    scope = Scope.from_mapping({"subscription": ["sub-a"], "subscription_connection": ["demo"]})
+    collection = {
+        "os": service.collection,
+        "software": service.software_collection,
+        "paas": service.paas_collection,
+    }[family](scope)
+    assert collection["total"] == 0
+    assert collection["data"]["scope_qualification"]["status"] == "unsupported"
+    assert collection["warnings"]
+    assert collection["data"]["requested_scope"] == scope.to_dict()
+
+
+def test_mixed_untrusted_connection_labels_do_not_qualify_or_widen_scope() -> None:
+    service = _service()
+    row = service.snapshot.resource_observations[0]
+    service = InventoryService(replace(
+        service.snapshot,
+        resource_observations=(
+            replace(row, provenance={"connection_id": "demo"}),
+            replace(row, resource_id=f"{row.resource_id}-other", provenance={}),
+        ),
+    ))
+    port = InventoryReadPort(service)
+    scope = Scope.from_mapping({"subscription": ["sub-a"], "subscription_connection": ["demo"]})
+    result = port.list_resources(scope)
+    assert result["scope_qualification"]["status"] == "unsupported"
+    assert result["total"] == 0
+    assert port.get_resource(scope, row.resource_id) is None
+    assert port.list_resources(Scope.from_mapping({"subscription": ["sub-a"]}))["total"] == 3
+
+
+def test_inventory_tools_report_unsupported_scope_as_unavailable_not_empty() -> None:
+    from api.routers.copilot import _server_inventory_result
+    from operations.tools import call_tool
+
+    service = _service()
+    scope = Scope.from_mapping({"subscription": ["sub-a"], "subscription_connection": ["demo"]})
+    context = SimpleNamespace(
+        provider_runtime=None,
+        resolve_provider=lambda _name: InventoryReadPort(service),
+    )
+    tool = call_tool("inventory_resources", {}, context=context, scope=scope)
+    assert tool.status == "unavailable"
+    assert tool.data["scope_qualification"]["reason"] == "connection_attribution_unavailable"
+    assert tool.warning
+    assert tool.data["resources"] == []
+    for collection in (
+        service.collection(scope), service.software_collection(scope), service.paas_collection(scope),
+    ):
+        grouped = _server_inventory_result(collection)
+        assert grouped.status == "unavailable"
+        assert grouped.warning
+        assert grouped.data["scope_qualification"]["status"] == "unsupported"
+
+
+def test_inventory_scope_qualification_does_not_swallow_read_errors(monkeypatch) -> None:
+    service = _service()
+
+    def failed(*_args, **_kwargs):
+        raise OSError("source read failed")
+
+    monkeypatch.setattr(service, "resources", failed)
+    with pytest.raises(OSError, match="source read failed"):
+        InventoryReadPort(service).list_resources(
+            Scope.from_mapping({"subscription_connection": ["demo"]}),
+        )
+
+
+@pytest.mark.parametrize("path", [
+    "/inventory/resources",
+    "/inventory/os",
+    "/inventory/software",
+    "/inventory/paas",
+    "/inventory/os/Windows|Unknown",
+    "/inventory/software/Test|1",
+    "/inventory/paas/unmatched-type|P1v3|PremiumV3",
+    "/inventory/asset",
+])
+def test_inventory_http_qualifies_connection_scoped_empty_or_denied(
+    tmp_path: Path, path: str,
+) -> None:
+    context = ApiContext(
+        authenticator=StaticTokenAuthenticator(
+            {TOKEN: Principal(subject="operator@example.com", grants=(Grant("admin"),))}
+        ),
+        authorizer=Authorizer(),
+        telemetry=ApiTelemetry(),
+        onboarding=SubscriptionOnboardingService(tmp_path / "onboarding"),
+        inventory_provider=_service,
+    )
+    response = TestClient(create_app(context), raise_server_exceptions=False).get(
+        f"/api/v1{path}",
+        params={
+            "subscription": "sub-a", "subscription_connection": "demo",
+            **({"resource_id": "does-not-resolve"} if path == "/inventory/asset" else {}),
+        },
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert response.status_code in (200, 404)
+    payload = response.json()
+    if response.status_code == 200:
+        assert payload["pagination"]["total"] == 0
+        qualification = payload["data"]["scope_qualification"]
+        assert payload["warnings"]
+    else:
+        details = payload["error"]["details"]
+        qualification = {
+            "status": details["scope_qualification"],
+            "reason": details["scope_qualification_reason"],
+        }
+    assert qualification["status"] == "unsupported"
+    assert qualification["reason"] == "connection_attribution_unavailable"
 
 
 def test_public_legacy_answer_projection_preserves_reported_provider_usage() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
+from time import sleep
 from typing import Any
 
 import pyarrow as pa
@@ -37,6 +38,33 @@ def test_delta_writer_defaults_bound_append_materialization_for_aca() -> None:
 
     assert writer.append_batch_size <= 1_000
     assert writer.append_preflight_batch_bytes <= 4 * 1024 * 1024
+
+
+def test_delta_writer_reads_timestamp_for_exact_historical_version(tmp_path: Path) -> None:
+    table = tmp_path / "timestamp-history"
+    writer = DeltaWriter()
+    schema = pa.schema(
+        [pa.field(column, pa.string()) for column in REQUIRED]
+    )
+    writer.write(table, [], mode=DeltaWriteMode.OVERWRITE, schema=schema)
+    version_zero_timestamp = writer.latest_commit_timestamp(table, version=0)
+    assert version_zero_timestamp is not None
+
+    sleep(0.01)
+    writer.write(
+        table,
+        [{**REQUIRED, "resource_id": "resource-2"}],
+        mode=DeltaWriteMode.APPEND,
+    )
+    sleep(0.01)
+    writer.write(
+        table,
+        [{**REQUIRED, "resource_id": "resource-3"}],
+        mode=DeltaWriteMode.APPEND,
+    )
+
+    assert writer.latest_commit_timestamp(table, version=0) == version_zero_timestamp
+    assert writer.latest_commit_timestamp(table) != version_zero_timestamp
 
 
 def _append_rows(count: int) -> list[dict[str, Any]]:

@@ -688,6 +688,7 @@ class IngestionService:
         workload = (
             activate_workload_partitions(
                 outcomes=workload_outcomes,
+                tenant_id=self.config.tenant_id,
                 defender_rows=_workload_defender_rows(query_results),
                 attempted_generation=run_id,
                 completed_at=completed_at,

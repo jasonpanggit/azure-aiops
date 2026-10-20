@@ -123,6 +123,20 @@ export function OntologyAutomationPanel({
   const durableStatus = status.data?.data ?? null;
   const currentRun = durableStatus?.current_run ?? null;
   const activeRun = currentRun && ACTIVE_RUN_STATUSES.has(currentRun.status) ? currentRun : null;
+  const latestObservedRun = !status.error && !status.loading
+    ? currentRun ?? (!runs.error && !runs.loading ? runRows[0] : undefined)
+    : undefined;
+  const completedRun = latestObservedRun?.status === "succeeded"
+    ? latestObservedRun
+    : undefined;
+  const noObservedRun = Boolean(durableStatus && runs.data)
+    && !status.error && !status.loading && !runs.error && !runs.loading
+    && !currentRun && runRows.length === 0;
+  const proposalEmptyMessage = noObservedRun
+    ? "No completed discovery run has been observed for this connection. Run discovery to collect proposal evidence."
+    : completedRun?.checkpoint.payload.proposal_count === 0
+      ? "The latest completed run produced no proposals requiring a decision for this scope."
+      : "No proposals are currently available for review. A completed zero-proposal result has not been verified.";
 
   function refreshAll() {
     onRefresh();
@@ -298,7 +312,7 @@ export function OntologyAutomationPanel({
           ) : proposalRows.length === 0 ? (
             <StatePanel
               title="No relationship proposals need review"
-              message="The latest completed run produced no proposals requiring a decision for this scope."
+              message={proposalEmptyMessage}
             />
           ) : (
             <>
@@ -647,6 +661,9 @@ function GenerationSection({
   onRollback: (generation: OntologyGeneration) => void;
 }) {
   const item = generation.data?.data;
+  const validationObserved = item && (item.validation.observed
+    ?? (item.status !== "unavailable"
+      && (item.validation.passed || item.validation.errors.length > 0)));
   return (
     <section className="card" aria-labelledby="ontology-generation-heading">
       <div className="card-header">
@@ -667,7 +684,7 @@ function GenerationSection({
             <dl className="ontology-facts">
               <div><dt>Active generation</dt><dd>{display(item.active_generation)}</dd></div>
               <div><dt>Source generation</dt><dd>{display(item.source_generation)}</dd></div>
-              <div><dt>Validation</dt><dd>{item.validation.passed ? "Passed" : "Failed"}</dd></div>
+              <div><dt>Validation</dt><dd>{!validationObserved ? "Not reported" : item.validation.passed ? "Passed" : "Failed"}</dd></div>
               <div><dt>Fence/version</dt><dd>{item.fence} · {display(item.pointer_etag)}</dd></div>
               <div><dt>Prior generation</dt><dd>{display(item.prior_generation)}</dd></div>
               <div><dt>Authoritative model edges</dt><dd>{item.validation.model_derived_relationships}</dd></div>

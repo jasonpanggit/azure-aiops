@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from azure.core.exceptions import HttpResponseError
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -266,6 +267,133 @@ def test_status_and_history_are_bounded_scoped_and_server_projected(
         api_fixture["run_a"]["run_id"]
     ]
     assert history_body["pagination"]["total"] == 1
+
+
+@pytest.mark.parametrize("provider_status", [None, 403, 429, 503])
+def test_status_storage_failure_is_visible_sanitized_and_cors_scoped(
+    api_fixture: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    provider_status: int | None,
+) -> None:
+    origin = "https://ontology-operator.invalid"
+    monkeypatch.setenv("AIOPS_API_CORS_ORIGINS", origin)
+    failure = HttpResponseError("private-provider-workspace-and-item")
+    failure.status_code = provider_status
+
+    def unavailable(**kwargs: Any) -> None:
+        raise failure
+
+    monkeypatch.setattr(api_fixture["run_store"], "list_runs", unavailable)
+    client = TestClient(
+        create_app(api_fixture["context"]), raise_server_exceptions=False
+    )
+    correlation = "c6922a57-cac0-4696-84e6-821e742b3bd5"
+    response = client.get(
+        "/api/v1/ontology-discovery/status",
+        params=_scope(),
+        headers={
+            **_headers("reader"),
+            "Origin": origin,
+            "X-Correlation-ID": correlation,
+        },
+    )
+    assert response.status_code == 503
+    assert response.headers["access-control-allow-origin"] == origin
+    assert response.headers["x-correlation-id"] == correlation
+    assert response.json()["error"]["code"] == "provider_unavailable"
+    assert response.json()["error"]["details"]["correlation_id"] == correlation
+    assert "data" not in response.json()
+    assert "private-provider-workspace-and-item" not in response.text
+    assert "private-provider-workspace-and-item" not in caplog.text
+    assert any(
+        row.message == "ontology_status_provider_unavailable"
+        and row.provider_status == provider_status
+        for row in caplog.records
+    )
+    foreign = client.get(
+        "/api/v1/ontology-discovery/status",
+        params=_scope(),
+        headers={**_headers("reader"), "Origin": "https://untrusted.invalid"},
+    )
+    assert foreign.status_code == 503
+    assert "access-control-allow-origin" not in foreign.headers
+
+
+def test_status_storage_failure_does_not_bypass_scope_or_auth(
+    api_fixture: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+
+    def unavailable(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        raise HttpResponseError("private-provider-workspace-and-item")
+
+    monkeypatch.setattr(api_fixture["run_store"], "list_runs", unavailable)
+    client = api_fixture["client"]
+    unauthenticated = client.get(
+        "/api/v1/ontology-discovery/status", params=_scope()
+    )
+    foreign = client.get(
+        "/api/v1/ontology-discovery/status",
+        params=_scope("conn-b", SUB_A),
+        headers=_headers("reader"),
+    )
+    assert unauthenticated.status_code == 401
+    assert foreign.status_code == 404
+    assert calls == []
+
+
+def test_status_unexpected_failure_is_not_reported_as_storage_unavailable(
+    api_fixture: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(**kwargs: Any) -> None:
+        raise RuntimeError("unexpected implementation error")
+
+    monkeypatch.setattr(api_fixture["run_store"], "list_runs", broken)
+    response = api_fixture["client"].get(
+        "/api/v1/ontology-discovery/status",
+        params=_scope(),
+        headers=_headers("reader"),
+    )
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "internal_error"
+
+
+@pytest.mark.parametrize(
+    "validation",
+    [{}, {"passed": False}, {"passed": True}, {"passed": None}, {"passed": "false"}, {"passed": 0}],
+)
+def test_generation_distinguishes_missing_validation_from_observed_result(
+    api_fixture: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    validation: dict[str, Any],
+) -> None:
+    reader = _GenerationReader()
+    read_metadata = reader.read_metadata
+
+    def metadata(name: str, *, selection: Any = None) -> dict[str, Any]:
+        return validation if name == "validation.json" else read_metadata(
+            name, selection=selection
+        )
+
+    monkeypatch.setattr(reader, "read_metadata", metadata)
+    monkeypatch.setattr(
+        api_fixture["provider"], "_generation_resolver_factory", lambda _: reader
+    )
+    result = api_fixture["provider"].generation("conn-a")
+    assert result["validation"]["observed"] is isinstance(validation.get("passed"), bool)
+    assert result["validation"]["passed"] is (validation.get("passed") is True)
+
+
+def test_unavailable_generation_has_no_observed_validation(
+    api_fixture: dict[str, Any],
+) -> None:
+    result = api_fixture["provider"].generation("conn-b")
+    assert result["status"] == "unavailable"
+    assert result["validation"]["observed"] is False
 
 
 def test_out_of_scope_ids_are_not_found_without_disclosure(

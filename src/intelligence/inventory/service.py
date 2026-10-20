@@ -392,6 +392,26 @@ class InventoryService:
     def generation_id(self) -> str:
         return self.snapshot.generation_id
 
+    def scope_qualification(self, scope: Scope) -> dict[str, Any]:
+        """Qualify count semantics without inferring unpublished connection attribution."""
+        if scope.values("subscription_connection"):
+            return {
+                "status": "unsupported",
+                "unsupported_dimensions": ["subscription_connection"],
+                "reason": "connection_attribution_unavailable",
+            }
+        return {"status": "supported", "unsupported_dimensions": []}
+
+    def _scope_warnings(self, scope: Scope) -> list[str]:
+        if self.scope_qualification(scope)["status"] == "unsupported":
+            return [
+                (
+                    "Published inventory lacks trusted connection attribution; "
+                    "empty scoped results do not establish zero resources for this connection."
+                )
+            ]
+        return []
+
     def source_status(
         self, rows: tuple[MachineObservation, ...] | None = None
     ) -> dict[str, dict[str, Any]]:
@@ -475,12 +495,13 @@ class InventoryService:
             "query_version": self.query_version,
             "generation_id": self.generation_id,
             "requested_scope": scope.to_dict(),
+            "scope_qualification": self.scope_qualification(scope),
         }
         return {
             "data": data,
             "total": page["total"],
             "evidence": self._evidence(rows),
-            "warnings": _status_warnings(statuses),
+            "warnings": [*_status_warnings(statuses), *self._scope_warnings(scope)],
         }
 
     def detail(
@@ -500,10 +521,11 @@ class InventoryService:
                 "query_version": self.query_version,
                 "generation_id": self.generation_id,
                 "requested_scope": scope.to_dict(),
+                "scope_qualification": self.scope_qualification(scope),
             },
             "total": len(matching),
             "evidence": self._evidence(matching),
-            "warnings": _status_warnings(self.source_status(rows)),
+            "warnings": [*_status_warnings(self.source_status(rows)), *self._scope_warnings(scope)],
         }
 
     def _scoped_software(self, scope: Scope) -> tuple[SoftwareObservation, ...]:
@@ -676,12 +698,13 @@ class InventoryService:
             "query_version": self.query_version,
             "generation_id": self.generation_id,
             "requested_scope": scope.to_dict(),
+            "scope_qualification": self.scope_qualification(scope),
         }
         return {
             "data": data,
             "total": page["total"],
             "evidence": self._software_evidence(rows),
-            "warnings": _status_warnings(statuses),
+            "warnings": [*_status_warnings(statuses), *self._scope_warnings(scope)],
         }
 
     def software_detail(
@@ -712,10 +735,11 @@ class InventoryService:
                 "query_version": self.query_version,
                 "generation_id": self.generation_id,
                 "requested_scope": scope.to_dict(),
+                "scope_qualification": self.scope_qualification(scope),
             },
             "total": len(matching),
             "evidence": self._software_evidence(matching),
-            "warnings": _status_warnings(statuses),
+            "warnings": [*_status_warnings(statuses), *self._scope_warnings(scope)],
         }
 
     # Explicit alias for consumers that use the grouped-detail terminology.
@@ -751,12 +775,13 @@ class InventoryService:
             "query_version": self.query_version,
             "generation_id": self.generation_id,
             "requested_scope": scope.to_dict(),
+            "scope_qualification": self.scope_qualification(scope),
         }
         return {
             "data": data,
             "total": page["total"],
             "evidence": self._resource_evidence(rows),
-            "warnings": _status_warnings(data["source_status"]),
+            "warnings": [*_status_warnings(data["source_status"]), *self._scope_warnings(scope)],
         }
 
     def paas_detail(
@@ -781,10 +806,14 @@ class InventoryService:
                 "query_version": self.query_version,
                 "generation_id": self.generation_id,
                 "requested_scope": scope.to_dict(),
+                "scope_qualification": self.scope_qualification(scope),
             },
             "total": len(matching),
             "evidence": self._resource_evidence(matching),
-            "warnings": _status_warnings({"paas": self.family_availability()["paas"]}),
+            "warnings": [
+                *_status_warnings({"paas": self.family_availability()["paas"]}),
+                *self._scope_warnings(scope),
+            ],
         }
 
     def resources(self, scope: Scope, *, offset: int = 0, limit: int | None = 100) -> dict[str, Any]:
@@ -816,11 +845,12 @@ class InventoryService:
                 "resources": rows[offset : offset + limit if limit is not None else None],
                 "family_availability": self.family_availability(),
                 "requested_scope": scope.to_dict(),
+                "scope_qualification": self.scope_qualification(scope),
                 "query_version": self.query_version,
             },
             "total": len(rows),
             "evidence": self._resource_evidence(self._scoped_resources(scope)),
-            "warnings": _status_warnings(self.family_availability()),
+            "warnings": [*_status_warnings(self.family_availability()), *self._scope_warnings(scope)],
         }
 
     def narrative_aggregates(

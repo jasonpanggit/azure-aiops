@@ -1150,6 +1150,134 @@ def _defender_workload_row(digest: str) -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("empty", [False, True])
+def test_workload_publication_binds_configured_tenant_not_provider_labels(
+    empty: bool,
+) -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        activate_workload_partitions,
+    )
+
+    outcomes, generation, digest = _workload_outcomes(generation="qualified-tenant")
+    outcomes = tuple(
+        replace(
+            outcome,
+            rows=() if empty else tuple(
+                {**row, "tenant_id": "untrusted-provider-label"} for row in outcome.rows
+            ),
+        )
+        for outcome in outcomes
+    )
+    projection = activate_workload_partitions(
+        outcomes=outcomes,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation=generation,
+        completed_at="2026-09-05T00:00:01Z",
+        tenant_id="tenant-a",
+    )
+
+    assert len(projection.checkpoints) == 6
+    assert {row["tenant_id"] for row in projection.checkpoints} == {"tenant-a"}
+    assert all(
+        row["tenant_id"] == "tenant-a"
+        for row in (*projection.observations, *projection.deployments)
+    )
+    if not empty:
+        assert projection.observations
+        assert projection.deployments
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+def test_workload_tenant_bound_failure_only_carries_same_tenant_lkg(
+    legacy: bool,
+) -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        activate_workload_partitions,
+    )
+
+    outcomes, generation, digest = _workload_outcomes(generation="old-generation")
+    first = activate_workload_partitions(
+        outcomes=outcomes,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation=generation,
+        completed_at="2026-09-05T00:00:01Z",
+        **({} if legacy else {"tenant_id": "tenant-a"}),
+    )
+    failed, _, _ = _workload_outcomes(
+        generation="new-generation",
+        fail_family="container_image_inventory",
+        fail_workspace="workspace-a",
+    )
+    second = activate_workload_partitions(
+        outcomes=failed,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation="new-generation",
+        completed_at="2026-09-05T00:05:01Z",
+        previous_observations=first.observations,
+        previous_deployments=first.deployments,
+        previous_checkpoints=first.checkpoints,
+        tenant_id="tenant-a",
+    )
+    checkpoint = next(
+        row for row in second.checkpoints
+        if row["workspace_id"] == "workspace-a"
+        and row["source_family"] == "container_image_inventory"
+    )
+
+    assert checkpoint["tenant_id"] == "tenant-a"
+    assert checkpoint["status"] == ("unavailable" if legacy else "stale")
+    assert checkpoint["effective_generation"] == ("" if legacy else generation)
+    assert any(
+        row["workspace_id"] == "workspace-a" for row in second.deployments
+    ) is not legacy
+    assert {row["tenant_id"] for row in first.checkpoints} == {
+        "system" if legacy else "tenant-a"
+    }
+
+
+def test_workload_configured_tenant_conflict_is_not_relabelled() -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        activate_workload_partitions,
+    )
+
+    outcomes, generation, digest = _workload_outcomes(generation="tenant-conflict")
+    with pytest.raises(ValueError, match="tenant"):
+        activate_workload_partitions(
+            outcomes=outcomes,
+            defender_rows=[_defender_workload_row(digest)],
+            attempted_generation=generation,
+            completed_at="2026-09-05T00:00:01Z",
+            tenant_id="different-tenant",
+        )
+
+
+@pytest.mark.parametrize(
+    ("camel_tenant", "snake_tenant"),
+    [("tenant-a", "different-tenant"), ("different-tenant", "tenant-a")],
+)
+def test_workload_rejects_either_conflicting_explicit_tenant_alias(
+    camel_tenant: str, snake_tenant: str,
+) -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        activate_workload_partitions,
+    )
+
+    outcomes, generation, digest = _workload_outcomes(generation="tenant-alias-conflict")
+    defender = {
+        **_defender_workload_row(digest),
+        "tenantId": camel_tenant,
+        "tenant_id": snake_tenant,
+    }
+    with pytest.raises(ValueError, match="tenant"):
+        activate_workload_partitions(
+            outcomes=outcomes,
+            defender_rows=[defender],
+            attempted_generation=generation,
+            completed_at="2026-09-05T00:00:01Z",
+            tenant_id="tenant-a",
+        )
+
+
 def test_each_workspace_table_returns_an_isolated_sanitized_outcome() -> None:
     from intelligence.vulnerability.workload_inventory import (
         WorkloadQueryFailure,

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
 from typing import Annotated, Any
 
+from azure.core.exceptions import HttpResponseError
 from fastapi import APIRouter, Query
 
 from ontology_discovery.command_intake import (
@@ -63,6 +65,7 @@ router = APIRouter(
     prefix="/api/v1/ontology-discovery",
     tags=["ontology-discovery"],
 )
+logger = logging.getLogger(__name__)
 
 ConnectionId = Annotated[str, Query(min_length=1, max_length=160)]
 SOURCE_ENGINE = "ontology_discovery.durable_services"
@@ -357,6 +360,7 @@ class OntologyDiscoveryApi:
             "fence": int(manifest.get("fence") or 0),
             "complete": manifest.get("complete") is True,
             "validation": {
+                "observed": isinstance(validation.get("passed"), bool),
                 "passed": validation.get("passed") is True,
                 "errors": list(validation.get("errors") or ())[:100],
                 "model_derived_relationships": int(
@@ -740,7 +744,12 @@ class OntologyDiscoveryApi:
             "pointer_etag": "",
             "fence": 0,
             "complete": False,
-            "validation": {"passed": False, "errors": [], "model_derived_relationships": 0},
+            "validation": {
+                "observed": False,
+                "passed": False,
+                "errors": [],
+                "model_derived_relationships": 0,
+            },
             "compatibility": {"all_consumers_compatible": False},
             "publication": {"intent": "", "result": ""},
             "can_rollback": False,
@@ -842,8 +851,20 @@ def status(
 ) -> dict[str, Any]:
     service = _provider(context)
     connection = _connection(service, connection_id, scope)
+    try:
+        result = service.status(connection)
+    except HttpResponseError as exc:
+        logger.warning(
+            "ontology_status_provider_unavailable",
+            extra={"provider_status": exc.status_code},
+        )
+        raise ApiError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Ontology status storage is unavailable",
+            {"reason": "ontology_status_read_unavailable"},
+        ) from exc
     return envelope(
-        service.status(connection),
+        result,
         evidence=_evidence(connection_id),
         scope=scope.to_dict(),
     )

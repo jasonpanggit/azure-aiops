@@ -16,7 +16,7 @@ import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { fabricMedallionApi } from "@/lib/services";
-import type { Envelope, FabricCapabilities, FabricDataset, FabricGovernanceSummary, FabricIngestionRun, FabricManifestEntry, FabricLayerCounts, SubscriptionConnection } from "@/lib/types";
+import type { Envelope, FabricCapabilities, FabricDataset, FabricGovernanceSummary, FabricIngestionRun, FabricManifestEntry, FabricManifestSummary, FabricSourceObservation, FabricLayerCounts, SubscriptionConnection } from "@/lib/types";
 
 export type FabricLayerKey = "bronze" | "silver" | "gold";
 
@@ -98,6 +98,13 @@ function FabricMedallionPanelContent({
   );
   const totalTables = counts ? FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].total, 0) : null;
   const healthyTables = counts ? FABRIC_LAYER_KEYS.reduce((total, layer) => total + counts[layer].healthy, 0) : null;
+  const relationshipCount = governance.data?.data.referential_integrity_blockers;
+  const governanceEmptyQualified = isQualifiedEmptyObservation(governance.data?.data.observation);
+  const governanceMetricTone = relationshipCount
+    ? "critical"
+    : governanceEmptyQualified && governance.data?.data.observation?.freshness !== "stale"
+      ? "success"
+      : "default";
 
   return (
     <section
@@ -122,9 +129,11 @@ function FabricMedallionPanelContent({
         <MetricCard label="Gold tables" value={formatHealthCount(counts?.gold)} detail="Curated products; downstream readiness checked separately" tone={fabricMetricTone(counts?.gold)} />
         <MetricCard
           label="Governed relationships"
-          value={governance.data ? governance.data.data.referential_integrity_blockers : "—"}
+          value={relationshipCount && relationshipCount > 0
+            ? relationshipCount
+            : governanceEmptyQualified ? 0 : null}
           detail={counts ? `${healthyTables}/${totalTables} datasets healthy; referential integrity blockers` : "Dataset counts unavailable; referential integrity blockers"}
-          tone={!governance.data ? "default" : governance.data.data.referential_integrity_blockers ? "critical" : "success"}
+          tone={governanceMetricTone}
         />
       </div>
 
@@ -358,8 +367,9 @@ export function FabricSubscriptionSummary({
   );
 }
 
-function FabricManifestPanel({ manifest }: { manifest: { data: Envelope<{ entries: FabricManifestEntry[] }> | null; error: Error | null; loading: boolean } }) {
+function FabricManifestPanel({ manifest }: { manifest: { data: Envelope<FabricManifestSummary> | null; error: Error | null; loading: boolean } }) {
   const entries = manifest.data?.data.entries ?? [];
+  const observation = manifest.data?.data.observation;
   return (
     <section className="card">
       <div className="card-header"><div><h2>Publication manifest & lifecycle</h2><p>Disposition for every published Fabric dataset contract.</p></div></div>
@@ -368,8 +378,10 @@ function FabricManifestPanel({ manifest }: { manifest: { data: Envelope<{ entrie
           <StatePanel title="Publication manifest is unavailable" message={manifest.error.message} tone="error" />
         ) : manifest.loading ? (
           <StatePanel title="Loading publication manifest" message="Reading active, dormant, retired, and deployment-blocked dispositions." tone="loading" />
+        ) : entries.length === 0 && isQualifiedEmptyObservation(observation) ? (
+          <StatePanel title="No Fabric medallion datasets observed" message={lastObservationCopy(observation)} />
         ) : entries.length === 0 ? (
-          <StatePanel title="No Fabric medallion datasets registered" message="Complete an initial subscription sync to publish Bronze, Silver, and Gold datasets. Layer health appears here once the first sync completes." />
+          <StatePanel title="Fabric medallion dataset absence unverified" message={unverifiedObservationCopy(observation, "No scoped source observation proves that the manifest is empty.")} />
         ) : (
           <div className="fabric-lifecycle-groups">
             {groupByDisposition(entries).map(([disposition, group]) => (
@@ -401,6 +413,7 @@ function FabricManifestPanel({ manifest }: { manifest: { data: Envelope<{ entrie
 function FabricGovernancePanel({ governance }: { governance: { data: Envelope<FabricGovernanceSummary> | null; error: Error | null; loading: boolean } }) {
   const summary = governance.data?.data;
   const gaps = summary?.gaps ?? [];
+  const observation = summary?.observation;
   return (
     <section className="card">
       <div className="card-header"><div><h2>Governance gaps</h2><p>Ownership, tag coverage, and referential-integrity blockers.</p></div></div>
@@ -409,8 +422,10 @@ function FabricGovernancePanel({ governance }: { governance: { data: Envelope<Fa
           <StatePanel title="Governance gaps are unavailable" message={governance.error.message} tone="error" />
         ) : governance.loading ? (
           <StatePanel title="Loading governance gaps" message="Checking quality reports for ownership, tag, and relationship blockers." tone="loading" />
+        ) : gaps.length === 0 && isQualifiedEmptyObservation(observation) ? (
+          <StatePanel title="No governance gaps observed" message={lastObservationCopy(observation)} />
         ) : gaps.length === 0 ? (
-          <StatePanel title="No governance gaps for this scope" message="Ownership, tags, and referential integrity have no open blockers in the current Fabric medallion snapshot." />
+          <StatePanel title="Governance absence unverified" message={unverifiedObservationCopy(observation, "No scoped quality report proves a zero-gap result.")} />
         ) : (
           <div className="compliance-list">
             {gaps.map((gap) => (
@@ -424,6 +439,30 @@ function FabricGovernancePanel({ governance }: { governance: { data: Envelope<Fa
       </div>
     </section>
   );
+}
+
+function isQualifiedEmptyObservation(
+  observation: FabricSourceObservation | undefined,
+): observation is FabricSourceObservation {
+  return observation?.state === "observed_empty"
+    && observation.evidence_mode === "recorded_metadata"
+    && Boolean(observation.observed_at)
+    && observation.freshness !== "unknown";
+}
+
+function lastObservationCopy(observation: FabricSourceObservation | undefined): string {
+  if (!isQualifiedEmptyObservation(observation)) {
+    return "The source absence is not qualified.";
+  }
+  return `The last recorded source observation was empty ${relativeTime(observation.observed_at)} (freshness: ${datasetStatusLabel(observation.freshness)}). This does not guarantee the current state.`;
+}
+
+function unverifiedObservationCopy(
+  observation: FabricSourceObservation | undefined,
+  message: string,
+): string {
+  const reason = observation?.reason_code ? ` Reason: ${observation.reason_code}.` : "";
+  return `${message}${reason}`;
 }
 
 function FabricIngestionPanel({ ingestionHistory }: { ingestionHistory: { data: Envelope<{ runs: FabricIngestionRun[] }> | null; error: Error | null; loading: boolean } }) {

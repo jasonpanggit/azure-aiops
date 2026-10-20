@@ -64,7 +64,10 @@ def test_scoped_reads_never_open_unauthorized_root(connection_context, monkeypat
             "projection_name": "projection", "disposition": "active",
             "subscription_id": "obsolete", "subscription_connection": "obsolete",
         }],
-        "metadata_quality_reports": [{"report_json": "[]"}],
+        "metadata_quality_reports": [{
+            "subscription_id": "sub-allowed",
+            "report_json": "[]",
+        }],
     })
 
     def unexpected_fallback(_name):
@@ -100,6 +103,36 @@ def test_publication_visibility_does_not_require_source_status_storage(connectio
     # The fixture reader raises for every dataset because none are registered.
     assert routes._publication_attempt_rows(context, Scope())[0]["status"] == "failed"
     assert accesses == []
+
+
+def test_scoped_quality_absence_requires_report_scope_provenance(
+    connection_context,
+):
+    context, _, datasets, _ = connection_context
+    zero_gap_report = {
+        "timestamp": "2026-10-20T14:00:00Z",
+        "passed": True,
+        "failed_records": 0,
+        "report_json": (
+            '[{"table_name":"silver_incidents","rule_counts":'
+            '{"ownership_coverage":0,"tag_coverage":0,"orphan_relationships":0}}]'
+        ),
+    }
+    datasets["metadata_quality_reports"] = [
+        zero_gap_report,
+        {**zero_gap_report, "subscription_id": "system"},
+    ]
+
+    response = routes.medallion_governance(
+        context,
+        Scope({"subscription": {"sub-allowed"}}),
+    )
+
+    assert response["data"]["gaps"] == []
+    assert response["data"]["observation"]["state"] == "unobserved"
+    assert response["data"]["observation"]["reason_code"] == (
+        "no_scope_qualified_quality_report"
+    )
 
 
 @pytest.mark.parametrize("connections", ["none", "hidden", "empty", "no-root"])

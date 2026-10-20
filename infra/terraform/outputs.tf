@@ -169,3 +169,16 @@ output "ontology_coordinator_source_role_contract" {
     path                  = "/Files/aiops/connections"
   } : null
 }
+
+output "ontology_api_state_read_role_contract" {
+  description = "Desired API managed-identity Read policy for the isolated ontology state folder; reconciled explicitly, never during plan."
+  value = var.enable_fabric ? {
+    principal_object_id   = azurerm_user_assigned_identity.apps.principal_id
+    principal_resource_id = azurerm_user_assigned_identity.apps.id
+    tenant_id             = var.tenant_id
+    workspace_id          = fabric_workspace.ontology_discovery_state[0].id
+    item_id               = fabric_lakehouse.ontology_discovery_state[0].id
+    role_name             = "Phase13ApiStateRead"
+    path                  = "/Files/aiops/ontology/state"
+  } : null
+}
