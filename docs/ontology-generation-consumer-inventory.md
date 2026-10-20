@@ -41,3 +41,16 @@ all dataset reads, and reports the alias version with generation provenance.
 Promotion and rollback only affect the next operation; an in-flight operation
 cannot combine rows from two generations. The versioned alias remains in place
 until the Plan 13-08 checkpoint decides its retirement policy.
+
+## Inventory publication ownership
+
+The inventory refresh orchestrator pins only the five datasets declared by
+`intelligence.inventory.combine.INVENTORY_DATASETS` from its exact combined
+inventory generation. DatasetStore manifests also contain carried-forward
+datasets; their presence does not transfer ownership to inventory. In
+particular, workload checkpoints, observations, deployments, source partitions
+and discovery source status must come from the refreshed discovery roots, not
+from an older inventory manifest. The entities-aware activation combines those
+fresh discovery datasets with the pinned inventory datasets before Fabric replay.
+`sourceRunIds` alone is not proof of propagated checkpoint contents; compare the
+selected generation's rows and integrity hashes before downstream qualification.

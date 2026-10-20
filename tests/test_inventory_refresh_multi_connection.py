@@ -172,7 +172,6 @@ def test_refresh_all_connections_merges_successful_connections_and_isolates_fail
     config_path.write_text(
         f"storage:\n  output_dir: {tmp_path / 'compat'}\n", encoding="utf-8"
     )
-
     pipelines: dict[str, FakePipeline] = {
         "conn-a": FakePipeline(
             tmp_path / "connections" / "conn-a",
@@ -310,6 +309,22 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     from storage.datasets import DatasetStore
 
     _build_registry(tmp_path)
+    DatasetStore(tmp_path / "compat").publish(
+        {
+            "exposure/workload_source_checkpoints": [
+                {
+                    "checkpoint_key": f"old-system-{index}",
+                    "tenant_id": "system",
+                    "connection_id": "conn-a",
+                    "effective_generation": "historical",
+                }
+                for index in range(9)
+            ],
+        },
+        {},
+        {"runId": "historical", "status": "completed"},
+        ontology={},
+    )
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -332,7 +347,21 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
         for connection_id, pipeline in pipelines.items():
             discovery_root = tmp_path / "full-discovery" / connection_id
             DatasetStore(discovery_root).publish(
-                {"entities/Resource": pipeline._entity_rows},
+                {
+                    "entities/Resource": pipeline._entity_rows,
+                    "exposure/workload_source_checkpoints": [
+                        {
+                            "checkpoint_key": f"fresh-{connection_id}-{index}",
+                            "tenant_id": TENANT,
+                            "connection_id": connection_id,
+                            "effective_generation": "discovery",
+                            "status": "healthy-empty",
+                            "row_count": 0,
+                            "carried_forward": False,
+                        }
+                        for index in range(6)
+                    ],
+                },
                 {},
                 {"runId": "discovery", "status": "completed"},
                 ontology={},
@@ -458,3 +487,14 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     assert sorted(
         row["resource_id"] for row in replayed["inventory/os_observations"]
     ) == ["/subscriptions/aaa/vm1", "/subscriptions/bbb/vm2"]
+    if separate_discovery:
+        checkpoints = store.read_dataset("exposure/workload_source_checkpoints")
+        assert len(checkpoints) == 12
+        assert {row["tenant_id"] for row in checkpoints} == {TENANT}
+        assert {row["effective_generation"] for row in checkpoints} == {"discovery"}
+        assert all(
+            row["status"] == "healthy-empty"
+            and row["row_count"] == 0
+            and row["carried_forward"] is False
+            for row in checkpoints
+        )

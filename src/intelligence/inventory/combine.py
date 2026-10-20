@@ -20,7 +20,7 @@ from typing import Any
 
 from storage.datasets import DatasetStore
 
-_INVENTORY_DATASETS = (
+INVENTORY_DATASETS = (
     "inventory/os_observations",
     "inventory/source_status",
     "inventory/software_observations",
@@ -99,7 +99,7 @@ def publish_combined_inventory_snapshot(
             continue
         manifest = _read_manifest(store, generation=generation)
         connection_datasets = store.read_datasets(
-            _INVENTORY_DATASETS,
+            INVENTORY_DATASETS,
             generation=generation,
         )
         source_runs.append(str(manifest.get("runId") or connection_id))
@@ -266,7 +266,7 @@ def _load_combined_inventory_generation(
         raise RuntimeError(
             "Combined inventory generation does not match the requested run"
         )
-    datasets = store.read_datasets(_INVENTORY_DATASETS, generation=generation)
+    datasets = store.read_datasets(INVENTORY_DATASETS, generation=generation)
     manifest_datasets = manifest.get("datasets")
     if not isinstance(manifest_datasets, dict):
         raise TypeError("Combined inventory manifest has no dataset details")
