@@ -172,6 +172,7 @@ def test_refresh_all_connections_merges_successful_connections_and_isolates_fail
     config_path.write_text(
         f"storage:\n  output_dir: {tmp_path / 'compat'}\n", encoding="utf-8"
     )
+
     pipelines: dict[str, FakePipeline] = {
         "conn-a": FakePipeline(
             tmp_path / "connections" / "conn-a",
@@ -343,24 +344,40 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
         ),
     }
     discovery_roots = {}
+    expected_checkpoints = []
     if separate_discovery:
         for connection_id, pipeline in pipelines.items():
             discovery_root = tmp_path / "full-discovery" / connection_id
+            checkpoints = [
+                {
+                    "checkpoint_key": f"fresh-{connection_id}-{workspace}-{family}",
+                    "tenant_id": TENANT,
+                    "subscription_id": SUB_A if connection_id == "conn-a" else SUB_B,
+                    "connection_id": connection_id,
+                    "workspace_id": f"{connection_id}-workspace-{workspace}",
+                    "source_family": family,
+                    "attempted_generation": "discovery",
+                    "effective_generation": "discovery",
+                    "ingestion_run_id": "discovery",
+                    "status": "healthy-empty",
+                    "completeness": "healthy-empty",
+                    "row_count": 0,
+                    "carried_forward": False,
+                    "safe_error_code": "",
+                    "safe_error_summary": "",
+                    "lkg_source_generation": "",
+                }
+                for workspace in range(2)
+                for family in (
+                    "kube_pod_inventory", "container_inventory",
+                    "container_image_inventory",
+                )
+            ]
+            expected_checkpoints.extend(checkpoints)
             DatasetStore(discovery_root).publish(
                 {
                     "entities/Resource": pipeline._entity_rows,
-                    "exposure/workload_source_checkpoints": [
-                        {
-                            "checkpoint_key": f"fresh-{connection_id}-{index}",
-                            "tenant_id": TENANT,
-                            "connection_id": connection_id,
-                            "effective_generation": "discovery",
-                            "status": "healthy-empty",
-                            "row_count": 0,
-                            "carried_forward": False,
-                        }
-                        for index in range(6)
-                    ],
+                    "exposure/workload_source_checkpoints": checkpoints,
                 },
                 {},
                 {"runId": "discovery", "status": "completed"},
@@ -488,8 +505,14 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
         row["resource_id"] for row in replayed["inventory/os_observations"]
     ) == ["/subscriptions/aaa/vm1", "/subscriptions/bbb/vm2"]
     if separate_discovery:
-        checkpoints = store.read_dataset("exposure/workload_source_checkpoints")
+        checkpoints = store.read_datasets(
+            ["exposure/workload_source_checkpoints"],
+            generation=expected_generation,
+        )["exposure/workload_source_checkpoints"]
         assert len(checkpoints) == 12
+        assert sorted(checkpoints, key=lambda row: row["checkpoint_key"]) == sorted(
+            expected_checkpoints, key=lambda row: row["checkpoint_key"],
+        )
         assert {row["tenant_id"] for row in checkpoints} == {TENANT}
         assert {row["effective_generation"] for row in checkpoints} == {"discovery"}
         assert all(
