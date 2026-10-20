@@ -168,6 +168,7 @@ def _run_inventory_refresh_locked(
     from fabric.config import FabricRuntimeConfig
     from fabric.runtime import FabricRuntimeMode, build_runtime
     from intelligence.inventory.combine import (
+        INVENTORY_DATASETS,
         publish_combined_inventory_snapshot,
         republish_combined_snapshot_to_fabric,
     )
@@ -210,7 +211,7 @@ def _run_inventory_refresh_locked(
             [
                 name
                 for name in combined_manifest.get("datasets") or {}
-                if name != "ontology/ontology"
+                if name in INVENTORY_DATASETS
             ],
             generation=inventory_generation,
         )
