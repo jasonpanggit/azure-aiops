@@ -55,6 +55,31 @@ OneLake is accessed through its ADLS Gen2-compatible endpoint; the implementatio
 - Source snapshots and configuration paths are resolved and containment-checked.
 - Agent calls cannot supply credentials, workspace IDs, Lakehouse IDs, or filesystem roots.
 
+### Automated readiness probe (source-only)
+
+`fabric.gql_readiness.GqlReadinessProbe` provides an unactivated observation
+building block for future maintenance. Trusted server composition supplies
+the workspace, graph, credential and HTTP client; invocation accepts no target
+or query. It sends only `RETURN 1 AS probe LIMIT 1` to the documented beta
+endpoint and requires the exact complete scalar result.
+
+The probe defaults to a 30-second acceptance deadline and four requests
+(configuration ceilings: 60 seconds and ten requests). All responses combined
+are limited to 64 KiB. Continuations keep the query and destination unchanged,
+encode opaque tokens once, and never count a pending response as success.
+Transport/HTTP errors, execution errors, warnings including truncation, malformed
+results and late results raise explicit errors without raw service text.
+No transport retry, redirect, graph refresh, configuration write or load occurs.
+Credential acquisition and blocking HTTP phases are checked against elapsed
+time, but cannot be forcibly interrupted by the acceptance deadline; no late
+result is accepted as ready.
+
+This probe is not registered in runtime or a scheduler. Passing it proves only
+that the configured graph endpoint can execute the constant query for that
+credential. It does not prove entity/edge membership, source freshness, tenant
+isolation for other callers, automatic refresh or unattended ontology authoring.
+Those qualification and admission gates remain mandatory before recurrence.
+
 ## Sources
 
 [1] Microsoft, “OneLake access APIs.” https://learn.microsoft.com/en-us/fabric/onelake/onelake-access-api
