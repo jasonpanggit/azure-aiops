@@ -59,6 +59,7 @@ from .dataset_mapper import (
     ONTOLOGY_RELATIONSHIP_TYPES,
     GranularExposureOntologyMapper,
     InventoryDatasetMapper,
+    container_exposure_ontology_rows,
     exposure_gold_products_from_datasets,
     filter_legacy_granular_exposure_graph,
     ontology_entity_table,
@@ -3488,6 +3489,10 @@ class FabricSyncService:
                 if row["entity_type"] == entity_type
                 and row["lifecycle_status"] == "active"
             ]
+        exposure_table = ontology_entity_table("ContainerImageExposure")
+        datasets[exposure_table] = container_exposure_ontology_rows(
+            datasets[exposure_table],
+        )
         for row in result.relationships:
             if row["lifecycle_status"] != "active":
                 continue
@@ -4471,6 +4476,10 @@ def ontology_generation_products(
             if row.get("entity_type") == entity_type
             and row.get("lifecycle_status") == "active"
         ]
+    exposure_table = ontology_entity_table("ContainerImageExposure")
+    products[exposure_table] = container_exposure_ontology_rows(
+        products[exposure_table],
+    )
     for relationship_type in ONTOLOGY_RELATIONSHIP_TYPES:
         products.setdefault(ontology_relationship_table(*relationship_type), [])
     for row in relationship_rows:
