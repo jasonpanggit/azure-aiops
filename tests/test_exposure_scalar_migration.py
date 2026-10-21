@@ -51,7 +51,7 @@ def setup(tmp_path, *, empty=False, upgraded=False):
         for source, registry in zip(sources, registries, strict=True)
     ]
     onelake = OneLakeWriter("workspace", "lakehouse", local_root=tmp_path / "lake")
-    delta = DeltaWriter(sleep=lambda _: None)
+    delta = DeltaWriter(max_attempts=1, sleep=lambda _: None)
     uris = {
         "target": onelake.table_uri("ontology", "container_image_exposure_entities"),
         "canonical": onelake.table_uri("ontology", "entities"),
@@ -381,3 +381,68 @@ def test_replay_rejects_changed_authority_and_reused_id_with_different_plan(tmp_
     with pytest.raises(RuntimeError, match="digest"):
         run(lake, delta, replace(plan, projected_rows_hash="d" * 64))
     assert delta.version(uris["target"]) == 1
+
+
+@pytest.mark.parametrize("attempts", [4, 2, 0, True])
+def test_retrying_writer_rejected_without_changing_configuration(tmp_path, attempts):
+    lake, delta, plan, uris, _ = setup(tmp_path)
+    delta.max_attempts = attempts
+    with pytest.raises(ValueError, match="single-attempt"):
+        run(lake, delta, plan)
+    assert delta.max_attempts == attempts
+    assert delta.version(uris["target"]) == 0
+
+
+@pytest.mark.parametrize("lost", ["lease", "authority"])
+def test_real_inner_timeout_never_retries_after_guard_invalidated(tmp_path, monkeypatch, lost):
+    lake, delta, plan, uris, _ = setup(tmp_path)
+    state = {"lost": False}
+    attempts = []
+    sleeps = []
+    original = delta._write_once
+
+    class Lock:
+        def assert_held(self):
+            if state["lost"] and lost == "lease":
+                raise LeaseLostError("lost inside first write")
+
+    @contextmanager
+    def lock():
+        yield Lock()
+
+    def once(*args, **kwargs):
+        attempts.append(True)
+        if len(attempts) == 1:
+            state["lost"] = True
+            raise TimeoutError("before commit")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(lake, "sync_lock", lock)
+    monkeypatch.setattr(delta, "_write_once", once)
+    monkeypatch.setattr(delta, "sleep", lambda seconds: sleeps.append(seconds))
+    with pytest.raises(RuntimeError, match="without proven commit"):
+        migrate_exposure_scalars(
+            lake, delta, plan,
+            observe_authority=lambda: "b" * 64 if state["lost"] else "a" * 64,
+        )
+    assert len(attempts) == 1
+    assert sleeps == []
+    assert delta.version(uris["target"]) == 0
+
+
+def test_real_inner_timeout_after_commit_reconciles_without_retry(tmp_path, monkeypatch):
+    lake, delta, plan, uris, _ = setup(tmp_path)
+    original = delta._write_once
+    attempts = []
+
+    def once(*args, **kwargs):
+        attempts.append(True)
+        original(*args, **kwargs)
+        raise TimeoutError("lost durable commit reply")
+
+    monkeypatch.setattr(delta, "_write_once", once)
+    assert run(lake, delta, plan)["status"] == "completed"
+    assert len(attempts) == 1
+    assert delta.version(uris["target"]) == 1
+    assert run(lake, delta, plan)["status"] == "replayed"
+    assert len(attempts) == 1

@@ -72,6 +72,8 @@ def migrate_exposure_scalars(
     by an operator is NOT live authority qualification. This module does not
     implement that observer, authorize execution, or advance any pointer.
     """
+    if type(delta.max_attempts) is not int or delta.max_attempts != 1:
+        raise ValueError("Migration requires an explicitly configured single-attempt DeltaWriter")
     if (
         onelake.workspace_id != plan.workspace_id
         or onelake.lakehouse_id != plan.lakehouse_id

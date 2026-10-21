@@ -8,6 +8,10 @@ It depends on the separate explicit-scalar prerequisite in PR344.
 
 The caller must provide the existing `OneLakeWriter` and `DeltaWriter`, an
 independently reviewed `ExposureScalarMigrationPlan`, and an authority observer.
+The Delta writer must be explicitly constructed with `max_attempts=1`; default
+retrying writers are rejected before acquiring the lease or mutating anything.
+The function never changes shared writer configuration. This prevents internal
+write retries/backoff from committing after a lease or authority change.
 The plan specifies the exact workspace/Lakehouse/schema, four existing Delta
 versions (target, canonical entities, Silver exposure and registry entities),
 SHA256 transaction ID, full projected-record hash and external authority proof
