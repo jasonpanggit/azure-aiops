@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import json
+import threading
 from dataclasses import asdict
 from types import SimpleNamespace
 
@@ -472,21 +473,24 @@ def test_sql_propagation_deadline_is_acceptance_cutoff_even_on_success(
                 ):
                     return [row for row in result if row["name"] not in cli._SCALARS]
                 if case == "boundary-success":
-                    now[0] = 120
+                    now[0] = migration.SQL_PROPAGATION_TIMEOUT_SECONDS
                 elif case in ("late-success", "first-observation-overrun"):
-                    now[0] = 121
+                    now[0] = migration.SQL_PROPAGATION_TIMEOUT_SECONDS + 1
                 elif case == "before-deadline":
-                    now[0] = 119
+                    now[0] = migration.SQL_PROPAGATION_TIMEOUT_SECONDS - 1
         return result
 
     def sleep(seconds):
         sleeps.append(seconds)
-        now[0] = 120 if case == "before-next-observation" else now[0] + seconds
+        now[0] = (
+            migration.SQL_PROPAGATION_TIMEOUT_SECONDS
+            if case == "before-next-observation" else now[0] + seconds
+        )
 
     def read(uri, **kwargs):
         result = original_read(uri, **kwargs)
         if case == "final-readback-overrun" and uri == target and kwargs.get("version") == 2:
-            now[0] = 121
+            now[0] = migration.SQL_PROPAGATION_TIMEOUT_SECONDS + 1
         return result
 
     def write(uri, *args, **kwargs):
@@ -511,6 +515,11 @@ def test_sql_propagation_deadline_is_acceptance_cutoff_even_on_success(
         assert sleeps == [5]
     assert writes == [target]
     assert post_queries
+
+
+def test_sql_propagation_cutoff_is_explicitly_bounded():
+    assert migration.SQL_PROPAGATION_TIMEOUT_SECONDS == 240
+    assert migration.SQL_PROPAGATION_POLL_SECONDS == 5
 
 
 @pytest.mark.parametrize("case", ["registry-collision", "registry-scope", "silver-scope", "malformed-registry"])
@@ -887,6 +896,12 @@ def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
     monkeypatch.setattr(cli, "DataLakeServiceClient", Service)
     monkeypatch.setattr(cli, "OneLakeWriter", Lake)
     monkeypatch.setattr(cli, "DeltaWriter", writer)
+    class SqlWriter(cli._ExposureMigrationDeltaWriter):
+        def __new__(cls, **kwargs):
+            assert sql_mode
+            return writer(**kwargs)
+
+    monkeypatch.setattr(cli, "_ExposureMigrationDeltaWriter", SqlWriter)
     monkeypatch.setattr(cli, "FabricClient", fabric)
     monkeypatch.setattr(cli, "OntologyManager", manager)
     monkeypatch.setattr(cli, "ReadOnlyLakeDocuments", lambda fs: observer.documents)
@@ -919,3 +934,201 @@ def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
         )
         assert requests[offset + 1] == ("GET", "/v1/operations/header-proof")
         assert requests[offset + 2] == ("GET", "/v1/operations/header-proof/result")
+
+
+def test_sql_reader_fresh_metadata_heads_observe_real_interposed_commit(tmp_path, monkeypatch):
+    from deltalake import DeltaTable
+
+    uri = str(tmp_path / "heads")
+    writer = DeltaWriter(max_attempts=1)
+    writer.write(uri, [{"key": "first"}], mode="overwrite", required_columns=())
+    calls = []
+
+    def table(*args, **kwargs):
+        calls.append(kwargs)
+        return DeltaTable(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "DeltaTable", table)
+    reader = cli._ExposureMigrationDeltaWriter(max_attempts=1)
+    assert reader.version(uri) == 0
+    assert reader.read_heads({"target": uri}) == {"target": 0}
+    writer.write(uri, [{"key": "second"}], mode="overwrite", required_columns=())
+    assert reader.version(uri) == 1
+    assert reader.read_heads({"target": uri}) == {"target": 1}
+    assert len(calls) == 4
+    assert all(
+        call["without_files"] is True and call["skip_stats"] is True and "version" not in call
+        for call in calls
+    )
+
+
+def test_sql_reader_pinned_full_reads_keep_files_schema_and_original_fields(tmp_path, monkeypatch):
+    from deltalake import DeltaTable
+
+    uri = str(tmp_path / "pinned")
+    writer = DeltaWriter(max_attempts=1)
+    original = [{"key": "first", "original_payload": '{"untruncated":true}'}]
+    writer.write(uri, original, mode="overwrite", required_columns=())
+    writer.write(uri, [{"key": "second", "original_payload": "new"}], mode="overwrite", required_columns=())
+    calls = []
+
+    def table(*args, **kwargs):
+        calls.append(kwargs)
+        result = DeltaTable(*args, **kwargs)
+        assert result.file_uris()
+        assert not kwargs.get("without_files", False)
+        return result
+
+    monkeypatch.setattr(cli, "DeltaTable", table)
+    reader = cli._ExposureMigrationDeltaWriter(max_attempts=1)
+    assert reader.read_pinned({"target": uri}, {"target": 0}) == {"target": original}
+    rows, schema = reader.read_snapshot(uri, version=0)
+    assert rows == original
+    assert schema == writer.describe(uri, version=0)["schema"]
+    assert all(call["version"] == 0 for call in calls)
+
+
+@pytest.mark.parametrize("method", ["version", "read_heads", "read_pinned", "read_snapshot"])
+@pytest.mark.parametrize("failure", ["missing", "auth", "history"])
+def test_sql_reader_does_not_fallback_or_retry_errors(monkeypatch, method, failure):
+    error = RuntimeError(failure)
+    calls = []
+
+    def table(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise error
+
+    monkeypatch.setattr(cli, "DeltaTable", table)
+    reader = cli._ExposureMigrationDeltaWriter(max_attempts=1)
+    calls_by_method = {
+        "version": lambda: reader.version("uri"),
+        "read_heads": lambda: reader.read_heads({"target": "uri"}),
+        "read_pinned": lambda: reader.read_pinned({"target": "uri"}, {"target": 0}),
+        "read_snapshot": lambda: reader.read_snapshot("uri", version=0),
+    }
+    with pytest.raises(RuntimeError) as caught:
+        calls_by_method[method]()
+    assert caught.value is error
+    assert len(calls) == 1
+
+
+def test_sql_reader_real_missing_table_and_missing_history_raise(tmp_path):
+    reader = cli._ExposureMigrationDeltaWriter(max_attempts=1)
+    with pytest.raises(Exception, match="does not exist|No such file|not found"):
+        reader.version(str(tmp_path / "missing"))
+    uri = str(tmp_path / "existing")
+    DeltaWriter(max_attempts=1).write(uri, [{"key": "value"}], mode="overwrite", required_columns=())
+    with pytest.raises(Exception, match="version|Version|log"):
+        reader.read_snapshot(uri, version=999)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_sql_reader_batch_max_four_options_isolation_and_error_drain(fail):
+    lock = threading.Lock()
+    ready = threading.Event()
+    state = {"started": 0, "active": 0, "maximum": 0, "finished": 0}
+    provided = {"token": "current"}
+    provider_calls = []
+    reader = cli._ExposureMigrationDeltaWriter(
+        max_attempts=1, storage_options={"existing": "untouched"},
+        storage_options_provider=lambda: (provider_calls.append(1) or provided),
+    )
+    original_options = dict(reader.storage_options)
+    failure = RuntimeError("worker failed")
+
+    def read(uri, options, name):
+        assert options == {"token": "current"}
+        options["token"] = name
+        with lock:
+            state["started"] += 1
+            state["active"] += 1
+            state["maximum"] = max(state["maximum"], state["active"])
+            if state["started"] == 4:
+                ready.set()
+        try:
+            assert ready.wait(5)
+            if fail and name == "0":
+                raise failure
+            return uri
+        finally:
+            with lock:
+                state["active"] -= 1
+                state["finished"] += 1
+
+    uris = {str(n): f"uri{n}" for n in range(8)}
+    if fail:
+        with pytest.raises(RuntimeError) as caught:
+            reader._batch(uris, read)
+        assert caught.value is failure
+    else:
+        assert reader._batch(uris, read) == uris
+    assert state["maximum"] == 4
+    assert state["active"] == 0 and state["finished"] == 8
+    assert provided == {"token": "current"} and reader.storage_options == original_options
+    assert provider_calls == [1]
+    reader._batch({"next": "uri"}, lambda *_: None)
+    assert provider_calls == [1, 1]
+
+
+@pytest.mark.parametrize("versions", [{}, {"other": 0}, {"target": True}, {"target": -1}, {"target": 1.5}])
+def test_sql_reader_requires_exact_pinned_versions(versions):
+    reader = cli._ExposureMigrationDeltaWriter(max_attempts=1)
+    with pytest.raises(ValueError, match="exact non-negative versions"):
+        reader.read_pinned({"target": "uri"}, versions)
+
+
+@pytest.mark.parametrize("drift_at", [None, 2, 3])
+def test_sql_observer_batched_head_brackets_and_sequential_authority(tmp_path, monkeypatch, drift_at):
+    request, observer, lake, delta, *_ = sql_fixture(tmp_path)
+    main_thread = threading.get_ident()
+    canonical_uri = lake.table_uri("ontology", "entities")
+    count = 0
+    counter_lock = threading.Lock()
+
+    class Table:
+        def __init__(
+            self, uri, *, storage_options, version=None, without_files=False,
+            skip_stats=False,
+        ):
+            self.uri, self.pinned = uri, version
+            self.without_files, self.skip_stats = without_files, skip_stats
+
+        def version(self):
+            nonlocal count
+            assert self.without_files is True and self.skip_stats is True and self.pinned is None
+            with counter_lock:
+                if self.uri == canonical_uri:
+                    count += 1
+                    if count == drift_at:
+                        return delta.version(self.uri) + 1
+            return delta.version(self.uri)
+
+        def to_pyarrow_table(self):
+            assert self.pinned is not None and not self.without_files
+            return SimpleNamespace(to_pylist=lambda: delta.read(self.uri, version=self.pinned))
+
+        def schema(self):
+            assert self.pinned is not None and not self.without_files
+            return SimpleNamespace(to_json=lambda: json.dumps(delta.describe(self.uri, version=self.pinned)["schema"]))
+
+    def sequential(method):
+        def call(*args, **kwargs):
+            assert threading.get_ident() == main_thread
+            return method(*args, **kwargs)
+        return call
+
+    for owner, name in (
+        (observer.documents, "read"), (observer.manager, "get_definition"),
+        (observer.sql_reader, "query"),
+    ):
+        monkeypatch.setattr(owner, name, sequential(getattr(owner, name)))
+    monkeypatch.setattr(cli, "DeltaTable", Table)
+    reader = cli._ExposureMigrationDeltaWriter(max_attempts=1)
+    reader.read = delta.read
+    observer.delta = reader
+    if drift_at is None:
+        assert observer() == request["plan"]["authority_fingerprint"]
+        assert count == 4
+    else:
+        with pytest.raises(RuntimeError, match="head changed|heads changed"):
+            observer()

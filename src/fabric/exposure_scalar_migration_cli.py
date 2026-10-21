@@ -8,7 +8,8 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ import httpx
 from azure.core import MatchConditions
 from azure.identity import ManagedIdentityCredential
 from azure.storage.filedatalake import DataLakeServiceClient
-from deltalake import Schema
+from deltalake import DeltaTable, Schema
 
 from fabric.auth import build_delta_storage_options
 from fabric.exposure_scalar_migration import (
@@ -47,6 +48,65 @@ SQL_ASSURANCE = "sql-source-publication/v1"
 STRICT_ASSURANCE = "native-consumption/v1"
 _SQL_KEYS = (*_OBSERVATION_COLUMNS, "lifecycle_status")
 _SCALARS = ("registry_resource_id", "connection_id")
+
+
+class _ExposureMigrationDeltaWriter(DeltaWriter):
+    """Keep writer semantics; read each head once without an existence probe."""
+
+    def _read_options(self) -> dict[str, str]:
+        options = (
+            self.storage_options_provider()
+            if self.storage_options_provider is not None else self.storage_options
+        )
+        return dict(options)
+
+    def version(self, table_uri: str | Path) -> int:
+        return DeltaTable(
+            str(table_uri), storage_options=self._read_options(),
+            without_files=True, skip_stats=True,
+        ).version()
+
+    def _batch(
+        self, uris: Mapping[str, str], read: Callable[[str, dict[str, str], str], Any],
+    ) -> dict[str, Any]:
+        if not uris:
+            return {}
+        options = self._read_options()
+
+        def one(name: str) -> tuple[str, Any]:
+            return name, read(uris[name], dict(options), name)
+
+        # Only independent Delta reads run in parallel. Exiting the pool joins
+        # every worker, including when a failed result aborts the whole batch.
+        with ThreadPoolExecutor(max_workers=min(4, len(uris))) as pool:
+            return dict(pool.map(one, uris))
+
+    def read_heads(self, uris: Mapping[str, str]) -> dict[str, int]:
+        return self._batch(
+            uris, lambda uri, options, _name: DeltaTable(
+                uri, storage_options=options, without_files=True, skip_stats=True,
+            ).version(),
+        )
+
+    def read_pinned(
+        self, uris: Mapping[str, str], versions: Mapping[str, int],
+    ) -> dict[str, list[dict[str, Any]]]:
+        if set(uris) != set(versions) or any(
+            isinstance(version, bool) or not isinstance(version, int) or version < 0
+            for version in versions.values()
+        ):
+            raise ValueError("Pinned read batch requires exact non-negative versions")
+        return self._batch(
+            uris, lambda uri, options, name: DeltaTable(
+                uri, version=versions[name], storage_options=options,
+            ).to_pyarrow_table().to_pylist(),
+        )
+
+    def read_snapshot(self, uri: str, *, version: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+            raise ValueError("Snapshot read requires an exact non-negative version")
+        table = DeltaTable(uri, version=version, storage_options=self._read_options())
+        return table.to_pyarrow_table().to_pylist(), json.loads(table.schema().to_json())
 
 
 def _assurance_mode(request: Mapping[str, Any]) -> str:
@@ -182,6 +242,11 @@ class ExposureMigrationAuthorityObserver:
         self.sql_reader = sql_reader
         self.mode = _assurance_mode(request)
 
+    def _heads(self, uris: Mapping[str, str]) -> dict[str, int | None]:
+        if self.mode == SQL_ASSURANCE and isinstance(self.delta, _ExposureMigrationDeltaWriter):
+            return self.delta.read_heads(uris)
+        return {name: self.delta.version(uri) for name, uri in uris.items()}
+
     def __call__(self) -> str:
         """Return current authority fingerprint, or reject unqualified observations."""
         if _assurance_mode(self.request) != self.mode:
@@ -211,14 +276,16 @@ class ExposureMigrationAuthorityObserver:
         if not completed:
             raise ValueError("Completed canonical product authority missing")
         marker = max(completed, key=lambda row: str(row.get("timestamp") or ""))
+        product_heads = self._heads({
+            "canonical": self.onelake.table_uri("ontology", "entities"),
+            "relationships": self.onelake.table_uri("ontology", "relationships"),
+        })
         if (
             marker.get("failed_records") != 0
             or marker.get("source_run_id") != generation
             or marker.get("ontology_entity_version") != self.plan.canonical_version
-            or self.delta.version(self.onelake.table_uri("ontology", "entities"))
-            != self.plan.canonical_version
-            or self.delta.version(self.onelake.table_uri("ontology", "relationships"))
-            != marker["ontology_relationship_version"]
+            or product_heads["canonical"] != self.plan.canonical_version
+            or product_heads["relationships"] != marker["ontology_relationship_version"]
         ):
             raise ValueError("Completed product authority disagrees with pinned source")
         catalog = self.documents.read(CATALOG)
@@ -258,11 +325,14 @@ class ExposureMigrationAuthorityObserver:
             or self._evidence("product_authority_evidence") != products
             or self._evidence(evidence_name) != consumption
             or document_hash(self.manager.get_definition(NATIVE_ITEM)) != definition_digest
-            or self.delta.version(marker_uri) != marker_version
-            or self.delta.version(self.onelake.table_uri("ontology", "entities"))
-            != self.plan.canonical_version
-            or self.delta.version(self.onelake.table_uri("ontology", "relationships"))
-            != marker["ontology_relationship_version"]
+            or self._heads({
+                "marker": marker_uri,
+                "canonical": self.onelake.table_uri("ontology", "entities"),
+                "relationships": self.onelake.table_uri("ontology", "relationships"),
+            }) != {
+                "marker": marker_version, "canonical": self.plan.canonical_version,
+                "relationships": marker["ontology_relationship_version"],
+            }
         ):
             raise RuntimeError("Source/product authority changed during observation")
         if pending is not None:
@@ -309,14 +379,22 @@ class ExposureMigrationAuthorityObserver:
             "registry": ("ontology", "container_registry_entities"),
         }
         uris = {name: self.onelake.table_uri(*parts) for name, parts in tables.items()}
-        heads = {name: self.delta.version(uri) for name, uri in uris.items()}
+        heads = self._heads(uris)
         for name in ("canonical", "silver", "registry"):
             if heads[name] != getattr(self.plan, name + "_version"):
                 raise RuntimeError("SQL assurance pinned source head changed")
-        previous = self.delta.read(uris["target"], version=self.plan.target_version)
-        canonical = self.delta.read(uris["canonical"], version=self.plan.canonical_version)
-        silver = self.delta.read(uris["silver"], version=self.plan.silver_version)
-        registries = self.delta.read(uris["registry"], version=self.plan.registry_version)
+        if isinstance(self.delta, _ExposureMigrationDeltaWriter):
+            pinned = self.delta.read_pinned(uris, {
+                name: getattr(self.plan, name + "_version") for name in uris
+            })
+        else:
+            pinned = {
+                name: self.delta.read(uri, version=getattr(self.plan, name + "_version"))
+                for name, uri in uris.items()
+            }
+        previous, canonical, silver, registries = (
+            pinned[name] for name in ("target", "canonical", "silver", "registry")
+        )
         projected = project_exposure_scalars(previous, canonical, silver, registries)
         if migration_rows_hash(projected) != self.plan.projected_rows_hash:
             raise ValueError("SQL assurance full projection differs from review")
@@ -331,13 +409,18 @@ class ExposureMigrationAuthorityObserver:
             )
             if committed is None or committed.version != heads["target"]:
                 raise RuntimeError("SQL assurance target head changed outside reviewed transaction")
-        current = self.delta.read(uris["target"], version=heads["target"])
+        if isinstance(self.delta, _ExposureMigrationDeltaWriter):
+            current, target_schema = self.delta.read_snapshot(
+                uris["target"], version=heads["target"],
+            )
+        else:
+            current = self.delta.read(uris["target"], version=heads["target"])
+            target_schema = self.delta.describe(uris["target"], version=heads["target"])["schema"]
         if heads["target"] == self.plan.target_version:
             if migration_rows_hash(current) != migration_rows_hash(previous):
                 raise ValueError("SQL assurance original records changed")
         elif migration_rows_hash(current) != self.plan.projected_rows_hash:
             raise ValueError("SQL assurance current target differs from full projection")
-        target_schema = self.delta.describe(uris["target"], version=heads["target"])["schema"]
         supported = [
             json.loads(Schema.from_arrow(schema_for(name)).to_json())
             for name in ("ontology_entities", TABLE)
@@ -357,7 +440,7 @@ class ExposureMigrationAuthorityObserver:
             registry_table, registries, schema_for("ontology_entities").names, _SQL_KEYS,
         )
         self._sql_binding(endpoint)
-        if {name: self.delta.version(uri) for name, uri in uris.items()} != heads:
+        if self._heads(uris) != heads:
             raise RuntimeError("SQL assurance heads changed during parity read")
         if pending is not None:
             raise pending
@@ -525,7 +608,11 @@ def main(argv: list[str] | None = None) -> int:
             onelake = OneLakeWriter(
                 WORKSPACE, LAKEHOUSE, credential=credential, service_client=service,
             )
-            delta = DeltaWriter(
+            writer_class = (
+                _ExposureMigrationDeltaWriter
+                if _assurance_mode(request) == SQL_ASSURANCE else DeltaWriter
+            )
+            delta = writer_class(
                 max_attempts=1,
                 storage_options_provider=lambda: build_delta_storage_options(credential),
             )

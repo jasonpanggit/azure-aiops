@@ -30,7 +30,8 @@ _TABLES = {
     "silver": ("silver", "container_image_exposure"),
     "registry": ("ontology", "container_registry_entities"),
 }
-SQL_PROPAGATION_TIMEOUT_SECONDS = 120
+# User-authorized 60s margin over the 180.6s complete-path diagnostic.
+SQL_PROPAGATION_TIMEOUT_SECONDS = 240
 SQL_PROPAGATION_POLL_SECONDS = 5
 
 
