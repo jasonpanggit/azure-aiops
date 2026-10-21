@@ -45,6 +45,24 @@ function result(overrides: Partial<CanonicalCopilotResult> & { synthesis?: unkno
 describe("CopilotInsights", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it("uses shared neutral refresh and AI follow-up actions without changing their behavior", async () => {
+    const onOpenCopilot = vi.fn();
+    render(
+      <CopilotInsights
+        snapshot={{ ...snapshot, evidence: [] }}
+        onOpenCopilot={onOpenCopilot}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Refresh insights" }))
+      .toHaveClass("button", "button-secondary");
+    const followUp = screen.getByRole("button", { name: "Ask a follow-up" });
+    expect(followUp).toHaveClass("button", "button-ai");
+    fireEvent.click(followUp);
+    expect(onOpenCopilot).toHaveBeenCalledOnce();
+    await screen.findByText("No page evidence is available for a grounded insight yet.");
+  });
+
   it("submits a canonical v2 snapshot and renders Foundry narration", async () => {
     investigateCanonical.mockResolvedValue({
       data: result({

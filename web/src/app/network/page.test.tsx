@@ -913,7 +913,7 @@ describe("Network page honest totals and server pagination", () => {
     );
   });
 
-  it("renders insights first without blocking page content while the request is unresolved", async () => {
+  it("renders supporting insights after the task without blocking content while unresolved", async () => {
     const pending = deferred<never>();
     mocks.investigateContext.mockReturnValue(pending.promise);
 
@@ -924,7 +924,7 @@ describe("Network page honest totals and server pagination", () => {
     expect(screen.getByText("Reviewing the bounded topology evidence…")).toBeInTheDocument();
     expect(screen.getByText("Observed VNets")).toBeInTheDocument();
     expect(
-      insights.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING,
+      evidence.compareDocumentPosition(insights) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 

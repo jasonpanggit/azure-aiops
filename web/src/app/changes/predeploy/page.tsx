@@ -248,7 +248,7 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
   });
 
   return (
-    <div className="page-container">
+    <div className="page-container operational-page predeploy-workspace">
       <PageHeader
         eyebrow="Change intelligence"
         title="What will this change affect?"
@@ -267,13 +267,19 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
         }
       />
 
-      <CopilotInsights
-        snapshot={predeployCopilot.snapshot}
-        ready={!history.loading}
-        requestedScope={predeployCopilot.requestedScope}
-        contextLabel="Pre-deployment assessment"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
+      <nav className="section-nav" aria-label="Assessment sections">
+        <a href="#proposed-change">Submit a change</a>
+        {assessment && risk && cab && blast && (
+          <>
+            <a href="#change-recommendation">Recommendation</a>
+            <a href="#change-unknowns">Confidence and unknowns</a>
+            <a href="#change-evidence">Risk evidence</a>
+            <a href="#change-effects">Simulated effects</a>
+            <a href="#change-blast-radius">Blast radius</a>
+          </>
+        )}
+        <a href="#change-history">Recent assessments</a>
+      </nav>
 
       {bookmark.present && <div className="network-review-handoff">
         {bookmark.reference ? <NetworkReviewContext key={reviewAttempt} scope={scope} reference={bookmark.reference} onReady={setNetworkReview} />
@@ -286,13 +292,12 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
         <Link href={`/changes/predeploy?${scopeToSearchParams(scope)}`}>Remove Network context and review a separate change</Link>
       </div>}
 
-      <form className="card predeploy-artifact" onSubmit={submit}>
+      <form id="proposed-change" className="card predeploy-artifact" onSubmit={submit} aria-labelledby="proposed-change-heading">
         <div className="card-header">
-          <h2>Submit a proposed change</h2>
-          <p>Inspect a plan, what-if result, or pull request payload locally before sending it. Nothing is deployed.</p>
+          <div><h2 id="proposed-change-heading">Submit a proposed change</h2><p>Inspect a plan, what-if result, or pull request payload locally before sending it. Nothing is deployed or approved.</p></div>
         </div>
         <div className="card-body form-grid">
-          <label className="form-field">
+          <label className="form-field predeploy-source-field">
             <span>Change source</span>
             <select className="form-control" value={source} disabled={submitting} onChange={(event) => {
               fileRead.current++; setReadingFile(false); setSource(event.target.value);
@@ -344,6 +349,15 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
         </div>
       </form>
 
+      {sources.error && (
+        <StatePanel
+          title="Change source catalog is unavailable"
+          message={`${sources.error.message}. The form lists known source types; the assessment service must validate the submitted source.`}
+          tone="error"
+          action={<button className="button button-secondary" type="button" onClick={sources.refetch} disabled={sources.loading}>Retry change sources</button>}
+        />
+      )}
+
       {error && <StatePanel title="Assessment failed" message={error} tone="error" />}
       <RetainedAssessments scope={scope} current={assessment ?? null} />
 
@@ -383,6 +397,7 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
                 value={titleize(cab.verdict)}
                 detail={cab.summary}
                 tone={cab.verdict === "approve" ? "success" : "warning"}
+                size="text"
               />
               <MetricCard
                 label="Impacted resources"
@@ -397,9 +412,9 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
             </section>
           </div>
 
-          <section className="card">
+          <section id="change-recommendation" className="card" aria-labelledby="change-recommendation-heading">
             <div className="card-header">
-              <h2>Recommendation</h2>
+              <div><h2 id="change-recommendation-heading">Recommendation</h2><p>Review advisory conditions and required approvals. This verdict is not authorization to deploy.</p></div>
               <StatusBadge label={titleize(cab.verdict)} tone={verdictTone(cab.verdict)} />
             </div>
             <div className="card-body">
@@ -440,10 +455,34 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
             </div>
           </section>
 
-          <section className="card">
+          <section id="change-unknowns" className="card" aria-labelledby="change-unknowns-heading">
             <div className="card-header">
-              <h2>Risk evidence</h2>
-              <p>{risk.justification}</p>
+              <div><h2 id="change-unknowns-heading">Confidence and unknowns</h2><p>Review missing evidence and excluded scope before interpreting the score.</p></div>
+              <StatusBadge label={titleize(risk.confidence)} tone={statusTone(risk.confidence)} />
+            </div>
+            <div className="card-body">
+              <p>{risk.confidence_rationale}</p>
+              {risk.unknowns.length === 0 ? (
+                <p className="muted">No gaps were declared for this assessment.</p>
+              ) : (
+                <ul>
+                  {risk.unknowns.map((unknown) => (
+                    <li key={unknown}>{unknown}</li>
+                  ))}
+                </ul>
+              )}
+              {assessment.scope_excluded_resource_count > 0 && (
+                <p className="muted">
+                  {assessment.scope_excluded_resource_count} discovered resource(s) were outside
+                  your scope and were excluded from this assessment.
+                </p>
+              )}
+            </div>
+          </section>
+
+          <section id="change-evidence" className="card" aria-labelledby="change-evidence-heading">
+            <div className="card-header">
+              <div><h2 id="change-evidence-heading">Risk evidence</h2><p>{risk.justification}</p></div>
             </div>
             <div className="card-body">
               {risk.evidence.length === 0 ? (
@@ -491,37 +530,9 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
             </div>
           </section>
 
-          {/* Unknowns are shown as prominently as findings: a low score derived
-              from missing data must not read as evidence of safety. */}
-          <section className="card">
+          <section id="change-effects" className="card" aria-labelledby="change-effects-heading">
             <div className="card-header">
-              <h2>Confidence and unknowns</h2>
-              <StatusBadge label={titleize(risk.confidence)} tone={statusTone(risk.confidence)} />
-            </div>
-            <div className="card-body">
-              <p>{risk.confidence_rationale}</p>
-              {risk.unknowns.length === 0 ? (
-                <p className="muted">No gaps were declared for this assessment.</p>
-              ) : (
-                <ul>
-                  {risk.unknowns.map((unknown) => (
-                    <li key={unknown}>{unknown}</li>
-                  ))}
-                </ul>
-              )}
-              {assessment.scope_excluded_resource_count > 0 && (
-                <p className="muted">
-                  {assessment.scope_excluded_resource_count} discovered resource(s) were outside
-                  your scope and were excluded from this assessment.
-                </p>
-              )}
-            </div>
-          </section>
-
-          <section className="card">
-            <div className="card-header">
-              <h2>Simulated effects</h2>
-              <p>{assessment.simulation.interpretation}</p>
+              <div><h2 id="change-effects-heading">Simulated effects</h2><p>{assessment.simulation.interpretation}</p></div>
             </div>
             <div className="card-body">
               {assessment.simulation.effects.length === 0 ? (
@@ -580,10 +591,9 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
             </div>
           </section>
 
-          <section className="card">
+          <section id="change-blast-radius" className="card" aria-labelledby="change-blast-radius-heading">
             <div className="card-header">
-              <h2>Blast radius</h2>
-              <p>{blast.interpretation}</p>
+              <div><h2 id="change-blast-radius-heading">Blast radius</h2><p>{blast.interpretation}</p></div>
             </div>
             <div className="card-body">
               {blast.impacted_resources.length === 0 ? (
@@ -656,10 +666,10 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
         </>
       )}
 
-      <section className="card">
+      <section id="change-history" className="card" aria-labelledby="change-history-heading">
         <div className="card-header">
-          <h2>Recent assessments</h2>
-          <p>Assessments visible within your current scope.</p>
+          <div><h2 id="change-history-heading">Recent assessments</h2><p>Browse previously recorded assessments visible within your current scope.</p></div>
+          <span>{rows.length} loaded assessments</span>
         </div>
         <div className="card-body">
           {history.error ? (
@@ -680,7 +690,8 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
               message="Submit a change artifact above to assess its impact before deployment."
             />
           ) : (
-            <>
+            <details className="source-section-details">
+            <summary>Browse recent assessments</summary>
             <TableColumnFilters
               filters={historyFilters}
               onReset={resetHistoryFilters}
@@ -734,10 +745,18 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
               onPageSizeChange={historyPaging.setPageSize}
               label="assessments"
             />
-            </>
+            </details>
           )}
         </div>
       </section>
+
+      <CopilotInsights
+        snapshot={predeployCopilot.snapshot}
+        ready={!history.loading}
+        requestedScope={predeployCopilot.requestedScope}
+        contextLabel="Pre-deployment assessment"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

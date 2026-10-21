@@ -105,15 +105,18 @@ function FreshnessDetail({ state }: { state: ExposureSectionPresentation }) {
     return null;
   }
   return (
-    <p className="source-section-freshness">
-      {freshnessSourceFamily
-        ? `Source family: ${freshnessSourceFamily}. `
-        : ""}
-      {freshnessThresholdSeconds !== undefined
-        ? `Freshness threshold: ${freshnessThresholdSeconds.toLocaleString("en-US")} seconds. `
-        : ""}
-      {observedAt ? `Observed: ${observedAt}.` : ""}
-    </p>
+    <details className="source-section-details" open={state.status !== "current"}>
+      <summary>Source freshness details</summary>
+      <p className="source-section-freshness">
+        {freshnessSourceFamily
+          ? `Source family: ${freshnessSourceFamily}. `
+          : ""}
+        {freshnessThresholdSeconds !== undefined
+          ? `Freshness threshold: ${freshnessThresholdSeconds.toLocaleString("en-US")} seconds. `
+          : ""}
+        {observedAt ? `Observed: ${observedAt}.` : ""}
+      </p>
+    </details>
   );
 }
 

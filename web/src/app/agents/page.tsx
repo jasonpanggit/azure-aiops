@@ -55,6 +55,7 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
   const [decisionReason, setDecisionReason] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
+  const [catalogAttempt, setCatalogAttempt] = useState(0);
   const [reviewUncertain, setReviewUncertain] = useState(false);
   const [reload, setReload] = useState(0);
   const [jobActive, setJobActive] = useState(Boolean(jobId));
@@ -87,9 +88,6 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
 
   useEffect(() => {
     let active = true;
-    setCatalog([]);
-    setCatalogLoading(true);
-    setCatalogError("");
     setLedger(null);
     setSelectedFindingId("");
     setDecisionReason("");
@@ -109,6 +107,17 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
         if (active && id === requestId.current) setLoading(false);
       });
     }
+    return () => {
+      active = false;
+      requestId.current += 1;
+    };
+  }, [scope, ledgerId, reload]);
+
+  useEffect(() => {
+    let active = true;
+    setCatalog([]);
+    setCatalogLoading(true);
+    setCatalogError("");
     multiAgentApi.catalog(scope).then((result) => {
       if (active) setCatalog(result.data.agents);
     }).catch((reason: unknown) => {
@@ -118,9 +127,8 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
     });
     return () => {
       active = false;
-      requestId.current += 1;
     };
-  }, [scope, ledgerId, reload]);
+  }, [scope, catalogAttempt]);
 
   async function runInvestigation() {
     const nextObjective = objective.trim();
@@ -180,17 +188,29 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
   if (ledger) retainedQuery.set("ledger_id", ledger.data.ledger_id);
 
   return (
-    <main className="page-container agents-workspace" aria-label="Multi-Agent Autonomous Investigation">
+    <main className="page-container operational-page agents-workspace" aria-label="Multi-Agent Autonomous Investigation">
       <PageHeader
         eyebrow="Specialist investigation"
         title="What can evidence reconciliation answer?"
         description="Select specialist definitions and run governed local tools; Foundry activation status is shown explicitly and never inferred."
         actions={
-          <button className="button" type="button" onClick={runInvestigation} disabled={loading || Boolean(ledgerId) || Boolean(jobId) || jobActive || !objective.trim()} title="Foreground request. Background investigation below retains admission and progress for recovery.">
+          <button className="button button-ai" type="button" onClick={runInvestigation} disabled={loading || Boolean(ledgerId) || Boolean(jobId) || jobActive || !objective.trim()} title="Foreground request. Background investigation below retains admission and progress for recovery.">
             Run deterministic investigation
           </button>
         }
       />
+
+      <nav className="section-nav" aria-label="Agent investigation sections">
+        <a href="#agent-objective">Objective and scope</a>
+        {ledger && <>
+          <a href="#agent-synthesis">Final synthesis</a>
+          <a href="#agent-decisions">Human decisions</a>
+          <a href="#agent-activity">Agent activity</a>
+          <a href="#agent-reconciliation">Evidence reconciliation</a>
+          <a href="#agent-evaluation">Evaluation</a>
+          <a href="#agent-ledger">Task ledger</a>
+        </>}
+      </nav>
 
       {ledgerId || ledger ? <section className="callout agents-continuation" aria-label="Retained investigation continuation">
         <p>{ledgerId ? `Opening retained ledger ${ledgerId}.` : `Retained ledger ${ledger?.data.ledger_id}.`} Reading or reopening does not rerun tools, resume provider execution, or authorize an operational change.</p>
@@ -199,13 +219,14 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
         </div>
       </section> : null}
       {error ? <StatePanel title="Investigation unavailable" message={error} tone="error" /> : null}
-      {catalogError ? <StatePanel title="Agent catalog unavailable" message={catalogError} tone="error" /> : null}
+      {catalogError ? <StatePanel title="Agent catalog unavailable" message={catalogError} tone="error"
+        action={<button type="button" className="button button-secondary" onClick={() => setCatalogAttempt(value => value + 1)}>Retry agent catalog</button>} /> : null}
       {loading ? <StatePanel title={ledgerId ? "Loading retained investigation" : "Running deterministic specialist plans"} message={ledgerId ? "Reading the exact retained ledger under current authorization; no tools are restarted." : "Selecting specialist definitions, running governed local tools, reconciling evidence, and preparing synthesis."} tone="loading" /> : null}
 
-      <section className="card">
+      <section id="agent-objective" className="card" aria-labelledby="agent-objective-heading">
         <div className="card-header">
           <div>
-            <h2>Objective and scope</h2>
+            <h2 id="agent-objective-heading">Objective and scope</h2>
             <p>All agents inherit the current workbench scope and the caller&apos;s authorization boundary.</p>
           </div>
           <StatusBadge label="Human controlled" tone="info" />
@@ -221,9 +242,9 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
           />
         </div>
         <div className="card-body agents-objective">
-          <label>
+          <label className="form-field">
             Investigation objective
-            <textarea value={jobId && !ledger ? "" : objective} placeholder={jobId ? "See admitted objective in Background investigation below." : undefined} readOnly={Boolean(ledgerId) || Boolean(jobId) || jobActive} onChange={(event) => setObjective(event.target.value)} rows={3} />
+            <textarea className="form-control" value={jobId && !ledger ? "" : objective} placeholder={jobId ? "See admitted objective in Background investigation below." : undefined} readOnly={Boolean(ledgerId) || Boolean(jobId) || jobActive} onChange={(event) => setObjective(event.target.value)} rows={3} />
           </label>
           <div className="entity-pill-row" aria-label="Available specialized agents">
             {catalog.map((agent) => {
@@ -283,9 +304,69 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
           </section>
 
           <section className="workspace-grid">
-            <section className="card">
+            <section id="agent-synthesis" className="card" aria-labelledby="agent-synthesis-heading">
+              <div className="card-header"><div><h2 id="agent-synthesis-heading">{deterministicDegraded ? "Deterministic synthesis" : "Final synthesis"}</h2><p>Citation-backed conclusion and recommended next plan.</p></div><StatusBadge label={ledger.data.synthesis.confidence} tone={statusTone(ledger.data.synthesis.confidence)} /></div>
+              <div className="card-body recommended-action-list">
+                {ledger.data.synthesis.narration ? (
+                  <span>
+                    {ledger.data.synthesis.narration}
+                    {ledger.data.synthesis.narrated_by ? <em className="muted"> (via {ledger.data.synthesis.narrated_by})</em> : null}
+                  </span>
+                ) : (
+                  <span>{ledger.data.synthesis.summary}</span>
+                )}
+                {ledger.data.synthesis.narration_warning ? <span className="muted">{ledger.data.synthesis.narration_warning}</span> : null}
+                <span>{ledger.data.synthesis.recommended_plan}</span>
+                <span>{ledger.data.synthesis.required_decision}</span>
+                {ledger.data.synthesis.unresolved_questions.map((question) => <span key={question}>Unresolved: {question}</span>)}
+              </div>
+            </section>
+
+            <section id="agent-decisions" className="card" aria-labelledby="agent-decisions-heading">
+              <div className="card-header"><div><h2 id="agent-decisions-heading">Human-in-the-loop controls</h2><p>Operator decisions are appended to the ledger audit trail. Stop records a review decision; it does not cancel an in-flight provider call. Plan approval records a governed handoff, not execution authority.</p></div></div>
+              <div className="card-body agents-controls">
+                <label className="form-field">
+                  Finding to review
+                  <select className="form-control" value={selectedFinding?.finding_id ?? ""} disabled={reviewBlocked} onChange={(event) => {
+                    setSelectedFindingId(event.target.value);
+                    setDecisionReason("");
+                  }}>
+                    <option value="">Select a finding</option>
+                    {findings.map((finding) => (
+                      <option key={finding.finding_id} value={finding.finding_id}>{finding.summary} ({finding.finding_id})</option>
+                    ))}
+                  </select>
+                </label>
+                {selectedFinding ? (
+                  <div aria-label="Selected finding review">
+                    <p>{selectedFinding.summary}</p>
+                    <p>Finding {selectedFinding.finding_id} | {selectedFinding.confidence} confidence | {selectedFinding.evidence_count} evidence items</p>
+                    <details><summary>Specialist-run evidence for this finding</summary><StructuredData value={ledger.data.agent_runs.find((run) => run.findings.some((finding) => finding.finding_id === selectedFinding.finding_id))?.evidence ?? []} /></details>
+                  </div>
+                ) : null}
+                <label className="form-field">
+                  Finding decision reason
+                  <textarea className="form-control" value={decisionReason} maxLength={1000} disabled={reviewBlocked} onChange={(event) => setDecisionReason(event.target.value)} rows={2} />
+                </label>
+                <label className="form-field">
+                  Owner
+                  <input className="form-control" value={owner} disabled={reviewBlocked} onChange={(event) => setOwner(event.target.value)} />
+                </label>
+                <div className="agents-decision-actions" aria-busy={loading}>
+                  <button className="button button-secondary" type="button" disabled={reviewBlocked} onClick={() => applyAction("request_more_evidence", { reason: "Need current provider evidence" })}>Request more evidence</button>
+                  <button className="button button-secondary" type="button" disabled={reviewBlocked || !selectedFinding || !decisionReason.trim()} onClick={() => applyAction("accept_finding", { finding_id: selectedFindingId, reason: decisionReason.trim() })}>Accept finding</button>
+                  <button className="button button-secondary" type="button" disabled={reviewBlocked || !selectedFinding || !decisionReason.trim()} onClick={() => applyAction("reject_finding", { finding_id: selectedFindingId, reason: decisionReason.trim() })}>Reject finding</button>
+                  <button className="button button-secondary" type="button" disabled={reviewBlocked || !owner.trim()} onClick={() => applyAction("assign_owner", { owner })}>Assign owner</button>
+                  <button className="button button-primary" type="button" disabled={reviewBlocked || !owner.trim()} onClick={() => applyAction("approve_plan", { approved_by: owner, guardrail: "governed handoff only" })}>Approve plan</button>
+                  <button className="button button-danger" type="button" disabled={reviewBlocked} onClick={() => applyAction("stop_investigation", { reason: "Stopped by operator" })}>Stop investigation</button>
+                </div>
+                <StructuredData value={{ decisions: ledger.data.decisions, approvals: ledger.data.approvals, stop_reason: ledger.data.stop_reason }} />
+              </div>
+            </section>
+
+            <section id="agent-activity" className="card" aria-labelledby="agent-activity-heading">
               <div className="card-header">
-                <div><h2>{deterministicDegraded ? "Specialist plan activity" : "Agent activity"}</h2><p>Tool usage and findings by specialist definition, without hidden chain-of-thought.</p></div>
+                <div><h2 id="agent-activity-heading">{deterministicDegraded ? "Specialist plan activity" : "Agent activity"}</h2><p>Tool usage and findings by specialist definition, without hidden chain-of-thought.</p></div>
                 <StatusBadge label={ledger.data.status} tone={statusTone(ledger.data.status)} />
               </div>
               <div className="card-body agent-run-list">
@@ -315,8 +396,8 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
               </div>
             </section>
 
-            <section className="card">
-              <div className="card-header"><div><h2>Evidence reconciliation</h2><p>Conflicts, stale evidence, missing providers, and unsupported conclusions.</p></div></div>
+            <section id="agent-reconciliation" className="card" aria-labelledby="agent-reconciliation-heading">
+              <div className="card-header"><div><h2 id="agent-reconciliation-heading">Evidence reconciliation</h2><p>Conflicts, stale evidence, missing providers, and unsupported conclusions.</p></div></div>
               <div className="card-body">
                 <div className="split-kpis">
                   <MetricCard label="Evidence" value={ledger.data.reconciliation.evidence_count} detail="Cited evidence items" />
@@ -331,77 +412,19 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
               </div>
             </section>
 
-            <section className="card">
-              <div className="card-header"><div><h2>{deterministicDegraded ? "Deterministic synthesis" : "Final synthesis"}</h2><p>Citation-backed conclusion and recommended next plan.</p></div><StatusBadge label={ledger.data.synthesis.confidence} tone={statusTone(ledger.data.synthesis.confidence)} /></div>
-              <div className="card-body recommended-action-list">
-                {ledger.data.synthesis.narration ? (
-                  <span>
-                    {ledger.data.synthesis.narration}
-                    {ledger.data.synthesis.narrated_by ? <em className="muted"> (via {ledger.data.synthesis.narrated_by})</em> : null}
-                  </span>
-                ) : (
-                  <span>{ledger.data.synthesis.summary}</span>
-                )}
-                {ledger.data.synthesis.narration_warning ? <span className="muted">{ledger.data.synthesis.narration_warning}</span> : null}
-                <span>{ledger.data.synthesis.recommended_plan}</span>
-                <span>{ledger.data.synthesis.required_decision}</span>
-                {ledger.data.synthesis.unresolved_questions.map((question) => <span key={question}>Unresolved: {question}</span>)}
-              </div>
-            </section>
-
-            <section className="card">
-              <div className="card-header"><div><h2>Human-in-the-loop controls</h2><p>Operator decisions are appended to the ledger audit trail. Stop records a review decision; it does not cancel an in-flight provider call.</p></div></div>
-              <div className="card-body agents-controls">
-                <label>
-                  Finding to review
-                  <select value={selectedFinding?.finding_id ?? ""} disabled={reviewBlocked} onChange={(event) => {
-                    setSelectedFindingId(event.target.value);
-                    setDecisionReason("");
-                  }}>
-                    <option value="">Select a finding</option>
-                    {findings.map((finding) => (
-                      <option key={finding.finding_id} value={finding.finding_id}>{finding.summary} ({finding.finding_id})</option>
-                    ))}
-                  </select>
-                </label>
-                {selectedFinding ? (
-                  <div aria-label="Selected finding review">
-                    <p>{selectedFinding.summary}</p>
-                    <p>Finding {selectedFinding.finding_id} | {selectedFinding.confidence} confidence | {selectedFinding.evidence_count} evidence items</p>
-                    <details><summary>Specialist-run evidence for this finding</summary><StructuredData value={ledger.data.agent_runs.find((run) => run.findings.some((finding) => finding.finding_id === selectedFinding.finding_id))?.evidence ?? []} /></details>
-                  </div>
-                ) : null}
-                <label>
-                  Finding decision reason
-                  <textarea value={decisionReason} maxLength={1000} disabled={reviewBlocked} onChange={(event) => setDecisionReason(event.target.value)} rows={2} />
-                </label>
-                <label>
-                  Owner
-                  <input value={owner} disabled={reviewBlocked} onChange={(event) => setOwner(event.target.value)} />
-                </label>
-                <div className="mode-toggle">
-                  <button type="button" disabled={reviewBlocked} onClick={() => applyAction("request_more_evidence", { reason: "Need current provider evidence" })}>Request more evidence</button>
-                  <button type="button" disabled={reviewBlocked || !selectedFinding || !decisionReason.trim()} onClick={() => applyAction("accept_finding", { finding_id: selectedFindingId, reason: decisionReason.trim() })}>Accept finding</button>
-                  <button type="button" disabled={reviewBlocked || !selectedFinding || !decisionReason.trim()} onClick={() => applyAction("reject_finding", { finding_id: selectedFindingId, reason: decisionReason.trim() })}>Reject finding</button>
-                  <button type="button" disabled={reviewBlocked || !owner.trim()} onClick={() => applyAction("assign_owner", { owner })}>Assign owner</button>
-                  <button type="button" disabled={reviewBlocked || !owner.trim()} onClick={() => applyAction("approve_plan", { approved_by: owner, guardrail: "governed handoff only" })}>Approve plan</button>
-                  <button type="button" disabled={reviewBlocked} onClick={() => applyAction("stop_investigation", { reason: "Stopped by operator" })}>Stop investigation</button>
-                </div>
-                <StructuredData value={{ decisions: ledger.data.decisions, approvals: ledger.data.approvals, stop_reason: ledger.data.stop_reason }} />
-              </div>
-            </section>
-
-            <section className="card">
-              <div className="card-header"><div><h2>Evaluation</h2><p>Groundedness, scope isolation, tool correctness, convergence, latency, and cost.</p></div></div>
+            <section id="agent-evaluation" className="card" aria-labelledby="agent-evaluation-heading">
+              <div className="card-header"><div><h2 id="agent-evaluation-heading">Evaluation</h2><p>Groundedness, scope isolation, tool correctness, convergence, latency, and cost.</p></div></div>
               <div className="card-body">
                 <StructuredData value={ledger.data.evaluation} />
               </div>
             </section>
 
-            <section className="card">
-              <div className="card-header"><div><h2>Shared task ledger</h2><p>Objective, scope, evidence, findings, decisions, approvals, and outcome.</p></div></div>
+            <section id="agent-ledger" className="card" aria-labelledby="agent-ledger-heading">
+              <div className="card-header"><div><h2 id="agent-ledger-heading">Shared task ledger</h2><p>Objective, scope, evidence, findings, decisions, approvals, and outcome.</p></div></div>
               <div className="card-body">
-                <StructuredData value={ledger.data} />
+                <div className="agent-ledger-output" role="region" aria-label="Complete shared task ledger" tabIndex={0}>
+                  <StructuredData value={ledger.data} />
+                </div>
               </div>
             </section>
           </section>

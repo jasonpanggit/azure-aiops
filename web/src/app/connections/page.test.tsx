@@ -1451,6 +1451,12 @@ describe("Connections page Fabric Medallion tab", () => {
       expect(fabricCapabilities).toHaveBeenCalledWith({ subscription: [connection.subscription_id] });
       expect(fabricDataset).toHaveBeenCalledWith("bronze_resources", { subscription: [connection.subscription_id] });
     });
+    expect(screen.getByRole("combobox", { name: "Subscription connection" })).toHaveValue(connection.connection_id);
+    const navigation = within(screen.getByRole("navigation", { name: "Fabric sections" }));
+    for (const link of navigation.getAllByRole("link")) {
+      expect(document.querySelector(link.getAttribute("href")!)).toBeInTheDocument();
+    }
+    expect(within(fabricPanel).getByRole("region", { name: "Semantic model and Data Agent readiness" })).toBeInTheDocument();
   });
 
   it("isolates Bronze and Silver dataset failures while Gold data and summary metrics stay populated", async () => {

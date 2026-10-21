@@ -314,6 +314,12 @@ describe("KB detail", () => {
       screen.getByRole("link", { name: "Open CVE-2026-0001" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Showing 1–1 of 3 findings · 1 loaded")).toBeInTheDocument();
+    const navigation = screen.getByRole("navigation", { name: "KB detail sections" });
+    for (const link of within(navigation).getAllByRole("link")) {
+      expect(document.querySelector(link.getAttribute("href")!)).toBeInTheDocument();
+    }
+    expect(screen.getByText(/Exposure does not install updates/)).toBeVisible();
+    expect(screen.getAllByText("Operations Copilot insights")).toHaveLength(1);
   });
 
   it("keeps the update hierarchy in accessible reading order", async () => {

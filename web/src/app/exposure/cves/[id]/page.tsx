@@ -436,8 +436,9 @@ function Section({
   state: ExposureSectionPresentation;
   emptyMessage?: string;
   children?: React.ReactNode;
-}) {  return (
-    <section role="region" aria-label={`${label} section`}>
+}) {
+  return (
+    <section id={`cve-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-$/, "")}`} role="region" aria-label={`${label} section`}>
       <div className="card-header">
         <h2>{label}</h2>
       </div>
@@ -764,7 +765,7 @@ function CveDetailBody({ params }: { params: { id: string } }) {
   });
 
   return (
-    <div className="page-container exposure-detail-page">
+    <div className="page-container operational-page exposure-detail-page">
       <div className="breadcrumb">
         <Link href="/exposure">Exposure</Link>
         <span>/</span>
@@ -822,13 +823,6 @@ function CveDetailBody({ params }: { params: { id: string } }) {
         }
       />
 
-      <CopilotInsights
-        snapshot={cveCopilot.snapshot}
-        ready={!common.loading && !findings.loading}
-        requestedScope={cveCopilot.requestedScope}
-        contextLabel={data?.cve.cve_id ?? "CVE detail"}
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
       <EvidenceBar
         evidence={common.envelope?.evidence ?? catalog.envelope?.evidence}
         knowledgeVersion={common.envelope?.knowledge_version ?? catalog.envelope?.knowledge_version}
@@ -869,6 +863,12 @@ function CveDetailBody({ params }: { params: { id: string } }) {
             />
           ) : (
             <>
+              <nav className="section-nav" aria-label="CVE detail sections">
+                <a href="#executive-risk-summary">Risk summary</a>
+                <a href="#affected-assets-heading">Affected assets</a>
+                <a href="#remediation-guidance-heading">Remediation guidance</a>
+                <a href="#cve-findings">Findings</a>
+              </nav>
               <section className="exposure-detail-summary" aria-labelledby="executive-risk-summary">
                 <div className="card-header">
                   <div>
@@ -1252,6 +1252,14 @@ function CveDetailBody({ params }: { params: { id: string } }) {
       <CveEvidence key={exposureQueryKey(retainedQuery)} cveId={cveId.toUpperCase()} query={retainedQuery}
         ready={Boolean(findingPage && catalog.data && findingPage.generation === catalog.data.generation
           && !findings.loading && !findings.retained && !catalog.loading && !catalog.retained && !restartRequired)} />
+      <CopilotInsights
+        snapshot={cveCopilot.snapshot}
+        ready={!common.loading && !findings.loading}
+        requestedScope={cveCopilot.requestedScope}
+        contextLabel={data?.cve.cve_id ?? "CVE detail"}
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
+
       <CopilotDrawer
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}

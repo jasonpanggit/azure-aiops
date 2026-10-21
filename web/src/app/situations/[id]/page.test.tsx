@@ -162,6 +162,11 @@ describe("durable Situation detail", () => {
     expect(screen.getByText("Recorded event · evidence.ingested")).toBeInTheDocument();
     expect(get).toHaveBeenCalledWith("situation://one", {});
     expect(audit).toHaveBeenCalledWith("situation://one", {});
+    const navigation = screen.getByRole("navigation", { name: "Situation detail sections" });
+    for (const link of Array.from(navigation.querySelectorAll("a"))) {
+      expect(document.querySelector(link.getAttribute("href")!)).toBeInTheDocument();
+    }
+    expect(document.querySelectorAll(".copilot-insights")).toHaveLength(1);
   });
 
   it("preserves literal percent characters in already-decoded route IDs", async () => {

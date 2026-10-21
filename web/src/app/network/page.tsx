@@ -27,6 +27,7 @@ import { buildNetworkCopilotContext } from "@/lib/copilot/page-adapters";
 import type { NetworkCopilotSelection } from "@/lib/copilot/page-adapters";
 import { scopeToSearchParams } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
+import { handleTabListKeyDown } from "@/lib/tab-list";
 import { networkApi } from "@/lib/services";
 import { networkReviewHref } from "@/lib/network-review";
 import { ApiError } from "@/lib/types";
@@ -286,7 +287,7 @@ export default function NetworkPage() {
   );
 
   return (
-    <div className="page-container">
+    <div className="page-container operational-page">
       <PageHeader
         eyebrow="Network intelligence"
         title="Topology & traffic paths"
@@ -299,13 +300,6 @@ export default function NetworkPage() {
             <span>{flowLogProvenanceText(flowLogProvenance)}</span>
           </>
         }
-      />
-
-      <TopologyInsights
-        snapshot={networkCopilot.snapshot}
-        selection={topologySelection}
-        ready={networkCopilotReady}
-        onAskFollowUp={() => setCopilotOpen(true)}
       />
 
       <EvidenceBar
@@ -355,7 +349,7 @@ export default function NetworkPage() {
         </div>
       )}
 
-      <div className="workspace-tabs" role="tablist" aria-label="Network analysis views">
+      <div className="workspace-tabs" role="tablist" aria-label="Network analysis views" onKeyDown={handleTabListKeyDown}>
         {(
           [
             ["flow", "Path analysis"],
@@ -368,9 +362,12 @@ export default function NetworkPage() {
           ] as Array<[NetworkTab, string]>
         ).map(([value, label]) => (
           <button
+            id={`network-${value}-tab`}
             type="button"
             role="tab"
             aria-selected={tab === value}
+            tabIndex={tab === value ? 0 : -1}
+            aria-controls="network-analysis-panel"
             className={tab === value ? "workspace-tab-active" : ""}
             onClick={() => setTab(value)}
             key={value}
@@ -380,6 +377,7 @@ export default function NetworkPage() {
         ))}
       </div>
 
+      <section id="network-analysis-panel" role="tabpanel" aria-labelledby={`network-${tab}-tab`} tabIndex={0}>
       {tab === "intents" && <ConnectivityIntents scope={scope} />}
       {tab === "history" && <TopologyHistory scope={scope} />}
       {tab === "flow" && (
@@ -500,6 +498,15 @@ export default function NetworkPage() {
           refreshing={pendingPolicyRefresh !== null}
         />
       )}
+
+      </section>
+
+      <TopologyInsights
+        snapshot={networkCopilot.snapshot}
+        selection={topologySelection}
+        ready={networkCopilotReady}
+        onAskFollowUp={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

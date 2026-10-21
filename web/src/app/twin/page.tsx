@@ -55,6 +55,7 @@ export default function OperationalTwinPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [exportExpanded, setExportExpanded] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [detailErrors, setDetailErrors] = useState<string[]>([]);
   const [copyError, setCopyError] = useState("");
@@ -207,7 +208,7 @@ export default function OperationalTwinPage() {
   });
 
   return (
-    <main className="page-container twin-workspace" aria-label="Operational Digital Twin">
+    <main className="page-container operational-page twin-workspace" aria-label="Operational Digital Twin">
       <PageHeader
         eyebrow="Operational Digital Twin"
         title="Review mapped operational dependencies"
@@ -239,13 +240,14 @@ export default function OperationalTwinPage() {
         }
       />
 
-      <CopilotInsights
-        snapshot={twinCopilot.snapshot}
-        ready={!loading}
-        requestedScope={twinCopilot.requestedScope}
-        contextLabel="Operational twin"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
+      <nav className="section-nav" aria-label="Twin sections">
+        <a href="#twin-model">Twin model</a>
+        <a href="#twin-traversal">Business impact</a>
+        <a href="#twin-temporal">Observation timeline</a>
+        <a href="#twin-scenario">Scenario review</a>
+        <a href="#twin-dependencies">Current dependencies</a>
+        <a href="#twin-export">Export</a>
+      </nav>
 
       {error ? <StatePanel title="Twin unavailable" message={error} tone="error" /> : null}
       {detailErrors.length ? <StatePanel title="Some twin evidence is unavailable" message={detailErrors.join(" ")} tone="error" /> : null}
@@ -282,7 +284,7 @@ export default function OperationalTwinPage() {
       <RetainedSnapshots scope={scope} />
 
       <section className="workspace-grid twin-grid">
-        <section className="card">
+        <section id="twin-model" className="card">
           <div className="card-header"><div><h2>Twin model</h2><p>Canonical entities, relationships, versions, provenance, and confidence.</p></div><StatusBadge label={`${snapshot?.data.confidence ?? "unknown"} confidence`} tone={statusTone(snapshot?.data.confidence)} /></div>
           <div className="card-body">
           <label>
@@ -306,7 +308,7 @@ export default function OperationalTwinPage() {
           </div>
         </section>
 
-        <section className="card">
+        <section id="twin-traversal" className="card">
           <div className="card-header"><div><h2>Business impact traversal</h2><p>Resource to application, service, owner, and consequence.</p></div></div>
           <div className="card-body">
           {traversal ? (
@@ -328,23 +330,7 @@ export default function OperationalTwinPage() {
           </div>
         </section>
 
-        <section className="card">
-          <div className="card-header"><div><h2>Observation timeline</h2><p>Source events and request-time observations; no inferred revision history.</p></div></div>
-          <div className="card-body">
-          <p className="panel-lead">{comparison?.data.summary ?? "No comparison loaded."}</p>
-          <ol className="timeline-list">
-            {(snapshot?.data.timeline ?? []).slice(0, 6).map((event, index) => (
-              <li key={`${event.type}-${event.timestamp}-${index}`}>
-                <strong>{event.type.replaceAll("_", " ")}</strong>
-                <span>{event.summary}</span>
-                <small>{event.timestamp}</small>
-              </li>
-            ))}
-          </ol>
-          </div>
-        </section>
-
-        <section className="card">
+        <section id="twin-scenario" className="card">
           <div className="card-header"><div><h2>Scenario review</h2><p>Hypothetical dependency review, not failure simulation or deployment authority.</p></div></div>
           <div className="card-body">
           <label className="field-label" htmlFor="scenario">
@@ -369,7 +355,23 @@ export default function OperationalTwinPage() {
           </div>
         </section>
 
-        <section className="card">
+        <section id="twin-temporal" className="card">
+          <div className="card-header"><div><h2>Observation timeline</h2><p>Source events and request-time observations; no inferred revision history.</p></div></div>
+          <div className="card-body">
+          <p className="panel-lead">{comparison?.data.summary ?? "No comparison loaded."}</p>
+          <ol className="timeline-list">
+            {(snapshot?.data.timeline ?? []).slice(0, 6).map((event, index) => (
+              <li key={`${event.type}-${event.timestamp}-${index}`}>
+                <strong>{event.type.replaceAll("_", " ")}</strong>
+                <span>{event.summary}</span>
+                <small>{event.timestamp}</small>
+              </li>
+            ))}
+          </ol>
+          </div>
+        </section>
+
+        <section id="twin-dependencies" className="card">
           <div className="card-header"><div><h2>Current dependencies</h2><p>Observed relationship counts. No historical counts are inferred.</p></div></div>
           <div className="card-body">
           <div className="compact-table" role="table" aria-label="Dependency evolution">
@@ -402,13 +404,24 @@ export default function OperationalTwinPage() {
       </section>
 
       <section className="workspace-grid">
-        <section className="card">
+        <section id="twin-export" className="card">
           <div className="card-header"><div><h2>Raw twin export</h2><p>Serializable twin state for audit, API consumers, and Copilot tooling.</p></div></div>
           <div className="card-body">
-          <StructuredData value={exported?.data ?? snapshot?.data ?? {}} />
+            <details className="twin-export-details" open={exportExpanded} onToggle={(event) => setExportExpanded(event.currentTarget.open)}>
+              <summary>Inspect full twin export</summary>
+              <div className="twin-export-data" tabIndex={0} role="region" aria-label="Raw twin export"><StructuredData value={exported?.data ?? snapshot?.data ?? {}} /></div>
+            </details>
           </div>
         </section>
       </section>
+
+      <CopilotInsights
+        snapshot={twinCopilot.snapshot}
+        ready={!loading}
+        requestedScope={twinCopilot.requestedScope}
+        contextLabel="Operational twin"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

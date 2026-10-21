@@ -160,7 +160,7 @@ function SituationsPageContent() {
   });
 
   return (
-    <div className="page-container">
+    <div className="page-container operational-page">
       <PageHeader
         eyebrow="Operate"
         title="Which situations need triage?"
@@ -173,14 +173,6 @@ function SituationsPageContent() {
             <span>Remediation handoff is future-phase and read-only</span>
           </>
         }
-      />
-
-      <CopilotInsights
-        snapshot={situationsCopilot.snapshot}
-        ready={envelope !== null || Boolean(error)}
-        requestedScope={situationsCopilot.requestedScope}
-        contextLabel="Situations queue"
-        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       {envelope && (
@@ -215,6 +207,7 @@ function SituationsPageContent() {
               type="button"
               key={value}
               className={priority === value ? "segmented-active" : ""}
+              aria-pressed={priority === value}
               onClick={() => updateView({ priority: value })}
             >
               {value === "all" ? "All priorities" : value}
@@ -251,7 +244,7 @@ function SituationsPageContent() {
         />
       ) : !envelope ? (
         <StatePanel
-          title="Loading Situation queue"
+          title="Loading situation queue"
           message="Correlating incident evidence and business impact."
           tone="loading"
         />
@@ -284,6 +277,14 @@ function SituationsPageContent() {
           )}
         </div>
       )}
+
+      <CopilotInsights
+        snapshot={situationsCopilot.snapshot}
+        ready={envelope !== null || Boolean(error)}
+        requestedScope={situationsCopilot.requestedScope}
+        contextLabel="Situations queue"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

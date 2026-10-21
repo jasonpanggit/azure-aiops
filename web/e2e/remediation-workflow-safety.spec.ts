@@ -211,8 +211,9 @@ test.describe("Phase 03.6 workflow-safety surface (real browser)", () => {
     await page.goto("/remediation");
     await page.getByRole("button", { name: "Patch payroll database" }).click();
 
-    await expect(page.getByText("Workflow blockers")).toBeVisible();
-    await expect(page.getByText("Degraded inputs")).toBeVisible();
+    await page.getByText("1 reported blockers; eligibility reason recorded", { exact: true }).click();
+    await expect(page.getByText("not_approved", { exact: true })).toBeVisible();
+    await expect(page.getByText("AUM patch inventory evidence is unavailable.", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Approve", exact: false }).first().click();
 
@@ -265,7 +266,7 @@ test.describe("Phase 03.6 workflow-safety surface (real browser)", () => {
     await page.getByRole("button", { name: "Patch payroll database" }).click();
     await page.getByRole("button", { name: "Verify", exact: false }).first().click();
 
-    await expect(page.getByRole("button", { name: "Cancel queued execution" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cancel request", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Retry approved snapshot" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Supersede this execution" })).toHaveCount(0);
   });

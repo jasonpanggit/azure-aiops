@@ -147,7 +147,7 @@ function ServicesWorkspace() {
   });
 
   return (
-    <div className="page-container">
+    <div className="page-container operational-page">
       <PageHeader
         eyebrow="Service operations"
         title="Which services need attention?"
@@ -155,13 +155,6 @@ function ServicesWorkspace() {
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about services" />}
       />
 
-      <CopilotInsights
-        snapshot={servicesCopilot.snapshot}
-        ready={!connections.loading && !incidents.loading}
-        requestedScope={servicesCopilot.requestedScope}
-        contextLabel="Services"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
       <EvidenceBar
         evidence={[...(connections.data?.evidence ?? []), ...(incidents.data?.evidence ?? [])]}
         knowledgeVersion={incidents.data?.knowledge_version}
@@ -186,38 +179,9 @@ function ServicesWorkspace() {
         <StatePanel title="No service labels in loaded sources" message="Review accessible connection mappings. Unavailable incident evidence does not establish an empty service estate." />
       ) : (
         <>
-          <section className="card service-brief" aria-label="Service mapping completeness">
-            <div className="card-header"><div><h2>Mapping completeness</h2><p>Review missing accountable context in authorized connection registry rows, not inferred resource ownership.</p></div></div>
-            <div className="card-body">
-              <p>{mappingGaps.length}/{connections.data?.data.length ?? 0} loaded connection rows have missing service, owner, support team, or environment.
-                {" "}Disabled connections are included. Distinct services are synthesized labels, not an authoritative service registry or estate denominator.</p>
-              <p>Incident associations are a separate source. A missing or empty incident report never establishes availability, latency, SLO attainment, or error-budget health.</p>
-              {mappingGaps.length > 0 ? <ul>{mappingGaps.slice(0, 20).map(connection => <li key={connection.connection_id}>
-                <Link href={overviewHref("/connections", scope, connection.is_active ? connection.connection_id : undefined)}>{connection.name}</Link>
-                {" "}· Missing: {missingFields(connection).map(field => field.replaceAll("_", " ")).join(", ")}
-              </li>)}</ul> : <p>No missing values in these four fields among the loaded registry rows; this is not a resource mapping completeness claim.</p>}
-              {mappingGaps.length > 20 && <p>Showing 20/{mappingGaps.length} rows. <Link href={overviewHref("/connections", scope)}>Review remaining mapping gaps in Connections</Link>.</p>}
-            </div>
-          </section>
-          <section className="card dashboard-visual-card service-overview-card">
-            <div className="card-header">
-              <div>
-                <h2>Incident association map</h2>
-                <p>Loaded incident associations grouped by business service, not service reliability.</p>
-              </div>
-              <span className="visual-card-kicker">{services.length} services</span>
-            </div>
-            <div className="card-body">
-              {incidentsAvailable ? <OperationsSignalChart
-                signals={services.slice(0, 6).map((service) => ({
-                  label: service.name,
-                  value: service.situationCount,
-                  tone: service.criticalCount ? "critical" : service.situationCount ? "warning" : "success",
-                }))}
-              /> : <p>Incident evidence unavailable; no clean service state is inferred.</p>}
-            </div>
-          </section>
-          <div className="card service-catalog">
+          <nav className="section-nav" aria-label="Services sections"><a href="#service-catalog">Service catalog</a><a href="#service-risk-map">Incident association map</a></nav>
+          <div id="service-catalog" className="card service-catalog" role="region" aria-labelledby="service-catalog-heading">
+            <div className="card-header"><div><h2 id="service-catalog-heading">Service catalog</h2><p>Review loaded service labels and open a scoped service brief.</p></div></div>
             <TableColumnFilters
               filters={serviceFilters}
               onReset={resetServiceFilters}
@@ -256,7 +220,7 @@ function ServicesWorkspace() {
                       <div className="table-secondary">Fields: service, owner, support, environment; not resource coverage</div></> : "No connection mapping rows reported"}</td>
                     <td>{Array.from(service.environments).join(", ") || "Not mapped"}</td>
                     <td>{service.connections.length ? service.subscriptions.size : "Unreported"}</td>
-                    <td><Link className="table-open-link" aria-label={`Review ${service.name}`} href={overviewHref(service.unmapped ? "/connections" : `/services/${encodeURIComponent(service.name)}`, scope)}>→</Link></td>
+                    <td><Link className="table-open-link" aria-label={`Review ${service.name}`} href={overviewHref(service.unmapped ? "/connections" : `/services/${encodeURIComponent(service.name)}`, scope)}>Open brief</Link></td>
                   </tr>
                 ))}
               </tbody>
@@ -272,11 +236,50 @@ function ServicesWorkspace() {
             label="services"
           />
           </div>
+          <section className="card service-brief" aria-label="Service mapping completeness">
+            <div className="card-header"><div><h2>Mapping completeness</h2><p>Review missing accountable context in authorized connection registry rows, not inferred resource ownership.</p></div></div>
+            <div className="card-body">
+              <p>{mappingGaps.length}/{connections.data?.data.length ?? 0} loaded connection rows have missing service, owner, support team, or environment.
+                {" "}Disabled connections are included. Distinct services are synthesized labels, not an authoritative service registry or estate denominator.</p>
+              <p>Incident associations are a separate source. A missing or empty incident report never establishes availability, latency, SLO attainment, or error-budget health.</p>
+              {mappingGaps.length > 0 ? <ul>{mappingGaps.slice(0, 20).map(connection => <li key={connection.connection_id}>
+                <Link href={overviewHref("/connections", scope, connection.is_active ? connection.connection_id : undefined)}>{connection.name}</Link>
+                {" "}· Missing: {missingFields(connection).map(field => field.replaceAll("_", " ")).join(", ")}
+              </li>)}</ul> : <p>No missing values in these four fields among the loaded registry rows; this is not a resource mapping completeness claim.</p>}
+              {mappingGaps.length > 20 && <p>Showing 20/{mappingGaps.length} rows. <Link href={overviewHref("/connections", scope)}>Review remaining mapping gaps in Connections</Link>.</p>}
+            </div>
+          </section>
+          <section id="service-risk-map" className="card dashboard-visual-card service-overview-card">
+            <div className="card-header">
+              <div>
+                <h2>Incident association map</h2>
+                <p>Loaded incident associations grouped by business service, not service reliability.</p>
+              </div>
+              <span className="visual-card-kicker">{services.length} services</span>
+            </div>
+            <div className="card-body">
+              {incidentsAvailable ? <OperationsSignalChart
+                signals={services.slice(0, 6).map((service) => ({
+                  label: service.name,
+                  value: service.situationCount,
+                  tone: service.criticalCount ? "critical" : service.situationCount ? "warning" : "success",
+                }))}
+              /> : <p>Incident evidence unavailable; no clean service state is inferred.</p>}
+            </div>
+          </section>
         </>
       )}
 
       <ServiceReliability scope={scope} />
       <ServicePortfolioHistory scope={scope} />
+      <CopilotInsights
+        snapshot={servicesCopilot.snapshot}
+        ready={!connections.loading && !incidents.loading}
+        requestedScope={servicesCopilot.requestedScope}
+        contextLabel="Services"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
+
       <CopilotDrawer
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}

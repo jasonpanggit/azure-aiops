@@ -33,7 +33,7 @@ function FabricMedallionPageContent() {
   } catch (error) {
     if (!(error instanceof ScopeBookmarkError)) throw error;
     return (
-      <div className="page-container">
+      <div className="page-container operational-page">
         <StatePanel title="Fabric selection is outside the current scope" message={error.message} tone="error" />
         <Link className="button" href="/connections/fabric">Clear Fabric selection</Link>
       </div>
@@ -139,7 +139,7 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
   });
 
   return (
-    <div className="page-container">
+    <div className="page-container operational-page">
       <PageHeader
         eyebrow="Connections"
         title="Fabric medallion by subscription"
@@ -158,14 +158,6 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
             </button>
           </div>
         }
-      />
-
-      <CopilotInsights
-        snapshot={fabricCopilot.snapshot}
-        ready={!connections.loading && ![layerSummary, manifest, governance, capabilities].some(section => section.loading)}
-        requestedScope={fabricCopilot.requestedScope}
-        contextLabel="Fabric medallion"
-        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       <section className="card fabric-subscription-picker" aria-label="Subscription selection">
@@ -187,7 +179,7 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
             />
           ) : (
             <>
-              <label className="form-field">
+              <label className="form-field connection-scope-control">
                 <span>Subscription connection</span>
                 <select
                   className="form-control"
@@ -228,6 +220,14 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
       </section>
 
       <FabricMedallionPanel asTabPanel={false} refreshKey={refreshKey} scope={fabricScope} health={health} />
+
+      <CopilotInsights
+        snapshot={fabricCopilot.snapshot}
+        ready={!connections.loading && ![layerSummary, manifest, governance, capabilities].some(section => section.loading)}
+        requestedScope={fabricCopilot.requestedScope}
+        contextLabel="Fabric medallion"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

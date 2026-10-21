@@ -84,6 +84,7 @@ function currencyTotalsText(
     .join("; ");
 }
 
+/** Reviews scoped cost evidence without treating unknown savings as zero. */
 export default function FinOpsPage() {
   const { scope } = useScope();
   const [dimension, setDimension] = useState<Dimension>("subscription");
@@ -412,7 +413,7 @@ export default function FinOpsPage() {
   });
 
   return (
-    <div className="page-container">
+    <div className="page-container operational-page finops-workspace">
       <PageHeader
         eyebrow="Financial accountability"
         title="Where is spend signal available?"
@@ -432,13 +433,6 @@ export default function FinOpsPage() {
         }
       />
 
-      <CopilotInsights
-        snapshot={finopsCopilot.snapshot}
-        ready={!loading}
-        requestedScope={finopsCopilot.requestedScope}
-        contextLabel="Financial accountability"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
 
       <EvidenceBar
         evidence={[
@@ -451,6 +445,16 @@ export default function FinOpsPage() {
           ...(opportunities.data?.warnings ?? []),
         ]}
       />
+
+      {!error && !loading && (
+        <nav className="section-nav" aria-label="Cost sections">
+          <a href="#cost-overview">Overview</a>
+          {(totals?.unavailable_metrics?.length ?? 0) > 0 && <a href="#cost-coverage">Coverage gaps</a>}
+          <a href="#cost-attribution">Attribution</a>
+          <a href="#cost-opportunities">Savings opportunities</a>
+          <a href="#cost-waste">Waste</a>
+        </nav>
+      )}
 
       {error ? (
         <StatePanel
@@ -469,7 +473,7 @@ export default function FinOpsPage() {
         />
       ) : (
         <>
-          <div className="metric-grid">
+          <div id="cost-overview" className="metric-grid" role="region" aria-label="Cost overview">
             <MetricCard
               label="Identified annual savings"
               value={aggregateMoney(
@@ -535,10 +539,10 @@ export default function FinOpsPage() {
           )}
 
           {(totals?.unavailable_metrics?.length ?? 0) > 0 && (
-            <section className="card">
+            <section id="cost-coverage" className="card" aria-labelledby="cost-coverage-heading">
               <div className="card-header">
                 <div>
-                  <h2>What this page cannot tell you</h2>
+                  <h2 id="cost-coverage-heading">Coverage gaps</h2>
                   <p>
                 These figures are deliberately absent rather than estimated
                 or inferred from unrelated observations.
@@ -546,7 +550,7 @@ export default function FinOpsPage() {
                 </div>
               </div>
               <div className="card-body">
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0} role="region" aria-label="Unavailable cost metrics">
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -642,13 +646,13 @@ export default function FinOpsPage() {
             </section>
           )}
 
-          <section className="card">
+          <section id="cost-attribution" className="card" aria-labelledby="cost-attribution-heading">
             <div className="card-header">
               <div>
-                <h2>Attribution</h2>
+                <h2 id="cost-attribution-heading">Attribution</h2>
                 <p>Which part of the business owns the identified savings.</p>
               </div>
-              <div className="segmented-control" aria-label="Attribution dimension">
+              <div className="segmented-control" role="group" aria-label="Attribution dimension">
                 {DIMENSIONS.map((item) => (
                   <button
                     key={item}
@@ -666,11 +670,9 @@ export default function FinOpsPage() {
               {attribution.error ? (
                 <StatePanel
                   title="Attribution is unavailable"
-                  message={
-                    attribution.error.message ??
-                    "Cost attribution could not be loaded for this dimension."
-                  }
+                  message={attribution.error.message}
                   tone="error"
+                  action={<button className="button button-secondary" type="button" onClick={attribution.refetch}>Retry attribution</button>}
                 />
               ) : attribution.loading ? (
                 <StatePanel
@@ -691,7 +693,7 @@ export default function FinOpsPage() {
                   resultCount={filteredAttributionGroups.length}
                   totalCount={attributionGroups.length}
                 />
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0} role="region" aria-label="Attributed savings records">
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -728,7 +730,7 @@ export default function FinOpsPage() {
                 </div>
                 </>
               )}
-              <TablePagination
+              {!attribution.error && !attribution.loading && <TablePagination
                 total={attributionPaging.total}
                 pageRows={attributionPaging.pageRows.length}
                 page={attributionPaging.page}
@@ -736,14 +738,14 @@ export default function FinOpsPage() {
                 pageSize={attributionPaging.pageSize}
                 onPageSizeChange={attributionPaging.setPageSize}
                 label="groups"
-              />
+              />}
             </div>
           </section>
 
-          <section className="card">
+          <section id="cost-scenarios" className="card" aria-labelledby="cost-scenarios-heading">
             <div className="card-header">
               <div>
-                <h2>Review scenarios</h2>
+                <h2 id="cost-scenarios-heading">Review scenarios</h2>
                 <p>
                   Compare temporary selections of Azure Advisor opportunities.
                   The annualized figures stay separate by currency and are
@@ -1034,10 +1036,10 @@ export default function FinOpsPage() {
             </div>
           </section>
 
-          <section className="card">
+          <section id="cost-opportunities" className="card" aria-labelledby="cost-opportunities-heading">
             <div className="card-header">
               <div>
-                <h2>Savings opportunities</h2>
+                <h2 id="cost-opportunities-heading">Savings opportunities</h2>
                 <p>
                   Azure Advisor cost recommendations, richest quantified saving
                   first. Use the checkboxes to compare opportunities above.
@@ -1058,7 +1060,7 @@ export default function FinOpsPage() {
                   resultCount={filteredOpportunities.length}
                   totalCount={rows.length}
                 />
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0} role="region" aria-label="Savings opportunity records">
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -1140,10 +1142,10 @@ export default function FinOpsPage() {
             </div>
           </section>
 
-          <section className="card">
+          <section id="cost-waste" className="card" aria-labelledby="cost-waste-heading">
             <div className="card-header">
               <div>
-                <h2>Waste</h2>
+                <h2 id="cost-waste-heading">Waste</h2>
                 <p>
                   Resources that are provisioned but not delivering value, from
                   Advisor and from observed inventory state.
@@ -1164,7 +1166,7 @@ export default function FinOpsPage() {
                   resultCount={filteredWasteRows.length}
                   totalCount={wasteRows.length}
                 />
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0} role="region" aria-label="Waste resource records">
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -1220,6 +1222,16 @@ export default function FinOpsPage() {
           </section>
         </>
       )}
+
+
+
+      <CopilotInsights
+        snapshot={finopsCopilot.snapshot}
+        ready={!loading}
+        requestedScope={finopsCopilot.requestedScope}
+        contextLabel="Financial accountability"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

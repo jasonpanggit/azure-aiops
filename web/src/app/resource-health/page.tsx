@@ -96,27 +96,10 @@ function ResourceCard({
     resource.resource_type.toLowerCase() === "microsoft.app/containerapps";
 
   return (
-    <article
-      className="card resource-health-card"
-      style={{
-        padding: "1rem",
-        display: "flex",
-        flexDirection: "column",
-        gap: "0.5rem",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          gap: "0.5rem",
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>
-            {resource.resource_name}
-          </div>
+    <article className="card resource-health-card health-resource-card" aria-label={resource.resource_name}>
+      <div className="health-resource-header">
+        <div className="health-resource-title">
+          <h3>{resource.resource_name}</h3>
           <div className="cell-subtext">{resource.resource_group}</div>
         </div>
         <div
@@ -172,7 +155,7 @@ function ResourceCard({
 
       {detail ? (
         <>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+          <div className="health-resource-cpu">
             <MetricSparkline data={detail.cpu_series ?? []} max={100} />
             <div>
               <div style={{ fontSize: "1.25rem", fontWeight: 700 }}>
@@ -182,14 +165,7 @@ function ResourceCard({
             </div>
           </div>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: "0.35rem 0.75rem",
-              fontSize: "0.8125rem",
-            }}
-          >
+          <div className="health-resource-metrics">
             <span className="cell-subtext">
               Memory: {formatPercent(detail.memory_percent)}
             </span>
@@ -574,14 +550,15 @@ export default function ResourceHealthPage() {
   });
 
   return (
-    <div className="page-container resource-health-page">
+    <div className="page-container operational-page resource-health-page health-workspace">
       <PageHeader
         eyebrow="Resource health"
         title="Compute resource health and utilization"
         description="Azure Monitor utilization metrics for VMs and Container Apps in scope, hydrated independently after inventory loads."
         metadata={
           <>
-            <span>{summary.total} observed</span>
+            <span>{summary.total} in scope</span>
+            <span>{details.length} returned metrics</span>
             <span>{summary.critical} critical</span>
             <span>{summary.warning} warning</span>
             {latestSnapshot ? (
@@ -612,28 +589,27 @@ export default function ResourceHealthPage() {
         }
       />
 
-      <CopilotInsights
-        snapshot={resourceHealthCopilot.snapshot}
-        ready={!inventoryLoading}
-        requestedScope={resourceHealthCopilot.requestedScope}
-        contextLabel="Resource health"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
+      <nav className="section-nav" aria-label="Health sections">
+        <a href="#health-resources">Resource utilization</a>
+        {!inventoryLoading && !inventoryError && details.length > 0 && <a href="#health-comparison">CPU comparison</a>}
+      </nav>
 
       {unavailableMetrics.length > 0 ? (
-        <div
-          className="state-panel state-empty"
-          role="status"
-          style={{ marginBottom: "1.5rem" }}
-        >
-          <p>
-            VM memory % and disk free % need either a Log Analytics workspace with
-            classic guest performance counters, or an Azure Monitor Workspace receiving
-            OpenTelemetry host metrics; neither was discovered for this scope. Container
-            Apps use platform memory metrics.
-          </p>
-        </div>
+        <StatePanel
+          title="Some metrics are unavailable"
+          message="VM memory % and disk free % need either a Log Analytics workspace with classic guest performance counters, or an Azure Monitor Workspace receiving OpenTelemetry host metrics; neither was discovered for this scope. Container Apps use platform memory metrics."
+          tone="partial"
+        />
       ) : null}
+
+      <section id="health-resources" aria-labelledby="health-resources-heading">
+        <div className="section-header">
+          <div>
+            <h2 id="health-resources-heading">Resource utilization</h2>
+            <p>Review returned metrics and retry individual failures. Resources without metrics remain unassessed.</p>
+          </div>
+          <span>{details.length} of {resources.length} resources returned metrics</span>
+        </div>
 
       {inventoryLoading ? (
         <StatePanel
@@ -676,7 +652,7 @@ export default function ResourceHealthPage() {
           </section>
           <div className="metric-grid" style={{ marginBottom: "1.5rem" }}>
             <MetricCard
-              label="Resources observed"
+              label="Resources in scope"
               value={summary.total}
               detail="In current scope"
             />
@@ -701,11 +677,8 @@ export default function ResourceHealthPage() {
           </div>
 
           {warnings.length > 0 ? (
-            <div
-              className="state-panel state-empty"
-              role="status"
-              style={{ marginBottom: "1.5rem" }}
-            >
+            <div className="health-source-warnings" role="status">
+              <h3>Metric coverage warnings</h3>
               <ul>
                 {warnings.map((warning) => (
                   <li key={warning}>{warning}</li>
@@ -714,29 +687,7 @@ export default function ResourceHealthPage() {
             </div>
           ) : null}
 
-          {details.length > 0 ? (
-            <div
-              className="card"
-              style={{ marginBottom: "1.5rem", padding: "1rem" }}
-            >
-              <h2>CPU for matching resources</h2>
-              <UtilizationBarChart
-                data={details.filter(resource => visibleResources.some(row => resourceKey(row.resource_id) === resourceKey(resource.resource_id))).map((resource) => ({
-                  id: resource.resource_id,
-                  label: resource.resource_name,
-                  value: resource.cpu_percent,
-                }))}
-              />
-            </div>
-          ) : null}
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-              gap: "1rem",
-            }}
-          >
+          <div className="health-resource-grid">
             {visibleResources.map((resource) => (
               <ResourceCard
                 key={resourceKey(resource.resource_id)}
@@ -762,6 +713,36 @@ export default function ResourceHealthPage() {
           )}
         </>
       ) : null}
+      </section>
+
+      {!inventoryLoading && !inventoryError && details.length > 0 && (
+        <section id="health-comparison" className="card" aria-labelledby="health-comparison-heading">
+          <div className="card-header">
+            <div>
+              <h2 id="health-comparison-heading">CPU comparison</h2>
+              <p>Compare returned CPU samples. Unavailable values are not zero. Scroll the chart to see all labels on narrow screens.</p>
+            </div>
+          </div>
+          <div className="card-body">
+            <div className="table-scroll health-chart-scroll" tabIndex={0} role="region" aria-label="Scrollable CPU chart">
+              <UtilizationBarChart data={details.filter(resource => visibleResources.some(row => resourceKey(row.resource_id) === resourceKey(resource.resource_id))).map((resource) => ({
+                id: resource.resource_id,
+                label: resource.resource_name,
+                value: resource.cpu_percent,
+              }))} />
+            </div>
+          </div>
+        </section>
+      )}
+
+
+      <CopilotInsights
+        snapshot={resourceHealthCopilot.snapshot}
+        ready={!inventoryLoading}
+        requestedScope={resourceHealthCopilot.requestedScope}
+        contextLabel="Resource health"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

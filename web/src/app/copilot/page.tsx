@@ -208,7 +208,7 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
   }, [prefillQuestion, pinnedThreadId]);
 
   return (
-    <div className="page-container copilot-page">
+    <div className="page-container operational-page copilot-page">
       <PageHeader
         eyebrow="Evidence-based assistance"
         title="Operations Copilot"
@@ -230,16 +230,25 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
         {retryRequest.current ? <button className="button" type="button" onClick={() => { const retry = retryRequest.current; if (retry) void ask(retry.question, retry.key); }}>Retry original question with same request key</button> : null}
       </> : null}
 
+      <nav className="section-nav" aria-label="Copilot sections">
+        <a href="#copilot-conversation">Conversation</a>
+        <a href="#copilot-composer">Ask a question</a>
+        <a href="#copilot-trust">Trust boundary</a>
+      </nav>
+
       <div className="copilot-layout">
-        <section className="copilot-thread">
+        <section id="copilot-conversation" className="copilot-thread" aria-labelledby="copilot-conversation-heading">
+          <div className="section-heading">
+            <div><h2 id="copilot-conversation-heading">Conversation</h2><p>Review answers, uncertainty and sources before acting.</p></div>
+          </div>
           {turns.length === 0 && (
             <div className="copilot-welcome">
               <div className="copilot-mark">AI</div>
-              <h2>Start with an operational question</h2>
+              <h3>Start with an operational question</h3>
               <p>Copilot uses the same governed knowledge and operating scope as the rest of the workbench.</p>
               <div className="copilot-prompts">
                 {starterPrompts.map((prompt) => (
-                  <button type="button" key={prompt} disabled={loading || reviewing || Boolean(recovery)} onClick={() => selectedThread ? setQuestion(prompt) : ask(prompt)}>
+                  <button className="button button-ai" type="button" key={prompt} disabled={loading || reviewing || Boolean(recovery)} onClick={() => selectedThread ? setQuestion(prompt) : ask(prompt)}>
                     {prompt}
                     <span>→</span>
                   </button>
@@ -254,28 +263,13 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
               <div className={`copilot-answer${turn.error ? " copilot-answer-error" : ""}`}>
                 <div className="copilot-answer-label"><span className="copilot-mark">AI</span><strong>Operations Copilot</strong>{turn.narration && <StatusBadge label={turn.narration.model || turn.narration.agent_name} tone="success" compact />}</div>
                 {turn.error ? (
-                  <p>{turn.error}</p>
+                  <p role="alert">{turn.error}</p>
                 ) : (
                   <>
                     {turn.narration && (
                       <MarkdownLite text={turn.narration.text} />
                     )}
-                    {turn.toolCalls?.length ? (
-                      <div className="copilot-tool-calls">
-                        {turn.toolCalls.map((call, callIndex) => (
-                          <details className="copilot-tool-call" key={`${call.tool}-${callIndex}`} open={callIndex === 0}>
-                            <summary className="copilot-tool-call-header">
-                              <StatusBadge label={call.tool} tone="neutral" compact />
-                              <StatusBadge label={call.status} tone={TOOL_STATUS_TONE[call.status] ?? "neutral"} compact />
-                            </summary>
-                            {call.warning && <p className="copilot-tool-warning">{call.warning}</p>}
-                            {call.status === "ok" && call.data != null && <StructuredData value={call.data} />}
-                          </details>
-                        ))}
-                      </div>
-                    ) : (
-                      !turn.narration && <p>No matching operational context was found in this scope.</p>
-                    )}
+                    {!turn.toolCalls?.length && !turn.narration && <p>No matching operational context was found in this scope.</p>}
                   </>
                 )}
                 {!turn.error && turn.degraded && turn.degradationNote && (
@@ -305,13 +299,34 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
                     warnings={turn.warnings}
                   />
                 )}
+                {!turn.error && turn.toolCalls?.length ? (
+                  <div className="copilot-tool-calls">
+                    {turn.toolCalls.map((call, callIndex) => (
+                      <div className="copilot-tool-call" key={`${call.tool}-${callIndex}`}>
+                        <div className="copilot-tool-call-header">
+                          <StatusBadge label={call.tool} tone="neutral" compact />
+                          <StatusBadge label={call.status} tone={TOOL_STATUS_TONE[call.status] ?? "neutral"} compact />
+                        </div>
+                        {call.warning && <p className="copilot-tool-warning">{call.warning}</p>}
+                        {call.status === "ok" && call.data != null && (
+                          <details className="technical-disclosure">
+                            <summary>Inspect tool output</summary>
+                            <div className="copilot-tool-output" tabIndex={0} role="region" aria-label={`Output from ${call.tool}`}>
+                              <StructuredData value={call.data} />
+                            </div>
+                          </details>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
           ))}
-          {loading && <div className="copilot-thinking"><span /><span /><span /> Reviewing evidence</div>}
+          {loading && <div className="copilot-thinking" role="status"><span /><span /><span /> Reviewing evidence</div>}
         </section>
 
-        <aside className="copilot-boundary card">
+        <aside id="copilot-trust" className="copilot-boundary card" aria-label="Trust boundary">
           <details className="copilot-boundary-details" open>
             <summary>
               <span>
@@ -330,7 +345,7 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
         </aside>
       </div>
 
-      <div className="copilot-composer">
+      <form id="copilot-composer" className="copilot-composer" aria-label="Ask Operations Copilot" onSubmit={(event) => { event.preventDefault(); ask(); }}>
         <textarea
           aria-label="Copilot question"
           disabled={reviewing}
@@ -345,10 +360,10 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
           placeholder="Ask about applications, ownership, failed patches, critical infrastructure, or business service context"
           rows={2}
         />
-        {loading ? <button type="button" className="button" aria-label="Stop waiting for this response" onClick={stopWaiting}>Stop waiting</button> : <button type="button" className="button button-primary" onClick={() => ask()} disabled={reviewing || Boolean(recovery) || !question.trim()}>
+        {loading ? <button type="button" className="button button-secondary" aria-label="Stop waiting for this response" onClick={stopWaiting}>Stop waiting</button> : <button type="submit" className="button button-ai" disabled={reviewing || Boolean(recovery) || !question.trim()}>
           Ask Copilot
         </button>}
-      </div>
+      </form>
     </div>
   );
 }

@@ -607,11 +607,11 @@ export function CopilotDrawer({
             placeholder="Ask about this record's impact, ownership, or recommended action"
             rows={2}
           />
-          <button type="button" className="button button-primary" onClick={() => ask(question)} disabled={visibleLoading || !question.trim()}>
+          <button type="button" className="button button-ai" onClick={() => ask(question)} disabled={visibleLoading || !question.trim()}>
             Send
           </button>
           {visibleStage === "error" && lastSnapshot && (
-            <button type="button" className="button" onClick={() => ask(lastQuestion)} disabled={visibleLoading}>
+            <button type="button" className="button button-ai" onClick={() => ask(lastQuestion)} disabled={visibleLoading}>
               Retry
             </button>
           )}

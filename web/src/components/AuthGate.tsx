@@ -15,7 +15,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (!isMsalConfigured) {
     return (
       <div>
-        <MessageBar intent="warning">
+        <MessageBar intent="warning" layout="multiline" className="dev-auth-warning">
           <MessageBarBody>
             <MessageBarTitle>Development mode</MessageBarTitle>
             No Entra ID app registration configured (NEXT_PUBLIC_ENTRA_CLIENT_ID is unset). Using

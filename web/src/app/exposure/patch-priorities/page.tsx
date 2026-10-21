@@ -601,7 +601,7 @@ export default function PatchPrioritiesPage() {
   }, [refreshState?.refreshing, section.retry]);
 
   return (
-    <div className="page-container exposure-patch-priorities">
+    <div className="page-container operational-page exposure-patch-priorities">
       <PageHeader
         eyebrow="Exposure management"
         title="Patch priorities"
@@ -615,13 +615,6 @@ export default function PatchPrioritiesPage() {
         }
       />
 
-      <CopilotInsights
-        snapshot={patchCopilot.snapshot}
-        ready={!section.loading}
-        requestedScope={patchCopilot.requestedScope}
-        contextLabel="Patch priorities"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
 
       {section.restart.required && (
         <div className="callout callout-warning" role="alert">
@@ -685,6 +678,10 @@ export default function PatchPrioritiesPage() {
         state={sectionPresentation}
       >
         <section className="card queue-card" aria-labelledby="patch-priority-heading">
+          <nav className="section-nav" aria-label="Patch priority sections">
+            <a href="#patch-priority-heading">Priority queue</a>
+            <a href="#patch-priority-controls">Filters and views</a>
+          </nav>
           <div className="card-header">
             <div>
               <h2 id="patch-priority-heading">{viewCopy.heading}</h2>
@@ -736,7 +733,7 @@ export default function PatchPrioritiesPage() {
             </div>
           )}
 
-          <div className="card-body patch-priority-view-controls">
+          <div id="patch-priority-controls" className="card-body patch-priority-view-controls">
             <div className="form-field">
               <span id="patch-priority-view-label">Organize findings</span>
               <div
@@ -1056,6 +1053,14 @@ export default function PatchPrioritiesPage() {
           )}
         </section>
       </SourceSectionState>
+
+      <CopilotInsights
+        snapshot={patchCopilot.snapshot}
+        ready={!section.loading}
+        requestedScope={patchCopilot.requestedScope}
+        contextLabel="Patch priorities"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

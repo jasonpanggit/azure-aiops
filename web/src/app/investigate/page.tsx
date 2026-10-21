@@ -107,6 +107,17 @@ const ENTRY_TYPES: EntryType[] = [
   "RemediationPlan",
 ];
 
+const ENTRY_LABELS: Record<EntryType, string> = {
+  BusinessService: "Business service",
+  Application: "Application",
+  Environment: "Environment",
+  SubscriptionConnection: "Subscription connection",
+  Incident: "Incident",
+  CVE: "CVE",
+  NetworkGap: "Network gap",
+  RemediationPlan: "Remediation plan",
+};
+
 const STORAGE_KEY = "aiops.investigations.v1";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -781,16 +792,17 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
   };
 
   return (
-    <div className={`page-container investigation-workspace investigation-mode-${mode}`}>
+    <div className={`page-container investigation-workspace operational-page investigation-mode-${mode}`}>
       <PageHeader
-        title={subject ? `${entryType}: ${subject}` : "Investigate business risk end to end"}
-        description="One surface for business risk, dependencies, network paths, vulnerabilities, changes, incidents, evidence, Copilot reasoning, owners, and recommended actions."
+        eyebrow="Executive investigation workspace"
+        title={subject ? `${ENTRY_LABELS[entryType] ?? entryType}: ${subject}` : "Investigate business risk"}
+        description="Review risk, ownership, and supporting evidence before requesting an advisory Copilot conclusion."
         actions={
           <>
             <button className="button button-secondary" type="button" onClick={saveInvestigation}>Save view locally</button>
             <button className="button button-secondary" type="button" onClick={share}>Copy current entry link</button>
             <button className="button button-secondary" type="button" onClick={exportInvestigation}>Export</button>
-            <button className="button button-primary" type="button" onClick={runCopilot} disabled={loading}>Generate conclusion</button>
+            <button className="button button-ai" type="button" onClick={runCopilot} disabled={loading}>Generate conclusion</button>
           </>
         }
         metadata={
@@ -807,7 +819,7 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
         <label>
           Entry point
           <select value={entryType} onChange={(event) => setEntryType(event.target.value as EntryType)}>
-            {ENTRY_TYPES.map((type) => <option key={type}>{type}</option>)}
+            {ENTRY_TYPES.map((type) => <option key={type} value={type}>{ENTRY_LABELS[type]}</option>)}
           </select>
         </label>
         <label>
@@ -815,8 +827,8 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
           <input value={entryValue} maxLength={512} onChange={(event) => setEntryValue(event.target.value)} placeholder="Service, app, incident, CVE, gap, or plan id" />
         </label>
         <div className="segmented-control" role="group" aria-label="Workspace mode">
-          <button type="button" className={mode === "executive" ? "active" : ""} onClick={() => setMode("executive")}>Executive</button>
-          <button type="button" className={mode === "engineer" ? "active" : ""} onClick={() => setMode("engineer")}>Engineer</button>
+          <button type="button" className={mode === "executive" ? "segmented-active" : ""} aria-pressed={mode === "executive"} onClick={() => setMode("executive")}>Executive</button>
+          <button type="button" className={mode === "engineer" ? "segmented-active" : ""} aria-pressed={mode === "engineer"} onClick={() => setMode("engineer")}>Engineer</button>
         </div>
       </section>
 
@@ -845,6 +857,19 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
       />
 
       {loading && <StatePanel title="Synchronizing investigation context" message="Updating summary, topology, evidence, Copilot context, and actions." tone="loading" />}
+
+      <nav className="section-nav" aria-label="Investigation sections">
+        <a href="#investigation-impact">Business impact</a>
+        <a href="#investigation-timeline">Timeline</a>
+        <a href="#investigation-vulnerabilities">Vulnerabilities</a>
+        <a href="#investigation-network">Network paths</a>
+        <a href="#investigation-evidence">Evidence</a>
+        <a href="#investigation-owners">Owners</a>
+        <a href="#investigation-actions">Recommended actions</a>
+        <a href="#investigation-conclusion">Copilot conclusion</a>
+        <a href="#investigation-saved">Saved investigations</a>
+        <a href="#investigation-activity">Local activity</a>
+      </nav>
 
       <div className="predeploy-summary">
         <section className="card">
@@ -877,9 +902,9 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
       </div>
 
       <div className="investigation-layout">
-        <section className="card investigation-panel investigation-panel-wide">
+        <section id="investigation-impact" className="card investigation-panel investigation-panel-wide" aria-labelledby="investigation-impact-heading">
           <div className="card-header">
-            <h2>Business impact and dependency context</h2>
+            <div><h2 id="investigation-impact-heading">Business impact and dependency context</h2><p>Review the decision, accountable owner, and affected dependencies.</p></div>
             <span>{selected ? `Focused: ${selected.label}` : "Synchronized overview"}</span>
           </div>
           <div className="card-body">
@@ -896,8 +921,8 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
           </div>
         </section>
 
-        <section className="card investigation-panel">
-          <div className="card-header"><h2>Timeline</h2><span>{timeline.length} events</span></div>
+        <section id="investigation-timeline" className="card investigation-panel" aria-labelledby="investigation-timeline-heading">
+          <div className="card-header"><div><h2 id="investigation-timeline-heading">Timeline</h2><p>Review recent observations; select an event to focus the investigation.</p></div><span>{timeline.length} events</span></div>
           <div className="card-body investigation-timeline">
             {timeline.length === 0 ? <span className="muted">No timeline events in scope.</span> : timeline.map((event, index) => (
               <button key={`${event.event_id}:${event.timestamp}:${event.source}:${index}`} type="button" className="timeline-row" onClick={() => setFocus({ kind: "Evidence", id: event.event_id, label: event.event_type, reason: event.summary })}>
@@ -909,8 +934,8 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
           </div>
         </section>
 
-        <section className="card investigation-panel">
-          <div className="card-header"><h2>Vulnerabilities</h2><span>{state.exposures?.data?.length ?? 0} exposures</span></div>
+        <section id="investigation-vulnerabilities" className="card investigation-panel" aria-labelledby="investigation-vulnerabilities-heading">
+          <div className="card-header"><div><h2 id="investigation-vulnerabilities-heading">Vulnerabilities</h2><p>Select a reported exposure to focus the investigation.</p></div><span>{state.exposures?.data?.length ?? 0} exposures</span></div>
           <div className="card-body investigation-list">
             {cveDetail ? (
               <button type="button" onClick={() => setFocus({ kind: "CVE", id: cveDetail.data.cve.cve_id, label: cveDetail.data.cve.title, reason: cveDetail.data.recommended_patch })}>
@@ -928,8 +953,8 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
           </div>
         </section>
 
-        <section className="card investigation-panel investigation-panel-wide">
-          <div className="card-header"><h2>Network topology and paths</h2><span>{state.gaps?.data.gaps.length ?? 0} gaps · {state.attackPath?.data.reachable_server_count ?? 0} reachable CVE paths</span></div>
+        <section id="investigation-network" className="card investigation-panel investigation-panel-wide" aria-labelledby="investigation-network-heading">
+          <div className="card-header"><div><h2 id="investigation-network-heading">Network topology and paths</h2><p>Inspect observed relationships and path evidence without inferring missing coverage.</p></div><span>{state.gaps?.data.gaps.length ?? 0} gaps · {state.attackPath?.data.reachable_server_count ?? 0} reachable CVE paths</span></div>
           <div className="card-body">
             <TopologyWorkspace
               topology={state.topology?.data.topology ?? null}
@@ -941,8 +966,8 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
           </div>
         </section>
 
-        <section className="card investigation-panel">
-          <div className="card-header"><h2>Evidence</h2><span>{evidence.length} citations</span></div>
+        <section id="investigation-evidence" className="card investigation-panel" aria-labelledby="investigation-evidence-heading">
+          <div className="card-header"><div><h2 id="investigation-evidence-heading">Evidence</h2><p>Inspect source citations and focus on the records supporting this view.</p></div><span>{evidence.length} citations</span></div>
           <div className="card-body investigation-list">
             {evidence.map((item, index) => (
               <button key={`${item.source_engine}-${index}`} type="button" onClick={() => setFocus({ kind: "Evidence", id: item.source_table, label: item.source_engine, reason: item.timestamp })}>
@@ -954,8 +979,8 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
           </div>
         </section>
 
-        <section className="card investigation-panel">
-          <div className="card-header"><h2>Owners</h2><span>{owners.length} accountable parties</span></div>
+        <section id="investigation-owners" className="card investigation-panel" aria-labelledby="investigation-owners-heading">
+          <div className="card-header"><div><h2 id="investigation-owners-heading">Owners</h2><p>Review accountable parties and unresolved ownership.</p></div><span>{owners.length} accountable parties</span></div>
           <div className="card-body investigation-list">
             {owners.map((item) => (
               <button key={item} type="button" onClick={() => setFocus({ kind: "Owner", id: item, label: item, reason: "Accountable owner or support team" })}>
@@ -966,8 +991,8 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
           </div>
         </section>
 
-        <section className="card investigation-panel">
-          <div className="card-header"><h2>Recommended actions</h2><span>{state.remediation?.data.plans?.length ?? 0} candidates</span></div>
+        <section id="investigation-actions" className="card investigation-panel" aria-labelledby="investigation-actions-heading">
+          <div className="card-header"><div><h2 id="investigation-actions-heading">Recommended actions</h2><p>Review advisory candidates. Selection does not approve or execute a change.</p></div><span>{state.remediation?.data.plans?.length ?? 0} candidates</span></div>
           <div className="card-body investigation-list">
             {(state.remediation?.data.plans ?? []).slice(0, 6).map((plan) => (
               <button key={plan.plan_id} type="button" onClick={() => setFocus({ kind: "RemediationPlan", id: plan.plan_id, label: String(plan.title ?? plan.plan_id), reason: String(plan.status ?? "") })}>
@@ -979,9 +1004,9 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
           </div>
         </section>
 
-        <section className="card investigation-panel investigation-panel-wide">
+        <section id="investigation-conclusion" className="card investigation-panel investigation-panel-wide" aria-labelledby="investigation-conclusion-heading">
           <div className="card-header">
-            <h2>Copilot conclusion</h2>
+            <div><h2 id="investigation-conclusion-heading">Copilot conclusion</h2><p>Review generated narration alongside its uncertainty and citations.</p></div>
             <button className="button button-secondary" type="button" onClick={runCopilot}>Refresh conclusion</button>
           </div>
           <div className="card-body">
@@ -1019,28 +1044,38 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
           </div>
         </section>
 
-        <section className="card investigation-panel">
-          <div className="card-header"><h2>Saved investigations</h2><span>{saved.length} saved</span></div>
-          <div className="card-body investigation-list">
-            {saved.map((item) => (
-              <button key={item.id} type="button" onClick={() => reopen(item)}>
-                <strong>{item.title}</strong>
-                <span>{item.savedAt}</span>
-              </button>
-            ))}
-            {saved.length === 0 && <span className="muted">No saved investigations yet.</span>}
+        <section id="investigation-saved" className="card investigation-panel" aria-labelledby="investigation-saved-heading">
+          <div className="card-header"><div><h2 id="investigation-saved-heading">Saved investigations</h2><p>Reopen views saved in this browser.</p></div><span>{saved.length} saved</span></div>
+          <div className="card-body">
+            <details className="source-section-details">
+              <summary>Open saved investigations</summary>
+              <div className="investigation-list">
+                {saved.map((item) => (
+                  <button key={item.id} type="button" onClick={() => reopen(item)}>
+                    <strong>{item.title}</strong>
+                    <span>{item.savedAt}</span>
+                  </button>
+                ))}
+                {saved.length === 0 && <span className="muted">No saved investigations yet.</span>}
+              </div>
+            </details>
           </div>
         </section>
 
-        <section className="card investigation-panel">
-          <div className="card-header"><h2>Audit trail</h2><span>{audit.length} events</span></div>
-          <div className="card-body investigation-list">
-            {audit.map((item) => (
-              <div key={`${item.at}-${item.action}`} className="audit-row">
-                <strong>{item.action}</strong>
-                <span>{item.at}</span>
+        <section id="investigation-activity" className="card investigation-panel" aria-labelledby="investigation-activity-heading">
+          <div className="card-header"><div><h2 id="investigation-activity-heading">Local activity</h2><p>Browser-session actions, not service-recorded audit history.</p></div><span>{audit.length} events</span></div>
+          <div className="card-body">
+            <details className="source-section-details">
+              <summary>View local activity</summary>
+              <div className="investigation-list">
+                {audit.map((item) => (
+                  <div key={`${item.at}-${item.action}`} className="audit-row">
+                    <strong>{item.action}</strong>
+                    <span>{item.at}</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            </details>
           </div>
         </section>
       </div>
