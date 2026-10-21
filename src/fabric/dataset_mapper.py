@@ -2011,6 +2011,10 @@ class InventoryDatasetMapper:
             datasets[ontology_entity_table(entity_type)] = [
                 row for row in graph.entities if row["entity_type"] == entity_type
             ]
+        exposure_table = ontology_entity_table("ContainerImageExposure")
+        datasets[exposure_table] = container_exposure_ontology_rows(
+            datasets[exposure_table], entities["ContainerImageExposure"],
+        )
         relationship_types = {
             (row["subject_type"], row["predicate"], row["object_type"])
             for row in graph.relationships
@@ -2650,6 +2654,68 @@ def _defender_assessment_row(row: dict[str, Any], run_id: str) -> dict[str, Any]
             ),
         }
     )
+    return result
+
+
+def container_exposure_ontology_rows(
+    ontology_rows: list[dict[str, Any]],
+    sources: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Add explicit registry and connection scalars to the existing typed product.
+
+    Canonical graph records remain unchanged. Missing source registry IDs stay
+    unbound; no resource-ID parsing or registry inference is permitted.
+    """
+    if sources is None:
+        sources = []
+        for row in ontology_rows:
+            source = _json_mapping(
+                row["payload_json"], field_name="container exposure payload_json",
+            )
+            for name, field in (
+                ("id", "resource_id"), ("tenantId", "tenant_id"),
+                ("subscriptionId", "subscription_id"),
+            ):
+                source.setdefault(name, row[field])
+            sources.append(source)
+    bindings: dict[str, tuple[str, str, str, str]] = {}
+    for source in sources:
+        registry = source.get("registryResourceId")
+        if registry is not None and not isinstance(registry, str):
+            raise TypeError("Container exposure registryResourceId must be a string")
+        connection_values = [
+            source[name]
+            for name in (
+                "connection_id", "connectionId",
+                "subscription_connection_id", "subscriptionConnectionId",
+            )
+            if source.get(name) not in (None, "")
+        ]
+        if any(not isinstance(value, str) for value in connection_values):
+            raise TypeError("Container exposure connection scope must be a string")
+        connections = set(connection_values)
+        if len(connections) > 1:
+            raise ValueError("Container exposure connection scopes conflict")
+        canonical = _container_image_exposure_row(source, "")
+        resource_id = canonical["resource_id"]
+        binding = (
+            canonical["tenant_id"] or "not-applicable",
+            canonical["subscription_id"] or "not-applicable",
+            next(iter(connections), ""), canonical["registry_resource_id"],
+        )
+        if resource_id in bindings and bindings[resource_id] != binding:
+            raise ValueError("Container exposure registry binding is ambiguous or cross-scope")
+        bindings[resource_id] = binding
+    result = []
+    for row in ontology_rows:
+        binding = bindings.get(row["resource_id"])
+        if binding is None:
+            raise ValueError("Container exposure ontology binding identity mismatch")
+        if (row["tenant_id"], row["subscription_id"]) != binding[:2]:
+            raise ValueError("Container exposure ontology binding scope mismatch")
+        result.append({
+            **row, "connection_id": binding[2], "registry_resource_id": binding[3],
+        })
     return result
 
 

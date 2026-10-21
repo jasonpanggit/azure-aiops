@@ -1032,6 +1032,12 @@ SCHEMAS: dict[str, pa.Schema] = {
 
 
 def schema_for(table_name: str) -> pa.Schema:
+    if table_name == "ontology_container_image_exposure_entities":
+        return pa.schema([
+            *_ONTOLOGY_ENTITY,
+            pa.field("registry_resource_id", pa.string(), nullable=False),
+            pa.field("connection_id", pa.string(), nullable=False),
+        ])
     if table_name.startswith("ontology_rel_"):
         return pa.schema(_ONTOLOGY_RELATIONSHIP)
     if table_name.startswith("ontology_") and table_name.endswith("_entities"):

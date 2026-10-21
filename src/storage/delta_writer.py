@@ -910,7 +910,10 @@ class DeltaWriter:
             incoming_versions = sorted(
                 (str(row["resource_id"]), str(row["change_version"])) for row in rows
             )
-            if current_versions == incoming_versions:
+            schema_unchanged = schema is None or schema.equals(
+                pa.schema(table.schema().to_arrow())
+            )
+            if current_versions == incoming_versions and schema_unchanged:
                 return DeltaWriteResult(
                     rows_processed=processed_count,
                     skipped=True,

@@ -48,6 +48,29 @@ as native agent execution.
 The known new-experience copy uses TMDL. Do not aim a legacy JSON definition
 publisher at it. A definition REST write is not a native agent execution.
 
+## Existing exposure publication source contract
+
+`ontology_container_image_exposure_entities` retains its existing entity IDs,
+membership and generic ontology columns, including lifecycle, ontology version,
+lineage, semantic metadata and the original payload. Its typed publication adds
+`registry_resource_id` and `connection_id` string scalars so reviewed native
+relationship plans can use an explicit registry key within connection scope.
+The registry value uses the same case-folded explicit `registryResourceId` as
+`silver_container_image_exposure`; missing values remain empty/unbound. It is
+never inferred from an image URI, resource-ID path or a different entity.
+Conflicting registry or tenant/subscription/connection mappings for the same
+exposure ID fail publication rather than choosing a duplicate.
+
+The mapper, lifecycle rebuild and candidate-derived publisher use the same
+projection, including typed schemas for empty tables. Canonical `ontology_entities`
+rows and other typed entity schemas are unchanged.
+An overwrite with unchanged entity versions still applies an additive schema;
+only a matching declared schema can use the unchanged-version skip.
+This source contract alone
+does not refresh a deployed table, rebind a native source, change a definition,
+authorize Act or establish a relationship. A separate reviewed cloud change and
+actual native Plan preview are still required before any native apply.
+
 Supported experiences:
 
 - [Native agent: discovery, Plan previews and reviewed Act](https://learn.microsoft.com/en-us/fabric/iq/ontology/how-to-use-ontology-agent)
