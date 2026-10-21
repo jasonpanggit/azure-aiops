@@ -1063,7 +1063,13 @@ def test_sql_reader_batch_max_four_options_isolation_and_error_drain(fail):
     else:
         assert reader._batch(uris, read) == uris
     assert state["maximum"] == 4
-    assert state["active"] == 0 and state["finished"] == 8
+    assert state["active"] == 0
+    assert state["finished"] == state["started"]
+    if fail:
+        # map may cancel queued reads after failure; every started read must drain.
+        assert 4 <= state["started"] <= len(uris)
+    else:
+        assert state["finished"] == len(uris)
     assert provided == {"token": "current"} and reader.storage_options == original_options
     assert provider_calls == [1]
     reader._batch({"next": "uri"}, lambda *_: None)
