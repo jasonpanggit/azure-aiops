@@ -2,8 +2,8 @@
 
 `fabric.exposure_scalar_migration.migrate_exposure_scalars` is a source-only
 operational composition for the additive registry/connection contract on the
-existing `ontology_container_image_exposure_entities` Delta table. It has no
-CLI, credential selection, scheduled trigger or implicit cloud execution.
+existing `ontology_container_image_exposure_entities` Delta table. The core has
+no credential selection, scheduled trigger or implicit cloud execution.
 It depends on the separate explicit-scalar prerequisite in PR344.
 
 The caller must provide the existing `OneLakeWriter` and `DeltaWriter`, an
@@ -57,3 +57,70 @@ Do not truncate canonical payload or alter SQL schemas to work around this.
 This module is not wired to an application or Job. Current cloud/merge/build/
 Job/native gates remain closed until the exact source, operational observer,
 packaging/execution override and current cloud state are independently reviewed.
+
+## Separate finite caller and read-only observer
+
+`python -m fabric.exposure_scalar_migration_cli --request <local-json>
+--request-sha256 <reviewed-file-sha256>` is the finite packaging path. The existing
+Dockerfile already copies `src/`; no image build or Job change is needed to
+describe this command. It inspects authority read-only by default. Adding
+`--execute` selects the guarded one-table migration, but is **not authorization**
+to execute it; existing source/CI/current-cloud approval gates still apply.
+No entrypoint defaults to execute, and nothing invokes this module automatically.
+
+The caller requires the exact existing Ops workspace/Lakehouse and combined
+`Files/aiops` source root, `AIOPS_IDENTITY_CLASS=publisher`, and `AZURE_CLIENT_ID`
+matching the explicitly reviewed publisher client ID. It obtains credentials
+only through that managed identity and checks the SDK-obtained storage token's
+tenant/object/client/audience against the reviewed request. It does not select
+DefaultAzureCredential, fall back to API/local credentials, reveal tokens, use
+the baked historical YAML defaults, call `build_runtime`, or provision anything.
+It constructs a dedicated `DeltaWriter(max_attempts=1)`.
+
+The concrete observer conditionally reads only existing files, with bounded
+size and ETag rechecks, and reads public Delta version-qualified snapshots. It
+requires `Files/aiops/current.json` to name a completed combined activation,
+the latest completed ingestion marker to reference that generation and pinned
+canonical versions, the current canonical heads to agree with the marker, and
+the existing `Files/ontology/metadata/catalog.json` to match reviewed evidence.
+It re-reads documents, native definition and marker head before returning a
+fingerprint; the migration calls it repeatedly within its lease guards.
+
+Two pre-existing independently reviewed evidence documents must live under
+`Files/aiops/validation/native-scalar/`; the caller only reads them, never
+creates or uploads them. The request pins each JSON document's exact
+`document_hash`, not a boolean `qualified` flag:
+
+- `product_authority_evidence`: exact `authority_mode=completed_ingestion`,
+  workspace/Lakehouse/table/source generation/canonical version, source manifest
+  and catalog hashes, and an independently reviewed inventory asserting no
+  immutable product consumer owns this typed table. Maintenance/version-pinned
+  consumer configurations are rejected, not overwritten.
+- `consumption_evidence`: `kind=native-query-delta-head-observations/v1`,
+  exact target and full `definition_hash`, and two actual native-query
+  observations (`status=succeeded`, `reader=native_ontology_agent`, request ID,
+  observation timestamp, Delta version and all active rows projected to
+  resource_id/tenant_id/subscription_id/change_version).
+  `query_contract=all-active-exposure-keys-no-version-filter/v1` identifies the
+  reviewed all-scope native query without a version filter. The reviewer must
+  verify the actual query/receipts, not manufacture this label.
+  Their row hashes must differ, agree with retained full Delta snapshots at
+  increasing versions, and end at the plan's target version. SQL queries,
+  schema introspection, annotations, equal-result reads or narrative reports
+  are insufficient.
+
+The caller reads the existing native definition through `getDefinition` only.
+It verifies the retained TMDL entity/backing-table/entity-partition/DirectLake
+expression source and exact workspace/Lakehouse annotations and root; it never
+calls create/updateDefinition/preview/Act. Definition content contributes to
+the fingerprint. This checks binding, **not consumption**.
+
+**Current evidence-only blocker:** retained native TMDL has a table-name
+DirectLake binding and `ONT_PinnedAtUtc`, but there are no independently retained
+two-version native result observations proving mutable-head consumption.
+No such evidence documents have been created, no observer run in production,
+and no execution is qualified. The fixtures intentionally supply synthetic
+observations to exercise acceptance/rejection offline; they are not live proof.
+Missing or changed evidence makes the concrete caller fail before table writes.
+Execution-specific packaging/request delivery, current pinned plan and cloud
+review remain operational gates; this source does not change a Job template.
