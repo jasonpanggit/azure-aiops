@@ -1,443 +1,349 @@
 # Azure AI Operations Platform
 
-An AI-powered operations platform for Azure that enables operators to move from detected situations to evidence-backed, auditable, human-approved remediation without losing context or control. Built on existing Azure Resource Graph, Fabric Ontology, FastAPI, Entra, and Next.js foundations.
+An Azure operations workbench that connects resource inventory, operational
+evidence, Microsoft Fabric, and AI-assisted investigation. Operators can inspect
+scope-aware findings, review cited recommendations, approve supported remediation,
+and follow durable execution and verification records.
 
-**Core Value:** Operators detect Azure incidents, receive cited evidence and recommendations, approve bounded remediation actions, observe durable execution, and maintain full audit trails.
+The repository includes a **Python/FastAPI backend**, a **Next.js 14 / React 18
+frontend**, an **Azure Resource Graph connector**, **OneLake/Delta publication**,
+and **governed Operations Copilot and ontology workflows**.
 
-**Status:** Phase 7 (Unified Resource Inventory) - Planning stage. See [`.planning/STATE.md`](.planning/STATE.md) for roadmap and current progress.
+Implementation is not the same as live qualification: available data, credentials,
+provider configuration, rollout settings, and release evidence determine which
+capabilities are usable in an environment. See [delivery boundaries](#delivery-boundaries)
+and [planning state](.planning/STATE.md) for outstanding acceptance gates.
 
-For existing ARG connector capabilities and AIOps integration, see [`docs/PRODUCTION_RUNTIME_ACTIVATION.md`](docs/PRODUCTION_RUNTIME_ACTIVATION.md).
+## Current capabilities
 
-## What is implemented
+| Area | Implemented surfaces |
+| --- | --- |
+| Connections and inventory | Subscription onboarding, credential references, validation, connection-scoped sync, resource catalog, OS/software observations, lifecycle review, and Fabric publication |
+| Operations workbench | Overview, resource health, situations, investigations, service portfolio/reliability, change analysis, and operational twin |
+| Exposure and security | Generation-pinned Exposure queries, CVE/KB detail, patch priorities, Defender posture, vulnerability intelligence, and review-only container remediation handoffs |
+| Network | Scope-aware topology, private-link and service dependencies, evidence drawers, exports, and bounded contextual Insights |
+| Governance | Identity, governance, compliance, FinOps, and evidence-backed risk/review projections |
+| Copilot and agents | Page-bound Insights and follow-ups, durable threads, specialist tools, canonical orchestration, explicit compatibility/shadow/canary/default rollout modes, and evaluation tooling |
+| Remediation | Separate approve/operate permissions, evidence-bound approvals, durable attempts, bounded retries, verification deadlines, reconciliation, and audit lineage for supported action families |
+| Fabric and ontology | Typed Delta tables, generation-aware readers, SQL-backed analytical reads, governed discovery/publication, native ontology-agent navigation, and separately gated maintenance |
 
-### Foundation Layer (Phase 1+)
-- **Durable situation records** with lifecycle, severity, priority, scope, and ownership
-- **Evidence foundation** from Azure Resource Graph, Activity Log, Monitor, Defender, Policy, and vulnerability feeds
-- **Normalized entities and relationships** with source traceability and freshness signals
-- **Audit trail primitives** for immutable event logging
-- **Authorization boundaries** enforced via Entra/RBAC scope
+Missing, stale, degraded, and unavailable sources remain distinct from successful
+empty results. An AI recommendation, a rendered page, or an HTTP 200 response is
+not evidence that a cloud action ran or a downstream model refreshed.
 
-### ARG Connector (Brownfield Foundation)
-The existing AIOps Azure Resource Graph connector provides:
-- Azure MCP subscription discovery
-- ARG extraction and normalization for Resources, ResourceContainers, ResourceChanges, PatchAssessmentResources, and Advisor recommendations
-- Normalized entities: Subscription, Resource Group, Resource, Virtual Machine, Arc Server, Patch Assessment, Advisor Recommendation
-- Relationships with confidence, source, timestamps
-- Atomic JSONL/Parquet publication with idempotent behavior
-- Incremental watermarking and accumulated change history
-- OneLake/Delta persistence and Fabric Ontology projection
-- Read-only agent queries and AIOps plugin integration
+## Architecture
 
-See `docs/architecture.md` for architecture diagram and `IMPLEMENTATION_SUMMARY.md` for verification results.
+```text
+Azure MCP subscription discovery + Azure CLI Resource Graph
+Azure Monitor / Defender / Policy / Cost and configured intelligence feeds
+                              |
+                Registered connection acquisition
+               + inventory and domain normalization
+                              |
+             Immutable datasets, manifests, source status
+                              |
+          OneLake / Delta: inventory, ontology, Silver / Gold
+                              |
+       Generation-aware readers + semantic / live providers
+                              |
+                   FastAPI Operations API
+                              |
+          Next.js workbench + governed Copilot / agent tools
 
-### Network topology insights
+Separate control paths:
+  reviewed approvals -> supported execution -> durable verification / audit
+  ontology coordinator -> deterministic governance -> isolated publisher
+  native Fabric agent -> user-reviewed Plan / Act in the Fabric portal
+```
 
-**Refresh insights** requests a new review of the current bounded Network page
-snapshot; it does not run a subscription sync. Executive findings show the
-observed issue, evidence-backed remediation for human review, a read-only next
-check, uncertainty, and expandable citation IDs. Describing a remediation does
-not authorize or perform it.
+### Acquisition and inventory
 
-When narration cannot be used, the panel retains deterministic evidence and
-displays the executive warning. For diagnostics, inspect
-`data.synthesis.executive`, not the legacy planner's `fallback_reason`.
-`provider_error_reason=response_contract` means a returned answer failed local
-validation; it is distinct from a provider outage. Citation closure and
-read-only next-check validation still apply.
+`src/onboarding/` handles subscription connections, source acquisition, credentials,
+and connector commands. Azure MCP discovers subscriptions; arbitrary ARG queries
+use the installed Azure CLI `az graph query` adapter in `AzureCliArgClient`.
+These are separate interfaces, not an interchangeable general-purpose MCP query.
+Production runs should use registered connections and their scoped credentials,
+not an unqualified local identity.
 
-## Important Azure MCP boundary
+Inventory acquisition and publication are implemented in
+`src/intelligence/inventory/`. The multi-connection refresh entry point is
+`src/api/inventory_orchestration.py`; the CLI delegates selected-connection
+refreshes to it. Inventory owns resource identity and observations, while patch,
+vulnerability, policy, health, and cost domains retain their own evidence paths.
+Software joins use explicit resource IDs rather than inferred hostnames.
 
-The preinstalled Azure MCP executable is used for Azure subscription discovery. Its current command surface does not provide a general arbitrary Azure Resource Graph query operation. The five required ARG queries therefore use the installed Azure CLI command `az graph query`. This is a narrow subprocess adapter—not a custom Azure SDK wrapper—and is isolated behind `AzureCliArgClient` so it can be replaced if Azure MCP adds arbitrary ARG support.
+Dataset publication retains manifests, hashes, source status, and generation
+pointers. Local and OneLake stores use their respective activation mechanisms;
+failed source-family acquisition must not silently clear last-known-good data.
+OneLake/Fabric is the durable analytical layer, not the Azure system of record.
+
+### Fabric, ontology, and analytical reads
+
+`src/fabric/`, `src/storage/`, and `src/ontology/` provide authentication, Delta
+writes, typed schemas, SQL access, and ontology bindings. Generation resolution
+and governed discovery live in `src/ontology_discovery/`; semantic context
+readers live in `src/semantic/`.
+
+Authoritative ontology publication is separated from proposal generation and API
+reads. The native Fabric ontology agent is a distinct delegated-user Plan/Act
+experience, not the legacy JSON publisher or an unattended Foundry job. Opening
+its configured link neither submits a prompt nor applies a definition.
+
+The typed container-exposure projection includes explicit `registry_resource_id`
+and `connection_id` scalars. A separate, request-hash-pinned migration CLI offers
+read-only inspection by default and guarded, single-table execution only when
+explicitly selected and authorized. Its finite SQL acceptance cutoff is
+240 seconds; lease, version, authority, transaction, full-readback, and guarded
+rollback checks remain mandatory. Source publication, SQL propagation, native
+schema preservation, native consumption, and graph freshness are separate gates.
+See the [scalar migration contract](docs/exposure-scalar-migration.md).
+
+### API, web, and AI
+
+`src/api/app.py:create_app` builds the FastAPI application. The API authenticates
+requests, applies scope/RBAC checks, resolves providers, and returns success
+envelopes containing `data`, `evidence`, and `scope`, with a separate stable error
+contract. Interactive API documentation is available at `/docs` when enabled by
+the deployment.
+
+The web application uses the Next.js App Router, TypeScript, Fluent UI, and MSAL.
+It calls the Operations API rather than directly querying Azure or Fabric.
+Development-token authentication is a local-only alternative, not a production
+identity mechanism.
+
+Copilot combines bounded, scoped tool results with explicit narration provenance.
+Page-bound follow-ups retain the reviewed snapshot and thread revision.
+Deterministic or unavailable narration must not be labeled as a successful model
+answer. Network **Refresh insights** reviews the current bounded page snapshot;
+it does not trigger a subscription sync or execute suggested remediation.
+If Network narration is rejected, deterministic evidence and its warning remain.
+Inspect `data.synthesis.executive` for that result; a
+`provider_error_reason=response_contract` indicates failed response validation,
+not necessarily a provider outage.
 
 ## Prerequisites
 
-- Python 3.11+
-- `uv` (Python package manager)
-- Node.js 18+ and `npm`
-- Azure CLI with Resource Graph extension
-- Docker (for containerized deployments)
-- An Azure identity authenticated for Azure MCP and Azure CLI
-- Read permissions for configured subscriptions and ARG tables
+- Python **3.11+** and [`uv`](https://docs.astral.sh/uv/).
+- Node.js **20** (the CI version) and npm.
+- For live Azure acquisition: Azure CLI with the Resource Graph extension, the
+  configured Azure MCP executable, and approved scoped credentials.
+- For live Fabric: workspace/Lakehouse configuration, OneLake access, and the
+  permissions required by the selected reader or publisher role.
+- For Fabric SQL reads: the `fabric-sql` Python extra (`pyodbc`) and Microsoft
+  ODBC Driver 18 with its platform dependencies.
+- For container deployment: Docker and the infrastructure tooling documented in
+  [`infra/README.md`](infra/README.md).
 
-Authenticate with your normal enterprise-approved Azure CLI flow before running. No credentials are stored by this project.
+Fixture-backed development does not require Azure credentials. Install and pin
+cloud tools before scheduled production runs; do not download executables during
+ingestion.
 
-## Project Structure
+## Quick start: local fixtures
 
-```
-.
-├── .planning/                      # GSD planning artifacts (roadmap, requirements, state)
-├── .github/                        # GitHub configuration and workflows
-├── src/
-│   ├── onboarding/       # ARG ingestion and connector CLI
-│   ├── fabric/                     # Fabric/OneLake persistence and authentication
-│   ├── storage/                    # Delta, Parquet, OneLake writers
-│   ├── ontology/                   # Fabric Ontology creation and updates
-│   ├── semantic/                   # Semantic Knowledge Layer (operations context)
-│   ├── agents/                     # Agent reasoning and orchestration
-│   ├── api/                        # FastAPI backend for situations, evidence, approvals
-│   ├── operations/                 # Operations execution and verification
-│   ├── intelligence/               # Intelligence modules (patch, lifecycle, incident, change, predictive)
-│   ├── network/                    # Network and dependency graph
-│   └── onboarding/                 # Discovery and onboarding workflows
-├── web/                            # Next.js frontend (situations, evidence, recommendations, approvals)
-├── tests/                          # Test suite (no live Azure credentials required)
-├── docs/                           # Architecture, runbooks, and API documentation
-├── infra/                          # Infrastructure and deployment templates
-├── skills/                         # AIOps skill plugins
-├── live-data/                      # Local runtime data (datasets, state, cache)
-├── pyproject.toml                  # Python project definition
-├── config.example.yaml             # ARG connector configuration template
-└── fabric.*.example.yaml           # Fabric persistence configuration templates
-```
-
-## Getting Started
-
-### 1. Install dependencies
+From the repository root:
 
 ```bash
-uv sync --extra test
-cd web && npm install && cd ..
-cp config.example.yaml config.yaml
+uv sync --extra test --extra api
+cp web/.env.local.example web/.env.local
+cd web
+npm ci
 ```
 
-### 2. Configure ARG connector
+Keep Azure credential fields in `web/.env.local` unset or at their template
+placeholders for fixture mode. Do not copy production credentials or data into
+the demo environment.
 
-Edit `config.yaml` with your Azure subscription and storage preferences:
-
-```yaml
-azure:
-  subscriptions: []  # Empty = all subscriptions from Azure MCP
-  tenant_id: ""
-  mcp_command: ["azmcp"]
-  page_size: 1000
-  max_pages: 1000
-  command_timeout_seconds: 60
-  max_query_workers: 5
-  change_overlap_minutes: 10
-storage:
-  output_dir: "./live-data"
-  retain_raw_queries: false
-```
-
-### 3. Run ARG ingestion
-
-**On demand:**
-```bash
-uv run aiops-inventory sync --config config.yaml
-```
-
-**Scheduled (via AIOps cron):**
-```bash
-uv run aiops-inventory schedule --config config.yaml --schedule "every 30m"
-```
-
-### 4. Sync to Fabric (optional)
+Start the API from `web/`:
 
 ```bash
-cp fabric.config.example.yaml fabric.config.yaml
-# Edit fabric.config.yaml with workspace and Lakehouse IDs
-uv run aiops-inventory fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
+AIOPS_LOCAL_SEED=1 AIOPS_LOCAL_AUTO_SYNC=0 npm run start:api
 ```
 
-### 5. Run tests
-
-```bash
-uv run --extra test pytest
-```
-
-No live Azure credentials required; tests use mock fixtures.
-
-## Important Azure MCP Boundary
-
-The preinstalled Azure MCP executable is used for Azure subscription discovery. Its current command surface does not provide a general arbitrary Azure Resource Graph query operation. The required ARG queries therefore use the installed Azure CLI command `az graph query`. This is a narrow subprocess adapter—not a custom Azure SDK wrapper—and is isolated behind `AzureCliArgClient` so it can be replaced if Azure MCP adds arbitrary ARG support in the future.
-
-## Data Layers
-
-### 1. ARG Ingestion and Normalization
-Raw resource and change data from Azure Resource Graph are queried, normalized, deduplicated, and published as JSONL/Parquet datasets with full provenance and freshness signals. See `src/onboarding/` and `src/storage/`.
-
-### 2. Fabric Ontology and OneLake Persistence
-Normalized datasets sync to Microsoft Fabric Lakehouse via OneLake, building queryable Delta tables. The Fabric Ontology item creates a semantic authority for entities and relationships.
-
-**Configuration templates:**
-- `fabric.config.example.yaml` — managed identity
-- `fabric.service-principal.example.yaml` — service principal, secret from environment
-- `fabric.local.example.yaml` — local Delta mock with no cloud calls
-
-**Operator commands:**
-```bash
-uv run aiops-inventory fabric "Sync Azure inventory to OneLake" --config fabric.config.yaml
-uv run aiops-inventory ontology "Who owns this VM?" --entity vm-prod-01 --config fabric.config.yaml
-uv run aiops-inventory ontology "What applications are affected by patch failures?" --config fabric.config.yaml
-```
-
-See `src/fabric/`, `src/storage/`, and `docs/FABRIC_INTEGRATION.md`.
-
-### 3. Semantic Knowledge Layer
-The Semantic Layer assembles safe application, service, resource, subscription, ownership, compliance, patching, dependency, impact, risk, lifecycle, cost, security, and health context over Fabric Ontology. Agents receive evidence-backed reasoning through `operations_analysis`.
-
-```bash
-uv run aiops-inventory semantic \
-  "What is the blast radius of this failure?" \
-  --subject vm-identity \
-  --config fabric.config.yaml
-```
-
-See `src/semantic/` and `docs/semantic-architecture.md`.
-
-### 4. Operations Intelligence
-The platform includes specialized intelligence modules for:
-- **Patch Intelligence:** Workflow, scoring, prioritization, and compliance
-- **Lifecycle Intelligence:** Risk, modernization, exposure, and end-of-support
-- **Incident Causality:** Change correlation and causal scoring
-- **Predictive Operations:** Forecasts and debt analysis
-- **Remediation Planning:** Workflow, approval, risk, rollback simulation
-
-See `src/intelligence/` and corresponding runbooks in `docs/`.
-
-### 5. API and Frontend
-- **FastAPI backend** (`src/api/`): REST endpoints for situations, evidence, recommendations, approvals, and execution
-- **Next.js frontend** (`web/`): Web UI for operators to investigate, approve, and monitor remediation
-
-## Development Workflow
-
-### Running the ARG connector in development
-
-```bash
-# One-time setup
-uv sync --extra test
-cp config.example.yaml config.yaml
-
-# Run once
-uv run aiops-inventory sync --config config.yaml
-
-# Or schedule
-uv run aiops-inventory schedule --config config.yaml --schedule "every 30m"
-
-# Query the ontology
-uv run aiops-inventory query "Show me all VMs." --output-dir live-data
-uv run aiops-inventory query "Show me non-compliant servers." --output-dir live-data
-```
-
-### Running the web frontend
+Start the frontend in a second terminal:
 
 ```bash
 cd web
 npm run dev
-# Open http://localhost:3000
 ```
 
-### Running tests
+Open <http://localhost:3000>; the API defaults to
+<http://127.0.0.1:8080>. The example's local token is shared by the API startup
+script and the server-side development-token route.
+
+**Startup is explicit:** `scripts/start-api.sh` defaults to
+`AIOPS_LOCAL_SEED=0` and production runtime mode, not fixture seeding. With
+`AIOPS_LOCAL_SEED=1`, it selects demo mode and seeds local data. If all four
+`AZURE_*` service-principal values are real, that path registers the connection
+instead of the fixture; `AIOPS_LOCAL_AUTO_SYNC=0` prevents automatic discovery.
+The script reads `web/.env.local`, so review that file before starting it.
+
+To generate a deterministic standalone snapshot without starting the API:
 
 ```bash
-uv run --extra test pytest -v
+uv run aiops-inventory sample \
+  --fixture tests/fixtures/mock_arg_responses.json \
+  --output-dir sample-data
+uv run aiops-inventory query "Show me all VMs." --output-dir sample-data
 ```
 
-Test coverage spans ARG extraction, normalization, storage, Fabric sync, AIOps plugin integration, and data quality—all without live Azure credentials.
+## Connector and Fabric workflows
 
-## AIOps Plugin Integration
+Copy and review configuration before running live commands:
 
-The repository registers as a AIOps plugin (`plugin.yaml`, `__init__.py`):
-- **CLI commands:** `aiops azure-graph`, `aiops-inventory fabric`, `aiops-inventory ontology`, `aiops-inventory semantic`
-- **Agent tool:** `operations_analysis` (read-only reasoning over operational context)
-- **Toolset:** `azure_operational_context` (evidence and graph queries)
+```bash
+cp config.example.yaml config.yaml
+```
 
-Set `AIOPS_FABRIC_CONFIG` to the trusted Fabric configuration path. The agent schema cannot supply paths, credentials, workspace IDs, or Lakehouse IDs—all are operator-managed.
+`config.example.yaml` documents subscription selection, MCP command, query bounds,
+Cost Management options, and the output directory. An empty subscription list
+uses the subscriptions visible through discovery; use explicit scope when that
+is not intended. Credentials should be referenced through the connection
+registry's supported secret providers, not embedded in datasets or committed
+configuration.
 
-## Production Notes
+```bash
+# Inspect registered connections.
+uv run aiops-inventory subscriptions list --config config.yaml
 
-- Restrict Azure RBAC to read-only access at the narrowest subscription scope
-- Treat generated raw query datasets as operationally sensitive; protect the data root with the same controls as Azure inventory
-- ARG writers use an owner-only local lock; Fabric sync uses OneLake file leases in cloud mode
-- Preinstall a pinned Azure MCP build and test before upgrades
-- Monitor cron run history and the generated manifest/state files
-- Validate Fabric Ontology publication and binding in a credentialed tenant before rollout
+# Live Azure acquisition: writes the configured dataset output.
+uv run aiops-inventory sync --config config.yaml
 
-## Documentation Index
+# Refresh inventory for one registered connection.
+uv run aiops-inventory inventory-refresh --config config.yaml \
+  --connection-id <connection-id>
+```
 
-**Architecture and Design:**
-- `docs/architecture.md` — ARG connector architecture
-- `docs/fabric-architecture.md` — Fabric persistence architecture
-- `docs/ontology-architecture.md` — Ontology and semantic authority design
-- `docs/semantic-architecture.md` — Semantic Knowledge Layer design
-- `docs/operations-agent-architecture.md` — operations reasoning workflows
+The CLI also supports `subscriptions add`, `validate`, `sync`, `health`,
+`identity-evidence`, and metadata updates. Use `--help` for required inputs.
+`schedule` installs an AIOps cron job; it is not a local in-process scheduler.
 
-**Runbooks and Operations:**
-- `docs/FABRIC_RUNBOOK.md` — operations, replay, recovery
-- `docs/LOCAL_DEVELOPMENT.md` — mock Fabric development
-- `docs/OPERATIONS_AGENT_RUNBOOK.md` — deployment, telemetry, troubleshooting
-- `docs/PATCH_INTELLIGENCE_RUNBOOK.md` — patch intelligence deployment
-- `docs/LIFECYCLE_INTELLIGENCE_RUNBOOK.md` — lifecycle intelligence operations
-- `docs/INCIDENT_CAUSALITY_RUNBOOK.md` — incident correlation verification
-- `docs/CHANGE_INTELLIGENCE_RUNBOOK.md` — change tracking verification
-- `docs/PREDICTIVE_OPERATIONS_RUNBOOK.md` — forecast verification
-- `docs/REMEDIATION_PLANNING_RUNBOOK.md` — remediation operations and testing
-- `docs/SEMANTIC_RUNBOOK.md` — Semantic Layer operations
+Fabric templates select different operational modes:
 
-**APIs and Configuration:**
-- `docs/OPERATIONS_API.md` — HTTP Operations API, RBAC, error codes
-- `docs/SEMANTIC_API.md` — Semantic Knowledge Layer API
-- `docs/PATCH_INTELLIGENCE_CONFIG.md` — patch intelligence configuration
-- `docs/LIFECYCLE_INTELLIGENCE_CONFIG.md` — lifecycle intelligence configuration
-- `docs/INCIDENT_CAUSALITY_CONFIG.md` — incident correlation configuration
-- `docs/CHANGE_INTELLIGENCE_CONFIG.md` — change tracking configuration
-- `docs/PREDICTIVE_OPERATIONS_CONFIG.md` — predictive operations configuration
-- `docs/REMEDIATION_PLANNING_CONFIG.md` — remediation action catalog and policy
+| Template | Purpose |
+| --- | --- |
+| [`fabric.local.example.yaml`](fabric.local.example.yaml) | Local Delta mock with an explicit local OneLake root |
+| [`fabric.config.example.yaml`](fabric.config.example.yaml) | Managed-identity Fabric configuration |
+| [`fabric.service-principal.example.yaml`](fabric.service-principal.example.yaml) | Service-principal configuration with environment-based secret input |
 
-**References:**
-- `docs/IMPLEMENTATION_SUMMARY.md` — ARG connector verification results
-- `REPOSITORY_STRUCTURE.md` — detailed directory layout
-- `ARCHITECTURE.md` — project-level architecture overview
+For a local Fabric exercise, first generate `sample-data` using the fixture
+command above; the local template reads that directory:
 
-## End-to-end architecture
+```bash
+cp fabric.local.example.yaml fabric.local.yaml
+uv run aiops-inventory fabric "Sync Azure inventory to OneLake" \
+  --config fabric.local.yaml
+uv run aiops-inventory fabric "Validate inventory data" \
+  --config fabric.local.yaml
+uv run aiops-inventory semantic "What is the blast radius of this failure?" \
+  --subject vm-identity --config fabric.local.yaml
+```
 
-The platform is a Python service and Next.js workbench organized around immutable,
-scope-aware data snapshots. Azure services remain the systems of record. The
-connector acquires provider data, canonicalizes it, publishes a complete
-generation, and exposes that generation to the Fabric projection, semantic
-readers, API, agents, and UI.
+The same command with a cloud configuration can publish to Fabric. Review the
+target, identity, source generation, and write authority first; a local mock
+result does not qualify a live deployment.
+
+## Development and validation
+
+Run backend checks from the repository root:
+
+```bash
+uv run --extra test ruff check src tests
+uv run --extra test --extra api pytest
+```
+
+Run frontend checks from `web/`:
+
+```bash
+npm run lint:fix
+npm test
+npm run build
+```
+
+For browser tests, install the required Playwright browser once, then run the
+suite against its configured test environment:
+
+```bash
+npx playwright install chromium
+npm run test:e2e
+```
+
+CI runs backend Ruff/pytest, frontend lint/Vitest/build, and Trivy scanning.
+Local fixtures and mocks exercise contracts without live credentials; live
+scripts and runtime walkthroughs require separately approved environments and
+are not implied by passing unit tests. The optional `eval` extra is isolated
+from the `api` extra because their AI dependency lines conflict.
+
+## Repository layout
 
 ```text
-Azure MCP ── subscription discovery ──┐
-Azure CLI `az graph query` ───────────┼─> IngestionService
-Azure Monitor Logs / ConfigurationData ┘       │
-                                              v
-                                   Normalizer + inventory normalization
-                                              │
-                                              v
-                              DatasetStore immutable generation
-                              JSONL + Parquet + manifest + current pointer
-                                  │                         │
-                                  │                         └─> AIOps context queries
-                                  v
-                         FabricSyncService / DeltaWriter
-                                  │
-                                  v
-                    OneLake Delta tables + persistent Ontology
-                        + cached inventory projection
-                                  │
-                                  v
-                         SemanticEngine / provider runtime
-                                  │
-                         ┌────────┴────────┐
-                         v                 v
-                    FastAPI API       AIOps agents
-                         │             (read-only tools)
-                         v
-                    Next.js web workbench
+src/
+  api/                  FastAPI routers, providers, auth, and orchestration
+  onboarding/           Subscription connections, acquisition, and CLI
+  intelligence/         Inventory, patch, vulnerability, and other domains
+  fabric/               Fabric REST/SQL, schemas, and publication contracts
+  fabric_pipelines/     Fabric pipeline definitions and orchestration support
+  storage/              Dataset stores, Delta, OneLake, leases, and activation
+  ontology/             Ontology models, mappings, and bindings
+  ontology_discovery/   Governed discovery, generations, and maintenance
+  semantic/             Read-only semantic context and bounded traversal
+  operations/           Copilot, specialists, remediation, and verification
+  agents/               Agent integrations
+  network/              Topology and dependency projections
+  situations/           Situation models, persistence, and transitions
+  mcp_server/           MCP server integration
+web/                    Next.js operator workbench and browser/unit tests
+tests/                  Backend tests and deterministic fixtures
+scripts/                Local startup, evaluations, and operational validators
+infra/                  Terraform and release/deployment scripts
+docs/                   Architecture, API contracts, and runbooks
+skills/                 AIOps plugin skills
+.planning/              Roadmap, phase plans, and acceptance records
 ```
 
-### Data sources and discovery
+`plugin.yaml`, `__init__.py`, and `src/onboarding/plugin.py` integrate the
+connector with AIOps. `operations_analysis` and `azure_operational_context`
+provide read-only reasoning and evidence queries. `AIOPS_FABRIC_CONFIG` selects
+the trusted operator-owned configuration; agent inputs do not supply credentials,
+storage paths, workspace IDs, or Lakehouse IDs.
 
-- **Azure MCP** (`AzureMcpClient`) discovers the subscriptions available to the
-  configured identity. It is not currently the general-purpose ARG query
-  interface.
-- **Azure Resource Graph** is queried through the installed Azure CLI command
-  `az graph query`, isolated behind `AzureCliArgClient`. The query catalog covers
-  resource containers, resources, changes, patch assessments, advisor data, and
-  other configured ARG families.
-- **Azure Monitor Logs** supplies `ConfigurationData` for installed software.
-  `IngestionService` queries only server-owned workspace mappings for the active
-  connection; browser-selected workspaces are not accepted.
-- **Cost Management** is an optional, best-effort side channel. Its failure
-  degrades cost data to an empty result and does not block discovery.
+## Delivery boundaries
 
-`IngestionService` coordinates subscription resolution, query execution,
-watermarks, independent source status, normalization, and publication. The
-normalizer emits canonical entities and relationships, while
-`inventory_normalize.py` performs exact resource-ID joins for software and
-preserves raw software identity and unlinked rows rather than inferring joins
-from hostnames.
+- **Least privilege:** acquisition, API reads, proposal generation, publication,
+  approval, and execution have distinct responsibilities. Inventory and semantic
+  queries do not themselves authorize remediation.
+- **Human control:** approve and operate are separate permissions. Unsupported
+  container actions remain review/handoff-only; recommendations are not writes.
+- **Evidence preservation:** retain source status, immutable generations,
+  transaction receipts, and original IDs/bindings when changing projections or
+  ontology definitions. A definition write is not a native-agent execution.
+- **Native versus unattended maintenance:** native portal Plan/Act is separate
+  from the proposed Foundry-plus-deterministic-governance maintenance path.
+  Offline maintenance validators do not admit unattended production authoring.
+- **Separate live gates:** exact digest-to-workload traversal, the qualified
+  100k benchmark, and live canary/rollback acceptance remain explicit Phase 4
+  gates. Source publication or an additive native schema update does not close
+  them or establish runtime/graph freshness.
+- **Release discipline:** validate the exact source, build immutable images, and
+  verify deployed state. Do not treat historical planning summaries or local
+  fixture results as current production evidence.
 
-### Unified resource inventory and semantic modelling
+## Documentation
 
-The current implementation publishes inventory observations alongside the
-established graph in the same immutable generation:
-
-- `inventory/os_observations` contains normalized machine observations.
-- `inventory/software_observations` contains normalized installed-software
-  observations.
-- `inventory/source_status` and `inventory/software_source_status` retain
-  readiness, partial, degraded, or unavailable source state.
-- A failed software refresh retains the last published software rows while
-  keeping the source status degraded or unavailable; a successful empty result
-  remains distinguishable from a failed refresh.
-
-`DatasetStore` writes JSONL and Parquet datasets under a run-specific
-`generations/` directory, writes a manifest and content hashes, and atomically
-activates the generation. Local storage uses a directory symlink; OneLake
-storage uses a `current.json` generation pointer because OneLake does not
-provide the local symlink behavior. The store retains the most recent three
-generations. These mechanisms provide a consistent read snapshot and make
-freshness, watermarks, and source status available to consumers.
-
-`FabricSyncService` maps the active inventory snapshot into validated OneLake
-Delta tables using `InventoryDatasetMapper`, `DeltaWriter`, and `OneLakeWriter`.
-OneLake is the persistent analytical layer for the Fabric Ontology and the
-cached inventory that the Unified Resource Inventory publishes. The service
-also validates and synchronizes ontology entities and relationships, retaining
-removed records as retired records. Fabric/OneLake is therefore the durable
-query and cache layer, not the Azure system of record or the owner of inventory
-acquisition.
-
-`SemanticEngine` is a read-only knowledge interface over the Fabric Ontology
-projection. It indexes entities, relationships, inventory, compliance, security,
-and cost rows and applies bounded traversal, validation, caching, freshness, and
-telemetry. Assessment domains such as patching, vulnerability, policy, advisor,
-metrics, and health retain their own data planes and join to inventory by
-resource ID; inventory owns resource identity facts such as type, location,
-tags, containment, and raw properties.
-
-### API, web, and agents
-
-The FastAPI application in `src/api/` authenticates requests, enforces Entra/RBAC
-scope, routes to providers, and translates failures into stable error responses.
-Successful responses use an envelope containing `data`, `evidence`, and `scope`.
-The inventory router resolves the server-side `InventoryService` provider and
-serves OS groups, OS detail, lifecycle review/confirmation, software groups,
-software mappings, and deterministic inventory narrative data.
-
-The Next.js 14 App Router application in `web/` is an operator workbench. MSAL
-provides browser authentication when configured; local development can use the
-explicit dev-token path. Typed API clients send scope and correlation
-information to the backend. Fluent UI components render health, search,
-investigation, inventory, approvals, and other API-backed views. The web layer
-does not query Azure or Fabric directly and does not fabricate unavailable
-capabilities.
-
-AIOps integration is provided by `plugin.yaml`, `__init__.py`, and
-`src/onboarding/plugin.py`. The `operations_analysis` tool and the
-`azure_operational_context` toolset provide read-only operational reasoning.
-Current context-query helpers read the published snapshot and support a bounded
-set of operational questions; they are not a write or remediation authority.
-Agents consume governed context and cannot supply storage paths, workspace IDs,
-Lakehouse IDs, or credentials through their tool schema.
-
-### Ownership boundaries and delivery status
-
-The code currently has a single ingestion/publish path: ARG discovery,
-ConfigurationData enrichment, normalization, and inventory projection are
-coordinated by `IngestionService`, then published by `DatasetStore`. The
-following boundaries are the approved evolution of that path:
-
-- **Phase 7 — Unified Resource Inventory:** extract inventory into an
-  independent domain that owns acquisition, normalization, retention, status,
-  and publication into the persistent OneLake/Fabric cache, and generalize it
-  to resource families including PaaS.
-  The characterization tests and extraction/inversion work for this boundary
-  are planned; the current co-located projection is not evidence that the
-  extraction is complete.
-- **Phase 8 — Resource identity plane:** migrate AIOps discovery and semantic
-  modelling to the inventory resource contract. `ResourceObservation` must be
-  lossless for raw properties and per-family watermarks. Until that contract
-  and migration are implemented, AIOps still contains its existing ARG
-  connector path.
-- **Phase 9 — API, agents, and web pivot:** rewire consumers to the unified
-  inventory provider. Existing API routers already resolve providers, but the
-  consumer migration and the full web impact review are planned rather than
-  complete.
-
-Remediation remains a separate, human-approved capability. The inventory and
-semantic layers provide evidence and context; they do not themselves execute
-Azure changes. Live Azure walkthroughs and final end-to-end verification remain
-deployment/test activities, not claims of the local fixture test suite.
+| Topic | Reference |
+| --- | --- |
+| Local development and mock Fabric | [Local development](docs/LOCAL_DEVELOPMENT.md) |
+| API contract and RBAC | [Operations API](docs/OPERATIONS_API.md) |
+| Live connection activation | [Production runtime activation](docs/PRODUCTION_RUNTIME_ACTIVATION.md) |
+| Infrastructure and deployment | [Infrastructure README](infra/README.md) |
+| Fabric operations and recovery | [Fabric runbook](docs/FABRIC_RUNBOOK.md) |
+| Ontology architecture | [Ontology architecture](docs/ontology-architecture.md) |
+| Generation consumers | [Consumer inventory](docs/ontology-generation-consumer-inventory.md) |
+| Native Plan/Act integration | [Native ontology agent](docs/native-ontology-agent.md) |
+| Governed ontology discovery | [Discovery operations](docs/ontology-discovery-operations.md) |
+| Offline maintenance and admission gates | [Ontology maintenance](docs/ontology-agent-maintenance.md) |
+| Exposure scalar publication | [Scalar migration](docs/exposure-scalar-migration.md) |
+| Exposure live acceptance | [Phase 4 evidence gate](docs/phase-4-exposure-evidence-gate.md) |
+| Copilot rollout and provenance | [Copilot runbook](docs/runbooks/copilot-orchestration-rollout.md) |
+| Semantic context | [Semantic architecture](docs/semantic-architecture.md) |
+| Remediation planning | [Remediation runbook](docs/REMEDIATION_PLANNING_RUNBOOK.md) |
+| Roadmap and acceptance status | [Roadmap](.planning/ROADMAP.md), [state](.planning/STATE.md) |
