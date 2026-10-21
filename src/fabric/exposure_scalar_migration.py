@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +30,12 @@ _TABLES = {
     "silver": ("silver", "container_image_exposure"),
     "registry": ("ontology", "container_registry_entities"),
 }
+SQL_PROPAGATION_TIMEOUT_SECONDS = 120
+SQL_PROPAGATION_POLL_SECONDS = 5
+
+
+class PublicationPropagationPending(RuntimeError):
+    """Exact committed publication is still exposed as its old SQL schema."""
 
 
 def migration_rows_hash(rows: Sequence[Mapping[str, Any]]) -> str:
@@ -146,7 +153,26 @@ def migrate_exposure_scalars(
             raise ValueError("Migration found an unexpected existing typed schema")
 
         def verify(version: int) -> None:
-            guard(target_version=version)
+            deadline = time.monotonic() + SQL_PROPAGATION_TIMEOUT_SECONDS
+            while True:
+                try:
+                    guard(target_version=version)
+                except PublicationPropagationPending as error:
+                    # Only a proven migration commit can wait; never a write retry.
+                    if committed is None or committed.version != version:
+                        raise
+                    lock.assert_held()
+                    for name, uri in uris.items():
+                        expected_head = version if name == "target" else versions[name]
+                        if delta.version(uri) != expected_head:
+                            raise RuntimeError("Migration pinned head changed during SQL wait") from error
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RuntimeError("SQL publication propagation deadline exceeded") from error
+                    time.sleep(min(SQL_PROPAGATION_POLL_SECONDS, remaining))
+                    lock.assert_held()
+                else:
+                    break
             if delta.describe(target, version=version)["schema"] != expected_schema:
                 raise RuntimeError("Migration readback schema mismatch")
             if migration_rows_hash(delta.read(target, version=version)) != plan.projected_rows_hash:

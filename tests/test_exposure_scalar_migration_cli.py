@@ -11,6 +11,7 @@ import httpx
 import pyarrow as pa
 import pytest
 
+from fabric import exposure_scalar_migration as migration
 from fabric import exposure_scalar_migration_cli as cli
 from fabric.exposure_scalar_migration import (
     ExposureScalarMigrationPlan,
@@ -342,6 +343,96 @@ def test_sql_postpublication_scalar_mismatch_restores_original_table(tmp_path):
     assert delta.version(target) == 3
     assert delta.read(target, version=3) == delta.read(target, version=1)
     assert delta.describe(target, version=3)["schema"] == delta.describe(target, version=1)["schema"]
+
+
+@pytest.mark.parametrize("case", [
+    "converges", "deadline", "lease", "source", "definition", "canonical", "target",
+    "wrong-key", "wrong-registry",
+])
+def test_sql_postcommit_bounded_wait_preserves_guards_and_never_retries_write(
+    tmp_path, monkeypatch, case,
+):
+    request, observer, lake, delta, docs, definition, _, sql = sql_fixture(tmp_path)
+    target = lake.table_uri("ontology", "container_image_exposure_entities")
+    original_query = sql.query
+    original_write = delta.write
+    writes, waits = [], []
+    now = [0]
+    lease_lost = [False]
+    original_lock = lake.sync_lock
+
+    def lock_context():
+        context = original_lock()
+        class Guarded:
+            def __enter__(self):
+                lock = context.__enter__()
+                original_assert = lock.assert_held
+                def assert_held():
+                    if lease_lost[0]:
+                        raise RuntimeError("test lease lost")
+                    original_assert()
+                monkeypatch.setattr(lock, "assert_held", assert_held)
+                return lock
+            def __exit__(self, *args):
+                return context.__exit__(*args)
+        return Guarded()
+    monkeypatch.setattr(lake, "sync_lock", lock_context)
+
+    def write(uri, *args, **kwargs):
+        writes.append(uri)
+        return original_write(uri, *args, **kwargs)
+    monkeypatch.setattr(delta, "write", write)
+
+    def query(statement, parameters=(), *, max_rows):
+        result = original_query(statement, parameters, max_rows=max_rows)
+        if delta.version(target) == 2 and not (case == "converges" and waits):
+            if parameters and parameters[1] == TABLE:
+                result = [row for row in result if row["name"] not in cli._SCALARS]
+            elif not parameters and f"[{TABLE}]" in statement and case == "wrong-key":
+                result[0]["resource_id"] = "unrelated"
+            elif not parameters and "registry_entities" in statement and case == "wrong-registry":
+                result[0]["tenant_id"] = "foreign"
+        return result
+    sql.query = query
+
+    def sleep(seconds):
+        waits.append(seconds)
+        now[0] += seconds
+        if case == "lease":
+            lease_lost[0] = True
+        elif case == "source":
+            docs[SOURCE_POINTER]["drift"] = True
+        elif case == "definition":
+            definition["drift"] = True
+        elif case in ("target", "canonical"):
+            uri = target if case == "target" else lake.table_uri("ontology", "entities")
+            rows = delta.read(uri)
+            rows[0]["change_version"] = "other-writer"
+            original_write(uri, rows, mode="overwrite", schema=schema_for(
+                TABLE if case == "target" else "ontology_entities",
+            ))
+
+    monkeypatch.setattr(migration.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(migration.time, "sleep", sleep)
+    monkeypatch.setattr(migration, "SQL_PROPAGATION_TIMEOUT_SECONDS", 10)
+    if case == "converges":
+        assert run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)["status"] == "completed"
+        assert waits == [5]
+        assert delta.version(target) == 2
+    else:
+        with pytest.raises(RuntimeError, match=(
+            "lease lost" if case == "lease" else
+            "intervening writer" if case == "target" else "original table restored"
+        )) as error:
+            run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)
+        if case == "deadline":
+            assert waits == [5, 5]
+            assert "deadline exceeded" in str(error.value.__cause__)
+        if case in ("wrong-key", "wrong-registry"):
+            assert waits == []
+        if case not in ("lease", "target"):
+            assert delta.read(target, version=3) == delta.read(target, version=1)
+    assert writes == [target]
 
 
 def test_sql_mode_rejects_identical_target_head_from_unrelated_transaction(tmp_path):

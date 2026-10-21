@@ -22,6 +22,7 @@ from fabric.auth import build_delta_storage_options
 from fabric.exposure_scalar_migration import (
     TABLE,
     ExposureScalarMigrationPlan,
+    PublicationPropagationPending,
     migrate_exposure_scalars,
     migration_rows_hash,
     migration_transaction_digest,
@@ -242,8 +243,12 @@ class ExposureMigrationAuthorityObserver:
             "sql_publication_evidence" if self.mode == SQL_ASSURANCE else "consumption_evidence"
         )
         consumption = self._evidence(evidence_name)
+        pending = None
         if self.mode == SQL_ASSURANCE:
-            self._sql_publication(consumption["payload"], definition_digest)
+            try:
+                self._sql_publication(consumption["payload"], definition_digest)
+            except PublicationPropagationPending as error:
+                pending = error
         else:
             self._consumption(consumption["payload"], definition_digest)
         if (
@@ -260,6 +265,8 @@ class ExposureMigrationAuthorityObserver:
             != marker["ontology_relationship_version"]
         ):
             raise RuntimeError("Source/product authority changed during observation")
+        if pending is not None:
+            raise pending
         return document_hash({
             "target": (WORKSPACE, LAKEHOUSE, NATIVE_ITEM, TABLE),
             "pointer": pointer, "manifest": manifest,
@@ -338,9 +345,13 @@ class ExposureMigrationAuthorityObserver:
         if target_schema not in supported:
             raise ValueError("SQL assurance unexpected Delta schema")
         target_columns = tuple(field["name"] for field in target_schema["fields"])
-        self._sql_table(TABLE, current, target_columns, (*_SQL_KEYS, *(
-            _SCALARS if set(_SCALARS).issubset(target_columns) else ()
-        )))
+        pending = None
+        try:
+            self._sql_table(TABLE, current, target_columns, (*_SQL_KEYS, *(
+                _SCALARS if set(_SCALARS).issubset(target_columns) else ()
+            )), previous=previous if heads["target"] != self.plan.target_version else None)
+        except PublicationPropagationPending as error:
+            pending = error
         registry_table = "ontology_container_registry_entities"
         self._sql_table(
             registry_table, registries, schema_for("ontology_entities").names, _SQL_KEYS,
@@ -348,6 +359,8 @@ class ExposureMigrationAuthorityObserver:
         self._sql_binding(endpoint)
         if {name: self.delta.version(uri) for name, uri in uris.items()} != heads:
             raise RuntimeError("SQL assurance heads changed during parity read")
+        if pending is not None:
+            raise pending
 
     def _sql_binding(self, endpoint: SqlEndpoint) -> None:
         lakehouse = self.manager.client.request(
@@ -361,7 +374,7 @@ class ExposureMigrationAuthorityObserver:
         ):
             raise ValueError("Live Lakehouse SQL endpoint identity changed")
 
-    def _sql_table(self, table, rows, expected_columns, columns) -> None:
+    def _sql_table(self, table, rows, expected_columns, columns, *, previous=None) -> None:
         assert self.sql_reader is not None
         schema = self.sql_reader.query(
             "SELECT COLUMN_NAME AS name, DATA_TYPE AS type, "
@@ -369,19 +382,29 @@ class ExposureMigrationAuthorityObserver:
             "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
             ("dbo", table), max_rows=256,
         )
-        if (
-            len(schema) != len(expected_columns)
-            or {row["name"] for row in schema} != set(expected_columns)
-            or any(row["type"] != "varchar" or row["length"] != 8000 for row in schema)
+        names = {row["name"] for row in schema}
+        old_projection = (
+            previous is not None and table == TABLE
+            and names == set(schema_for("ontology_entities").names)
+            and len(schema) == len(names)
+            and set(expected_columns) == set(schema_for(TABLE).names)
+        )
+        if (any(row["type"] != "varchar" or row["length"] != 8000 for row in schema)
+            or (not old_projection and (
+                len(schema) != len(expected_columns) or names != set(expected_columns)
+            ))
         ):
             raise ValueError("SQL scalar schema or varchar(8000) projection mismatch")
+        selected = _SQL_KEYS if old_projection else columns
         actual = self.sql_reader.query(
-            "SELECT " + ", ".join(f"[{name}]" for name in columns)
+            "SELECT " + ", ".join(f"[{name}]" for name in selected)
             + f" FROM [dbo].[{table}]", max_rows=max(1, len(rows)),
         )
-        expected = [{name: row[name] for name in columns} for row in rows]
+        expected = [{name: row[name] for name in selected} for row in rows]
         if migration_rows_hash(actual) != migration_rows_hash(expected):
             raise ValueError("SQL full scalar keyset/multiplicity/scope parity mismatch")
+        if old_projection:
+            raise PublicationPropagationPending("SQL still exposes the exact pre-publication schema/keyset")
 
     @staticmethod
     def _binding(definition: dict[str, Any]) -> None:

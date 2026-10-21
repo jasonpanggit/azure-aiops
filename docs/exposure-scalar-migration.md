@@ -174,8 +174,16 @@ registry scalar rows (resource/tenant/subscription/change-version/lifecycle,
 and target registry/connection fields whenever present) must match pinned
 Delta records, preserving duplicate multiplicity—not just row counts.
 After publication the same checks require the additive SQL schema and exact
-registry/connection values on every target row. SQL propagation delay or stale
-rows fail closed; no retry, sleep, DDL or payload truncation is introduced.
+registry/connection values on every target row. After an exact durable migration
+transaction is proved, the old SQL schema is allowed to converge for at most
+120 seconds, polling every 5 seconds. Each pending observation must expose
+exactly the old schema and complete unchanged key/scope/version/multiplicity;
+wrong endpoints, malformed schemas, wrong keys/scalars or registry mismatches
+are errors, not propagation exceptions. Every observation rereads authority,
+native definition, endpoint and all heads; every wait checks lease and heads.
+No write retry, DDL or payload truncation is introduced. The monotonic deadline
+failing explicitly invokes the existing guarded rollback/manual-reconciliation
+rules. Pre-write, no-op and unproved commits never enter this wait.
 The observer rechecks all four heads around SQL reads; the migration also
 retains its lease/CAS/transaction/rollback guards around each observation.
 Failed post-publication parity invokes the existing guarded restore, or reports
