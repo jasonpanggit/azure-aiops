@@ -78,6 +78,33 @@ DefaultAzureCredential, fall back to API/local credentials, reveal tokens, use
 the baked historical YAML defaults, call `build_runtime`, or provision anything.
 It constructs a dedicated `DeltaWriter(max_attempts=1)`.
 
+Explicit SQL mode uses a private caller-scoped subclass for read composition
+only. Every version lookup constructs a fresh supported `DeltaTable` with
+`without_files=True, skip_stats=True`; these metadata-only handles are never
+reused for files, full records, schema readback, or transaction history.
+Independent Delta head
+and pinned-record batches use at most four workers, fresh per-batch credential
+options copied for each worker, and separate handles. Failed batches propagate
+the error after joining all workers; no partial batch can qualify. Pinned full
+reads retain file tracking and exact versions, original fields and schema.
+Every original initial/final observation boundary and head check remains.
+Document, Fabric definition and SQL transports stay sequential. Strict mode,
+the shared writer and transaction/lease/CAS/rollback behavior are unchanged.
+
+This read-path prototype is **not performance-qualified for execution**.
+Restored-baseline AzureCLI diagnostics for two full authority guards, their
+eight additional core head checks and target schema/full-record readback took
+180.615 and 155.033 seconds with metadata-only fresh heads. A narrowly-scoped
+supported `skip_stats=True` metadata-read setting reduced the next two
+restored-baseline AzureCLI samples to 134.470 and 102.905 seconds for the same
+complete diagnostic path. By user direction, the finite acceptance cutoff is
+240 seconds (60 seconds beyond the earlier slowest sample). These are not
+publisher-MI measurements. Lease renewal and post-write transaction-history
+lookup were not included, so these samples do not independently qualify a live
+rollout or authorize another Job attempt. The 240-second budget does not relax
+authority/head/lease checks, full SQL parity, readback, single-attempt, or
+rollback requirements.
+
 The concrete observer conditionally reads only existing files, with bounded
 size and ETag rechecks, and reads public Delta version-qualified snapshots. It
 requires `Files/aiops/current.json` to name a completed combined activation,
@@ -176,7 +203,7 @@ Delta records, preserving duplicate multiplicity—not just row counts.
 After publication the same checks require the additive SQL schema and exact
 registry/connection values on every target row. After an exact durable migration
 transaction is proved, the old SQL schema is allowed to converge for at most
-120 seconds, polling every 5 seconds. Each pending observation must expose
+240 seconds, polling every 5 seconds. Each pending observation must expose
 exactly the old schema and complete unchanged key/scope/version/multiplicity;
 wrong endpoints, malformed schemas, wrong keys/scalars or registry mismatches
 are errors, not propagation exceptions. Every observation rereads authority,
