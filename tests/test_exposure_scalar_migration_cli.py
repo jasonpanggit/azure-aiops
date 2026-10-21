@@ -7,6 +7,7 @@ import json
 from dataclasses import asdict
 from types import SimpleNamespace
 
+import httpx
 import pyarrow as pa
 import pytest
 
@@ -363,6 +364,25 @@ def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
 ):
     request, observer, lake, delta, *_ = fixture(tmp_path)
     calls = []
+    requests = []
+    real_http_client = httpx.Client
+    real_fabric_client = cli.FabricClient
+    real_manager = cli.OntologyManager
+    definition = observer.manager.get_definition(NATIVE_ITEM)
+    operation = "https://api.fabric.microsoft.com/v1/operations/header-proof"
+
+    def respond(request):
+        assert request.headers["x-ms-fabric-skill"] == "fabriciq-ontology-cli"
+        requests.append((request.method, request.url.path))
+        if request.url.path.endswith("/getDefinition"):
+            return httpx.Response(202, headers={"Location": operation, "Retry-After": "0"})
+        if request.url.path.endswith("/result"):
+            return httpx.Response(200, json={"definition": definition})
+        return httpx.Response(200, json={"status": "Succeeded"})
+
+    def http_client(**kwargs):
+        assert kwargs["headers"] == {"x-ms-fabric-skill": "fabriciq-ontology-cli"}
+        return real_http_client(**kwargs, transport=httpx.MockTransport(respond))
 
     class Credential:
         def __init__(self, *, client_id):
@@ -376,7 +396,7 @@ def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
             pass
 
         def get_token(self, scope):
-            assert scope == "https://storage.azure.com/.default"
+            assert scope in ("https://storage.azure.com/.default", real_fabric_client.SCOPE)
             claims = {
                 "tid": TENANT, "oid": request["publisher_object_id"],
                 "appid": request["publisher_client_id"], "aud": "https://storage.azure.com/",
@@ -416,11 +436,13 @@ def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
 
     def fabric(credential, *, http_client, max_attempts):
         assert isinstance(credential, Credential) and max_attempts == 1
-        return "fabric-read-client"
+        return real_fabric_client(
+            credential, http_client=http_client, max_attempts=max_attempts, sleep=lambda _: None,
+        )
 
     def manager(client, workspace):
-        assert client == "fabric-read-client" and workspace == WORKSPACE
-        return observer.manager
+        assert isinstance(client, real_fabric_client) and workspace == WORKSPACE
+        return real_manager(client, workspace)
 
     monkeypatch.setattr(cli, "ManagedIdentityCredential", Credential)
     monkeypatch.setattr(cli, "DataLakeServiceClient", Service)
@@ -429,6 +451,7 @@ def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
     monkeypatch.setattr(cli, "FabricClient", fabric)
     monkeypatch.setattr(cli, "OntologyManager", manager)
     monkeypatch.setattr(cli, "ReadOnlyLakeDocuments", lambda fs: observer.documents)
+    monkeypatch.setattr(cli.httpx, "Client", http_client)
     monkeypatch.setenv("AZURE_CLIENT_ID", request["publisher_client_id"])
     monkeypatch.setenv("AIOPS_IDENTITY_CLASS", "publisher")
     path = tmp_path / "request.json"
@@ -441,3 +464,10 @@ def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
     assert result["status"] == ("completed" if execute else "inspected")
     assert delta.version(lake.table_uri("ontology", "container_image_exposure_entities")) == (2 if execute else 1)
     assert calls == ["identity", "single-attempt"]
+    assert len(requests) >= 6 and len(requests) % 3 == 0
+    for offset in range(0, len(requests), 3):
+        assert requests[offset] == (
+            "POST", f"/v1/workspaces/{WORKSPACE}/ontologies/{NATIVE_ITEM}/getDefinition",
+        )
+        assert requests[offset + 1] == ("GET", "/v1/operations/header-proof")
+        assert requests[offset + 2] == ("GET", "/v1/operations/header-proof/result")

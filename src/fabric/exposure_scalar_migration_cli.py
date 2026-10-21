@@ -344,7 +344,9 @@ def main(argv: list[str] | None = None) -> int:
                 max_attempts=1,
                 storage_options_provider=lambda: build_delta_storage_options(credential),
             )
-            with httpx.Client(timeout=60) as http:
+            with httpx.Client(
+                timeout=60, headers={"x-ms-fabric-skill": "fabriciq-ontology-cli"},
+            ) as http:
                 manager = OntologyManager(
                     FabricClient(credential, http_client=http, max_attempts=1), WORKSPACE,
                 )

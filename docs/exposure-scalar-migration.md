@@ -91,6 +91,10 @@ Two pre-existing independently reviewed evidence documents must live under
 creates or uploads them. The request pins each JSON document's exact
 `document_hash`, not a boolean `qualified` flag:
 
+Creating or uploading either evidence document is a separate durable write,
+outside the one-table proposal and not authorized by it. These paths require
+existing reviewed documents; their absence does not authorize creating them.
+
 - `product_authority_evidence`: exact `authority_mode=completed_ingestion`,
   workspace/Lakehouse/table/source generation/canonical version, source manifest
   and catalog hashes, and an independently reviewed inventory asserting no
@@ -110,6 +114,8 @@ creates or uploads them. The request pins each JSON document's exact
   are insufficient.
 
 The caller reads the existing native definition through `getDefinition` only.
+Its dedicated HTTP client supplies `x-ms-fabric-skill=fabriciq-ontology-cli`
+on the initial request, long-running-operation polls and result retrieval.
 It verifies the retained TMDL entity/backing-table/entity-partition/DirectLake
 expression source and exact workspace/Lakehouse annotations and root; it never
 calls create/updateDefinition/preview/Act. Definition content contributes to
