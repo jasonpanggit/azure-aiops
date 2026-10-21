@@ -131,14 +131,6 @@ function OverviewWorkspace() {
         }
       />
 
-      <CopilotInsights
-        snapshot={overviewCopilot.snapshot}
-        ready={!loading}
-        requestedScope={overviewCopilot.requestedScope}
-        contextLabel="Operations overview"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
-
       {loading ? (
         <StatePanel
           title="Building your operational picture"
@@ -191,14 +183,42 @@ function OverviewWorkspace() {
             ]}
           />
 
-          <CopilotDrawer
-            open={copilotOpen}
-            onClose={() => setCopilotOpen(false)}
-            contextLabel="Operations overview"
-            requestedScope={overviewCopilot.requestedScope}
-            snapshot={overviewCopilot.snapshot}
-            starterQuestions={overviewCopilot.starterQuestions}
-          />
+          <section className="dashboard-section" aria-labelledby="priority-situations">
+            <div className="section-heading">
+              <div>
+                <h2 id="priority-situations">Priority situations</h2>
+                <p>Loaded page ranked by assigned priority and recency, not a complete-estate or lifecycle-filtered queue.</p>
+              </div>
+              <Link className="section-link" href={overviewHref("/situations", scope)}>
+                View all situations
+              </Link>
+            </div>
+            <div className="card">
+              {situations.length > 0 ? (
+                <SituationTable situations={situations.slice(0, 6)} compact />
+              ) : (
+                <StatePanel
+                  title={state.situations ? "No active situations in this scope" : "Situation evidence unavailable"}
+                  message={state.situations ? "No incident correlations are currently available. Review data coverage and freshness below." : "Situation data could not be loaded. An empty queue has not been confirmed."}
+                />
+              )}
+              <CopilotInsights
+                snapshot={overviewCopilot.snapshot}
+                ready={!loading}
+                requestedScope={overviewCopilot.requestedScope}
+                contextLabel="Operations overview"
+                onOpenCopilot={() => setCopilotOpen(true)}
+              />
+              <CopilotDrawer
+                open={copilotOpen}
+                onClose={() => setCopilotOpen(false)}
+                contextLabel="Operations overview"
+                requestedScope={overviewCopilot.requestedScope}
+                snapshot={overviewCopilot.snapshot}
+                starterQuestions={overviewCopilot.starterQuestions}
+              />
+            </div>
+          </section>
 
           <section className="dashboard-section">
             <div className="metric-grid">
@@ -258,27 +278,6 @@ function OverviewWorkspace() {
 
           <OverviewHistory scope={scope} />
 
-          <section className="dashboard-section">
-            <div className="section-heading">
-              <div>
-                <h2>Priority situations</h2>
-                <p>Loaded page ranked by assigned priority and recency, not a complete-estate or lifecycle-filtered queue.</p>
-              </div>
-              <Link className="section-link" href={overviewHref("/situations", scope)}>
-                View all
-              </Link>
-            </div>
-            <div className="card">
-              {situations.length > 0 ? (
-                <SituationTable situations={situations.slice(0, 6)} compact />
-              ) : (
-                <StatePanel
-                  title={state.situations ? "No active situations in this scope" : "Situation evidence unavailable"}
-                  message={state.situations ? "No incident correlations are currently available. Data coverage and freshness remain visible below." : "Situation data could not be loaded. An empty queue has not been confirmed."}
-                />
-              )}
-            </div>
-          </section>
 
           <section className="dashboard-grid">
             <article className="card dashboard-visual-card">

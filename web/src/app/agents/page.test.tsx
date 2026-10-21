@@ -219,6 +219,10 @@ describe("Multi-Agent Autonomous Investigation workspace", () => {
     expect(await screen.findByText("Catalog request denied")).toBeInTheDocument();
     expect(screen.getByText("Foundry status unknown")).toBeInTheDocument();
     expect(screen.queryByText("Foundry unavailable · deterministic fallback")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry agent catalog" }));
+    await waitFor(() => expect(screen.queryByText("Catalog request denied")).not.toBeInTheDocument());
+    expect(catalog).toHaveBeenCalledTimes(2);
+    expect(investigate).not.toHaveBeenCalled();
   });
 
   it("rejects an investigation response belonging to a previous scope", async () => {

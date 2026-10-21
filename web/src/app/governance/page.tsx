@@ -124,7 +124,7 @@ export default function GovernancePage() {
   });
 
   return (
-    <div className="page-container">
+    <div className="page-container operational-page governance-workspace">
       <PageHeader
         eyebrow="Enterprise governance"
         title="Can governance decisions be reviewed?"
@@ -143,13 +143,6 @@ export default function GovernancePage() {
         }
       />
 
-      <CopilotInsights
-        snapshot={governanceCopilot.snapshot}
-        ready={!audiences.loading && !kinds.loading && !settings.loading}
-        requestedScope={governanceCopilot.requestedScope}
-        contextLabel="Enterprise governance"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
 
       <EvidenceBar
         evidence={settings.data?.evidence ?? []}
@@ -157,12 +150,15 @@ export default function GovernancePage() {
         warnings={settings.data?.warnings ?? []}
       />
 
-      <div className="segmented-control" aria-label="Governance section">
+      <div className="segmented-control" role="group" aria-label="Governance section">
         {TABS.map((item) => (
           <button
             key={item.id}
+            id={`governance-view-${item.id}`}
             type="button"
             className={item.id === tab ? "segmented-active" : ""}
+            aria-pressed={item.id === tab}
+            aria-controls="governance-task"
             onClick={() => setTab(item.id)}
           >
             {item.label}
@@ -170,6 +166,7 @@ export default function GovernancePage() {
         ))}
       </div>
 
+      <div id="governance-task" role="region" aria-labelledby={`governance-view-${tab}`}>
       {actionError && (
         <StatePanel
           title="The pack could not be generated"
@@ -209,11 +206,12 @@ export default function GovernancePage() {
                     key={audience}
                     label={titleize(audience)}
                     value="Review pack"
+                    size="text"
                     detail="Generate a point-in-time access record for this audience"
                     action={
                       <button
                         type="button"
-                        className="button"
+                        className="button button-primary"
                         disabled={busy === audience}
                         onClick={() =>
                           generate(audience, () =>
@@ -264,11 +262,12 @@ export default function GovernancePage() {
                     key={kind}
                     label={titleize(kind)}
                     value="Evidence pack"
+                    size="text"
                     detail="Assembled from observed data, with gaps stated"
                     action={
                       <button
                         type="button"
-                        className="button"
+                        className="button button-primary"
                         disabled={busy === kind}
                         onClick={() =>
                           generate(kind, () => governanceApi.auditExport(kind, scope))
@@ -324,7 +323,7 @@ export default function GovernancePage() {
                   resultCount={filteredRoles.length}
                   totalCount={roles.length}
                 />
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0} role="region" aria-label="Enterprise role records">
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -375,11 +374,13 @@ export default function GovernancePage() {
         </section>
       )}
 
+      </div>
+
       {pack && (
-        <section className="card">
+        <section className="card" aria-labelledby="generated-pack-heading">
           <div className="card-header">
             <div>
-              <h2>{titleize(packLabel)} pack</h2>
+              <h2 id="generated-pack-heading">{titleize(packLabel)} pack</h2>
               <p>
                 Generated {String(pack.generated_at ?? "just now")}. Provenance is
                 recorded inside the pack so a reviewer can trace every figure.
@@ -387,7 +388,7 @@ export default function GovernancePage() {
             </div>
             <button
               type="button"
-              className="button"
+              className="button button-secondary"
               onClick={() => download(packLabel, pack)}
             >
               Download JSON
@@ -401,10 +402,23 @@ export default function GovernancePage() {
                 tone="error"
               />
             )}
-            <pre className="report-preview">{JSON.stringify(pack, null, 2)}</pre>
+            <details className="technical-disclosure">
+              <summary>Inspect generated JSON</summary>
+              <pre className="report-preview" tabIndex={0} aria-label="Generated pack JSON">{JSON.stringify(pack, null, 2)}</pre>
+            </details>
           </div>
         </section>
       )}
+
+
+
+      <CopilotInsights
+        snapshot={governanceCopilot.snapshot}
+        ready={!audiences.loading && !kinds.loading && !settings.loading}
+        requestedScope={governanceCopilot.requestedScope}
+        contextLabel="Enterprise governance"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

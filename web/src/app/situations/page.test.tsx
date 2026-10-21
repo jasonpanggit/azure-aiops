@@ -104,7 +104,7 @@ describe("durable Situation queue", () => {
     list.mockImplementationOnce(() => new Promise(() => {}));
     render(<ScopeProvider><SituationsPage /></ScopeProvider>);
 
-    expect(screen.getByText("Loading Situation queue")).toBeInTheDocument();
+    expect(screen.getByText("Loading situation queue")).toBeInTheDocument();
   });
 
   it("loads durable rows and filters by search plus every priority", async () => {
@@ -123,7 +123,9 @@ describe("durable Situation queue", () => {
     for (const value of ["P1", "P2", "P3"]) {
       fireEvent.click(screen.getByRole("button", { name: value }));
       await waitFor(() => expect(list).toHaveBeenLastCalledWith({}, "database", value, 0, 25));
+      expect(screen.getByRole("button", { name: value })).toHaveAttribute("aria-pressed", "true");
     }
+    expect(document.querySelectorAll(".copilot-insights")).toHaveLength(1);
   });
 
   it("navigates paginated durable rows with next and previous controls", async () => {
@@ -164,7 +166,7 @@ describe("durable Situation queue", () => {
 
     expect(await screen.findByText("Database unavailable")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Change scope" }));
-    expect(screen.getByText("Loading Situation queue")).toBeInTheDocument();
+    expect(screen.getByText("Loading situation queue")).toBeInTheDocument();
     expect(screen.queryByText("Database unavailable")).not.toBeInTheDocument();
     resolveScoped?.(response([{ ...rows[0], title: "Scoped database outage" }]));
     expect(await screen.findByText("Scoped database outage")).toBeInTheDocument();

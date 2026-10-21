@@ -23,6 +23,7 @@ import {
 } from "@/lib/copilot/page-adapters";
 import { useScope } from "@/lib/scope-context";
 import { scopeToSearchParams } from "@/lib/scope";
+import { handleTabListKeyDown } from "@/lib/tab-list";
 import { inventoryApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
 import { inventoryViewQuery, parseInventoryView, type InventoryView } from "@/lib/inventory-view";
@@ -239,7 +240,7 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
     : [];
 
   return (
-    <section aria-label="Inventory risk narrative" className="detail-panel">
+    <section id="inventory-narrative" aria-label="Inventory risk narrative" className="detail-panel">
       <div className="card-header">
         <h2>Inventory risk narrative</h2>
         {narrative.data && (
@@ -254,7 +255,8 @@ function NarrativePanel({ narrative }: { narrative: ReturnType<typeof useApi<Env
         <StatePanel title="Loading risk narrative" message="Summarizing scoped inventory aggregates." tone="loading" />
       )}
       {narrative.error && (
-        <StatePanel title="Risk narrative unavailable" message={inventoryUnavailableMessage(narrative.error)} tone="error" />
+        <StatePanel title="Risk narrative unavailable" message={inventoryUnavailableMessage(narrative.error)} tone="error"
+          action={<button type="button" className="button button-secondary" onClick={narrative.refetch} disabled={narrative.loading}>Retry risk narrative</button>} />
       )}
       {narrative.data && (
         <div className="narrative-body">
@@ -1076,7 +1078,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
   }
 
   return (
-    <main className="page-shell inventory-page">
+    <main className="page-shell operational-page inventory-page">
       <PageHeader
         eyebrow="Inventory"
         title="Inventory"
@@ -1099,13 +1101,6 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
         }
       />
 
-      <CopilotInsights
-        snapshot={copilotContext.snapshot}
-        ready={!activeCopilotState.loading}
-        requestedScope={copilotContext.requestedScope}
-        contextLabel="Inventory and data health"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
       <p className="muted">
         Filters search authorized groups before pagination. Charts and CSV detail exports describe the visible page only.
         {" "}Source and publisher filters select whole groups containing that value.
@@ -1119,7 +1114,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
         <StatePanel title="Inventory page is out of range" message="Matching groups exist, but this saved page has no rows."
           action={<button type="button" className="button" onClick={() => { setOsPage(0); setSoftwarePage(0); setAzurePage(0); }}>Return to first page</button>} />}
 
-      <div role="tablist" aria-label="Inventory views" className="tab-list">
+      <div role="tablist" aria-label="Inventory views" className="tab-list" onKeyDown={handleTabListKeyDown}>
         <button
           id="os-inventory-tab"
           type="button"
@@ -1155,7 +1150,13 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
         </button>
       </div>
 
-      {tab !== "azure" && <><p className="muted">The scope-level narrative is independent of table filters.</p><NarrativePanel narrative={narrative} /></>}
+      <nav className="section-nav" aria-label="Inventory sections">
+        <a href="#inventory-summary">Summary</a>
+        <a href="#inventory-records">Records and filters</a>
+        {tab === "software" && mappingItems.length > 0 && <a href="#inventory-normalization">Normalization review</a>}
+        {tab === "os" && reviewGroup && <a href="#inventory-lifecycle">Lifecycle review</a>}
+        {tab !== "azure" && <a href="#inventory-narrative">Risk narrative</a>}
+      </nav>
       <InventorySetupHint
         error={
           tab === "azure"
@@ -1166,7 +1167,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
 
       {tab === "software" ? (
         <section id="installed-software-panel" role="tabpanel" aria-labelledby="installed-software-tab" tabIndex={0}>
-          <section aria-label="Installed software summary" className="metric-grid">
+          <section id="inventory-summary" aria-label="Installed software summary" className="metric-grid">
             <MetricCard label="Software groups" value={softwareInventory.data ? softwareInventory.data.pagination?.total ?? filteredSoftwareGroups.length : "—"} detail="Matching canonical name/version groups" />
             <MetricCard label="Installations" value={softwareInventory.data ? softwareTotal : "—"} detail={softwareInventory.data?.data.summary ? "All matching authorized installations" : "Visible page only"} />
             <MetricCard
@@ -1176,18 +1177,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
               tone={unlinkedSoftware > 0 ? "warning" : "success"}
             />
           </section>
-          <section aria-label="Installed software dashboard" className="dashboard-charts-row">
-            <div className="chart-card">
-              <h3 className="chart-card-title">Top software by install count (visible page)</h3>
-              <CountBarChart data={softwareTopBarData} unit="software" />
-            </div>
-            <div className="chart-card">
-              <h3 className="chart-card-title">Group source membership (visible page)</h3>
-              <CountBarChart data={softwareSourceMix.map(item => ({ ...item, id: item.label }))} unit="group memberships" />
-              <p className="muted">Source tags may overlap; these are not installation counts.</p>
-            </div>
-          </section>
-          <div className="inventory-filters" aria-label="Installed software filters">
+          <div id="inventory-records" className="inventory-filters" aria-label="Installed software filters">
             <label>
               Search software
               <input value={softwareSearch} onChange={(event) => setSoftwareSearch(event.target.value)} placeholder="Name or version" />
@@ -1279,7 +1269,8 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
             />
           )}
           {filteredSoftwareGroups.length > 0 && (
-            <section aria-label="Installed software groups" className="data-table-wrap">
+            <section aria-label="Installed software groups" className="inventory-groups">
+              <div className="data-table-wrap table-scroll" tabIndex={0} role="region" aria-label="Installed software group table">
               <table className="data-table">
                 <thead>
                   <tr>
@@ -1339,7 +1330,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                                   warnings={softwareDetailEnvelope.warnings}
                                 />
                               )}
-                              <div className="table-scroll">
+                              <div className="table-scroll" role="region" tabIndex={0} aria-label="Installed software machine table">
                                 <table className="data-table detail-table">
                                   <thead>
                                     <tr>
@@ -1380,7 +1371,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                                 pagination={detailPagination}
                                 pageRows={softwareDetail.length}
                                 page={detailPage}
-                                onPageChange={setDetailPage}
+                                onPageChange={(page) => { setDetailPage(page); if (page === 0 && selectedKey) void loadSoftwareGroup(selectedKey, 0); }}
                                 label="installations"
                               />
                             </section>
@@ -1393,6 +1384,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                   })}
                 </tbody>
               </table>
+              </div>
               <TablePagination
                 pagination={softwareInventory.data?.pagination}
                 pageRows={softwareGroups.length}
@@ -1407,9 +1399,22 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
               />
             </section>
           )}
+          <section aria-label="Installed software dashboard" className="dashboard-charts-row">
+            <div className="chart-card">
+              <h3 className="chart-card-title">Top software by install count (visible page)</h3>
+              <CountBarChart data={softwareTopBarData} unit="software" />
+            </div>
+            <div className="chart-card">
+              <h3 className="chart-card-title">Group source membership (visible page)</h3>
+              <CountBarChart data={softwareSourceMix.map(item => ({ ...item, id: item.label }))} unit="group memberships" />
+              <p className="muted">Source tags may overlap; these are not installation counts.</p>
+            </div>
+          </section>
           {mappingError && <StatePanel title="Mapping decision unavailable" message={mappingError} tone="error" />}
+          {mappings.error && <StatePanel title="Normalization mappings unavailable" message={inventoryUnavailableMessage(mappings.error)} tone="error"
+            action={<button type="button" className="button button-secondary" onClick={mappings.refetch} disabled={mappings.loading}>Retry normalization mappings</button>} />}
           {mappingItems.length > 0 && (
-            <section aria-label="Software normalization review" className="detail-panel">
+            <section id="inventory-normalization" aria-label="Software normalization review" className="detail-panel">
               <h2>Normalization review</h2>
               <p>Only approved mappings change software group counts.</p>
               <ul>
@@ -1449,7 +1454,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
         </section>
       ) : tab === "azure" ? (
         <section id="azure-inventory-panel" role="tabpanel" aria-labelledby="azure-inventory-tab" tabIndex={0}>
-          <section aria-label="Azure inventory summary" className="metric-grid">
+          <section id="inventory-summary" aria-label="Azure inventory summary" className="metric-grid">
             <MetricCard label="Azure groups" value={azureInventory.data ? azureInventory.data.pagination?.total ?? filteredAzureGroups.length : "—"} detail="Matching type, SKU and tier groups" />
             <MetricCard label="Azure resources" value={azureInventory.data ? azureResourceTotal : "—"} detail={azureInventory.data?.data.summary ? "All matching authorized resources" : "Visible page only"} />
             <MetricCard label="Providers" value={azureInventory.data ? azureInventory.data.data.summary?.provider_count ?? new Set(azureGroups.map(group => group.resource_type.split("/")[0])).size : "—"} detail="Distinct providers in matching groups" />
@@ -1458,22 +1463,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
           <InventoryExport scope={effectiveScope} generationId={azureInventory.data?.data.generation_id ?? ""}
             viewQuery={viewQuery.toString()} initialId={initialView.export_id} initialOffset={initialView.export_offset} />
 
-          <section aria-label="Azure inventory dashboard" className="dashboard-charts-row">
-            <div className="chart-card">
-              <h3 className="chart-card-title">Top resource types by count (visible page)</h3>
-              <CountBarChart data={azureTopBarData} unit="resource type" />
-            </div>
-            <div className="chart-card">
-              <h3 className="chart-card-title">Resource provider mix (visible page)</h3>
-              <DonutChart
-                segments={azureProviderMix}
-                centerValue={visibleAzureResourceTotal}
-                centerLabel="resources"
-              />
-            </div>
-          </section>
-
-          <div className="inventory-filters" aria-label="Azure inventory filters">
+          <div id="inventory-records" className="inventory-filters" aria-label="Azure inventory filters">
             <label>
               Search resources
               <input
@@ -1551,7 +1541,8 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
           )}
 
           {filteredAzureGroups.length > 0 && (
-            <section aria-label="Azure inventory groups" className="data-table-wrap">
+            <section aria-label="Azure inventory groups" className="inventory-groups">
+              <div className="data-table-wrap table-scroll" tabIndex={0} role="region" aria-label="Azure group table">
               <table className="data-table">
                 <thead>
                   <tr>
@@ -1604,7 +1595,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                                   <button type="button" onClick={closeAzureGroup}>Close</button>
                                 </div>
                               </div>
-                              <div className="table-scroll">
+                              <div className="table-scroll" role="region" tabIndex={0} aria-label="Azure resource detail table">
                                 <table className="detail-table">
                                   <thead>
                                     <tr>
@@ -1642,7 +1633,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                                 pagination={azureDetailPagination}
                                 pageRows={azureDetail.length}
                                 page={azureDetailPage}
-                                onPageChange={setAzureDetailPage}
+                                onPageChange={(page) => { setAzureDetailPage(page); if (page === 0 && azureSelectedKey) void loadAzureGroup(azureSelectedKey, 0); }}
                                 label="resources"
                               />
                             </section>
@@ -1655,6 +1646,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                   })}
                 </tbody>
               </table>
+              </div>
               <TablePagination
                 pagination={azureInventory.data?.pagination}
                 pageRows={azureGroups.length}
@@ -1669,10 +1661,25 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
               />
             </section>
           )}
+          <section aria-label="Azure inventory dashboard" className="dashboard-charts-row">
+            <div className="chart-card">
+              <h3 className="chart-card-title">Top resource types by count (visible page)</h3>
+              <CountBarChart data={azureTopBarData} unit="resource type" />
+            </div>
+            <div className="chart-card">
+              <h3 className="chart-card-title">Resource provider mix (visible page)</h3>
+              <DonutChart
+                segments={azureProviderMix}
+                centerValue={visibleAzureResourceTotal}
+                centerLabel="resources"
+              />
+            </div>
+          </section>
+
         </section>
       ) : (
         <section id="os-inventory-panel" role="tabpanel" aria-labelledby="os-inventory-tab" tabIndex={0}>
-          <section aria-label="OS inventory summary" className="metric-grid">
+          <section id="inventory-summary" aria-label="OS inventory summary" className="metric-grid">
             <MetricCard label="OS groups" value={inventory.data ? inventory.data.pagination?.total ?? groups.length : "—"} detail="Matching authorized OS identities" />
             <MetricCard label="Machines" value={inventory.data ? totalMachines : "—"} detail={inventory.data?.data.summary ? "All matching authorized machines" : "Visible page only"} />
             <MetricCard
@@ -1688,21 +1695,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
               tone={reviewCount > 0 ? "warning" : "success"}
             />
           </section>
-          <section aria-label="OS inventory dashboard" className="dashboard-charts-row">
-            <div className="chart-card">
-              <h3 className="chart-card-title">EOL risk distribution (visible page)</h3>
-              <DonutChart
-                segments={osRiskMix}
-                centerValue={visibleMachineCount}
-                centerLabel="machines"
-              />
-            </div>
-            <div className="chart-card">
-              <h3 className="chart-card-title">Top OS versions (visible page)</h3>
-              <CountBarChart data={osTopBarData} unit="OS version" />
-            </div>
-          </section>
-          <div className="inventory-filters" aria-label="OS inventory filters">
+          <div id="inventory-records" className="inventory-filters" aria-label="OS inventory filters">
             <label>
               Search OS
               <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name or version" />
@@ -1812,7 +1805,8 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
           )}
 
           {filteredGroups.length > 0 && (
-            <section aria-label="OS inventory groups" className="data-table-wrap">
+            <section aria-label="OS inventory groups" className="inventory-groups">
+              <div className="data-table-wrap table-scroll" tabIndex={0} role="region" aria-label="OS group table">
               <table className="data-table">
                 <thead>
                   <tr>
@@ -1872,7 +1866,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                                   <button type="button" onClick={closeGroup}>Close</button>
                                 </div>
                               </div>
-                              <div className="table-scroll">
+                              <div className="table-scroll" role="region" tabIndex={0} aria-label="OS machine table">
                                 <table className="data-table detail-table">
                                   <thead>
                                     <tr>
@@ -1900,7 +1894,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                                 pagination={detailPagination}
                                 pageRows={detail.length}
                                 page={detailPage}
-                                onPageChange={setDetailPage}
+                                onPageChange={(page) => { setDetailPage(page); if (page === 0 && selectedKey) void loadOsGroup(selectedKey, 0); }}
                                 label="machines"
                               />
                             </section>
@@ -1913,6 +1907,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                   })}
                 </tbody>
               </table>
+              </div>
               <TablePagination
                 pagination={inventory.data?.pagination}
                 pageRows={groups.length}
@@ -1928,8 +1923,22 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
             </section>
           )}
 
+          <section aria-label="OS inventory dashboard" className="dashboard-charts-row">
+            <div className="chart-card">
+              <h3 className="chart-card-title">EOL risk distribution (visible page)</h3>
+              <DonutChart
+                segments={osRiskMix}
+                centerValue={visibleMachineCount}
+                centerLabel="machines"
+              />
+            </div>
+            <div className="chart-card">
+              <h3 className="chart-card-title">Top OS versions (visible page)</h3>
+              <CountBarChart data={osTopBarData} unit="OS version" />
+            </div>
+          </section>
           {reviewGroup && (
-            <section aria-label="EOL lifecycle review" className="detail-panel">
+            <section id="inventory-lifecycle" aria-label="EOL lifecycle review" className="detail-panel">
               <h2>Review lifecycle: {reviewGroup.os_name} {reviewGroup.os_version}</h2>
               {reviewError && <StatePanel title="Lifecycle review unavailable" message={reviewError} tone="error" />}
               {review && (
@@ -1989,6 +1998,14 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
           )}
         </section>
       )}
+      {tab !== "azure" && <><p className="muted">The scope-level narrative is independent of table filters.</p><NarrativePanel narrative={narrative} /></>}
+      <CopilotInsights
+        snapshot={copilotContext.snapshot}
+        ready={!activeCopilotState.loading}
+        requestedScope={copilotContext.requestedScope}
+        contextLabel="Inventory and data health"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
       <CopilotDrawer
         open={copilotOpen && copilotReady}
         onClose={() => setCopilotOpen(false)}

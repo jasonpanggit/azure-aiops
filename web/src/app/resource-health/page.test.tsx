@@ -316,6 +316,9 @@ describe("ResourceHealthPage inventory-first hydration", () => {
 
     expect(await screen.findByText("vm-1")).toBeInTheDocument();
     expect(screen.getByText("vm-8")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Resource utilization" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "vm-1", level: 3 })).toBeVisible();
+    expect(screen.getByText("0 of 8 resources returned metrics")).toBeVisible();
     expect(screen.getByRole("status", { name: "Loading health for vm-1" })).toBeInTheDocument();
     expect(tracker.calls).toHaveLength(6);
     expect(tracker.peak).toBe(6);
@@ -360,6 +363,10 @@ describe("ResourceHealthPage inventory-first hydration", () => {
       await screen.findByRole("alert", { name: "Health error for vm-1" }),
     ).toHaveTextContent("Metrics unavailable");
     expect(screen.getByText("42.0%")).toBeInTheDocument();
+    expect(screen.getByText("1 of 3 resources returned metrics")).toBeVisible();
+    const resourcesRegion = screen.getByRole("region", { name: "Resource utilization" });
+    const comparison = screen.getByRole("region", { name: "CPU comparison" });
+    expect(resourcesRegion.compareDocumentPosition(comparison) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(
       screen.getByRole("status", { name: "Loading health for vm-3" }),
     ).toBeInTheDocument();

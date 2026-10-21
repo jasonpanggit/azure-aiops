@@ -131,6 +131,25 @@ function SessionEndControl({ children }: { children: ReactNode }) {
 }
 
 describe("CopilotDrawer", () => {
+  it("allows a page to own its insight panel without disabling the drawer", async () => {
+    const pageSnapshot = { ...snapshot, page_kind: "resource" as const, evidence: [] };
+    const { container, rerender } = render(
+      <ScopeProvider>
+        <div data-copilot-insights-slot />
+        <CopilotDrawer open={false} onClose={() => undefined} starterQuestions={[]} snapshot={pageSnapshot} />
+      </ScopeProvider>,
+    );
+    expect(container.querySelector("[data-copilot-insights-slot]")).toBeEmptyDOMElement();
+    rerender(
+      <ScopeProvider>
+        <div data-copilot-insights-slot />
+        <CopilotDrawer open onClose={() => undefined} starterQuestions={[]} snapshot={pageSnapshot} />
+      </ScopeProvider>,
+    );
+    expect(container.querySelector("[data-copilot-insights-slot]")).toBeEmptyDOMElement();
+    expect(screen.getByRole("dialog", { name: "Operations Copilot" })).toBeInTheDocument();
+  });
+
   beforeEach(() => {
     investigateCanonical.mockReset();
     window.sessionStorage.clear();

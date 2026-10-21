@@ -279,11 +279,15 @@ export function CopilotInsights({
         </small>
       ) : null}
       <div className="button-row">
-        <button type="button" className="button-secondary" onClick={refresh}>
+        <button type="button" className="button button-secondary" onClick={refresh}>
           Refresh insights
         </button>
         {onOpenCopilot && (
-          <button type="button" className="button-secondary" onClick={onOpenCopilot}>
+          <button
+            type="button"
+            className="button button-ai"
+            onClick={onOpenCopilot}
+          >
             Ask a follow-up
           </button>
         )}

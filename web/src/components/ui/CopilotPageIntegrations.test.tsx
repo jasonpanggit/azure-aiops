@@ -25,6 +25,27 @@ describe("integrated route launcher coverage (COP-02)", () => {
     }
   });
 
+  it("provides the shared PageHeader on every integrated route", () => {
+    for (const [route, disposition] of routes) {
+      if (disposition.kind !== "integrated") continue;
+      expect(routeSourceFor(route), `${route} must render the shared PageHeader`)
+        .toContain("<PageHeader");
+    }
+  });
+
+  it("keeps exactly one page-owned insight without a drawer portal", () => {
+    for (const [route, disposition] of routes) {
+      if (disposition.kind !== "integrated") continue;
+      const component = route === "/network" ? "TopologyInsights" : "CopilotInsights";
+      expect(
+        routeSourceFor(route).match(new RegExp(`<${component}\\b`, "g")),
+        `${route} must own exactly one insight`,
+      ).toHaveLength(1);
+    }
+    const drawer = readFileSync(join(APP_DIR, "..", "components", "ui", "CopilotDrawer.tsx"), "utf8");
+    expect(drawer).not.toContain("createPortal");
+  });
+
   it("keeps dedicated, redirect, and excluded routes free of an embedded launcher", () => {
     const nonIntegrated = routes.filter(([, disposition]) => disposition.kind !== "integrated");
     expect(nonIntegrated).toHaveLength(6);

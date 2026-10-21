@@ -119,10 +119,10 @@ export function TopologyInsights({
           <h2>Topology insights</h2>
         </div>
         <div className="topology-insights-actions">
-          <button type="button" onClick={() => setRefreshGeneration((value) => value + 1)}>
+          <button type="button" className="button button-secondary" onClick={() => setRefreshGeneration((value) => value + 1)}>
             Refresh insights
           </button>
-          <button type="button" className="button-primary" onClick={onAskFollowUp}>
+          <button type="button" className="button button-ai" onClick={onAskFollowUp}>
             Ask a follow-up
           </button>
         </div>

@@ -13,10 +13,12 @@ import { RiskGauge } from "@/components/ui/RiskGauge";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone, toneColor } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
+import { TablePagination } from "@/components/ui/TablePagination";
 import { useApi } from "@/hooks/useApi";
 import { buildComplianceCopilotContext } from "@/lib/copilot/page-adapters";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
+import { useTablePagination } from "@/lib/use-table-pagination";
 import { complianceApi, isCanonicalAzureResourceId, networkApi, vulnerabilityApi } from "@/lib/services";
 import type { ComplianceDesignPolicy, CompliancePolicyState, ComplianceDeviation, NetworkGap, NetworkTopology, RuleFinding, VulnerabilityExposure } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
@@ -358,6 +360,7 @@ function scoreFor(violations: Violation[], exceptions: PolicyException[]): numbe
   return Math.max(0, 100 - penalty);
 }
 
+/** Scoped compliance findings, supporting evidence and policy administration. */
 export default function CompliancePage() {
   const { scope } = useScope();
   return <ComplianceWorkspace key={JSON.stringify(scope)} />;
@@ -420,7 +423,8 @@ function ComplianceWorkspace() {
   }
   const violations = evaluatePolicy(policy);
   const visibleViolations = domainFilter === "all" ? violations : violations.filter(row => findingDomain(row.type) === domainFilter);
-  const selected = visibleViolations.find((violation) => violation.id === selectedId) ?? visibleViolations[0] ?? null;
+  const violationPage = useTablePagination(visibleViolations);
+  const selected = violationPage.pageRows.find((violation) => violation.id === selectedId) ?? violationPage.pageRows[0] ?? null;
   const acceptedIds = new Set(exceptions.filter(isExceptionActive).map((item) => item.violationId));
   const activeViolations = violations.filter((violation) => !acceptedIds.has(violation.id));
   const postureScore = scoreFor(violations, exceptions);
@@ -468,6 +472,8 @@ function ComplianceWorkspace() {
   const openGovernedDeviations = governedDeviations.filter((row) => row.status?.toLowerCase() !== "resolved");
   const criticalGovernedCount = openGovernedDeviations.filter((row) => row.severity?.toLowerCase() === "critical").length;
   const driftRows = drift.data?.data ?? [];
+  const deviationPage = useTablePagination(openGovernedDeviations);
+  const driftPage = useTablePagination(driftRows);
   const governedLoading = policyDeviations.loading || securityDeviations.loading || drift.loading || summary.loading;
   const governedError = policyDeviations.error ?? securityDeviations.error ?? drift.error ?? summary.error;
   const draftChanges = policyState ? explainPolicyChanges(policy, policyDraft) : [];
@@ -564,13 +570,13 @@ function ComplianceWorkspace() {
         metadata={<><span>{policyState ? policy.name : "Assessment policy unavailable"}</span><span>{assessmentReady ? `${violations.length} evaluated violations` : "Assessment incomplete"}</span><span>{policyState ? `${exceptions.filter(isExceptionActive).length} active exceptions` : "Exceptions unavailable"}</span></>}
       />
 
-      <CopilotInsights
-        snapshot={complianceCopilot.snapshot}
-        ready={assessmentReady}
-        requestedScope={complianceCopilot.requestedScope}
-        contextLabel="Security posture"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
+      <nav className="section-nav" aria-label="Compliance sections">
+        <a href="#compliance-violations">Violations</a>
+        <a href="#compliance-deviations">Governed deviations</a>
+        <a href="#compliance-drift">Configuration drift</a>
+        <a href="#compliance-policy">Policy administration</a>
+        <a href="#compliance-exceptions">Exceptions and risk acceptance</a>
+      </nav>
 
       <EvidenceBar evidence={evidence} knowledgeVersion={topology.data?.knowledge_version} warnings={[...(topology.data?.warnings ?? []), ...(gaps.data?.warnings ?? []), ...(findings.data?.warnings ?? []), ...(exposures.data?.warnings ?? []), ...(policyDeviations.data?.warnings ?? []), ...(securityDeviations.data?.warnings ?? [])]} />
       <p className="muted">Architecture assessment policy is stored for this exact scope. Browser-local policies and exceptions are not imported as approvals. These decisions never authorize remediation or change Azure policy.</p>
@@ -631,7 +637,7 @@ function ComplianceWorkspace() {
             <thead><tr><th>Domain</th><th>Local findings</th><th>Accepted</th><th>Provider deviations</th><th>Evidence state</th></tr></thead>
             <tbody>{framework.domains.map(domain => <tr key={domain.id}>
               <td><a href={`https://learn.microsoft.com/en-us/security/benchmark/azure/mcsb-${domain.path}`} target="_blank" rel="noreferrer">{domain.id} · {domain.name}</a></td>
-              <td>{assessmentReady ? domain.local.length : "—"}{domain.local.length > 0 && <>{" "}<a href="#compliance-findings" onClick={() => { setDomainFilter(domain.id); setSelectedId(domain.local[0].id); }}>Review {domain.id} findings</a></>}</td>
+              <td>{assessmentReady ? domain.local.length : "—"}{domain.local.length > 0 && <>{" "}<a href="#compliance-findings" onClick={() => { setDomainFilter(domain.id); setSelectedId(domain.local[0].id); violationPage.setPage(0); }}>Review {domain.id} findings</a></>}</td>
               <td>{assessmentReady ? domain.acceptedCount : "—"}</td>
               <td>{policyDeviations.error && securityDeviations.error ? "Unavailable" : policyDeviations.loading || securityDeviations.loading || policyDeviations.error || securityDeviations.error ? `${domain.governed.length} loaded; incomplete` : domain.governed.length}</td>
               <td>{domain.local.length + domain.governed.length > 0 ? "Advisory mapped evidence" : !assessmentReady || !policyDeviations.data || !securityDeviations.data || policyDeviations.error || securityDeviations.error ? "Evidence incomplete" : "Not assessed"}</td>
@@ -649,10 +655,10 @@ function ComplianceWorkspace() {
 
       <section className="card compliance-violations-panel" id="compliance-findings">
         <div className="card-header">
-          <div><h2>Violations</h2><p>Business-context posture findings with evidence, remediation, and exception state. Select a violation to expand its details inline.</p></div>
+          <div><h2 id="compliance-violations">Violations</h2><p>Select a violation to review its evidence, remediation candidate, and exception state.</p></div>
         </div>
         <label className="card-body compliance-domain-filter">Local finding domain
-          <select aria-label="Local finding domain" value={domainFilter} onChange={event => setDomainFilter(event.target.value)}>
+          <select aria-label="Local finding domain" value={domainFilter} onChange={event => { setDomainFilter(event.target.value); setSelectedId(""); violationPage.setPage(0); }}>
             <option value="all">All local domains</option>
             {framework.domains.map(domain => <option value={domain.id} key={domain.id}>{domain.id} · {domain.name}</option>)}
           </select>
@@ -665,7 +671,7 @@ function ComplianceWorkspace() {
               <span>Status</span>
             </div>
           ) : null}
-          {visibleViolations.map((violation) => {
+          {violationPage.pageRows.map((violation) => {
             const isSelected = selected?.id === violation.id;
             return (
               <div key={violation.id} className="compliance-row-group">
@@ -705,12 +711,21 @@ function ComplianceWorkspace() {
           })}
           {visibleViolations.length === 0 && assessmentReady ? <StatePanel title="No findings in loaded evidence" message="No local heuristic findings match this domain and policy in the loaded observations. This is not a complete control audit or compliance certification." /> : null}
         </div>
+        <TablePagination
+          total={violationPage.total}
+          pageRows={violationPage.pageRows.length}
+          page={violationPage.page}
+          pageSize={violationPage.pageSize}
+          onPageChange={(page) => { setSelectedId(""); violationPage.setPage(page); }}
+          onPageSizeChange={(size) => { setSelectedId(""); violationPage.setPageSize(size); }}
+          label="violations"
+        />
       </section>
 
       <div className="compliance-layout">
-        <section className="card">
+        <section className="card" aria-labelledby="compliance-deviations">
           <div className="card-header">
-            <div><h2>Governed compliance deviations</h2><p>Policy and security baseline deviations from change intelligence, backed by evidence-linked ontology entities rather than keyword inference.</p></div>
+            <div><h2 id="compliance-deviations">Governed compliance deviations</h2><p>Review evidence-linked policy and security baseline deviations from change intelligence.</p></div>
           </div>
           {governedError ? <StatePanel title="Governed deviations unavailable" message={governedError.message} tone="error" /> : null}
           {governedLoading ? <StatePanel title="Loading change intelligence posture" message="Fetching policy deviations, security deviations, and configuration drift." tone="loading" /> : null}
@@ -722,7 +737,7 @@ function ComplianceWorkspace() {
                 <span>Status</span>
               </div>
             ) : null}
-            {openGovernedDeviations.map((row) => (
+            {deviationPage.pageRows.map((row) => (
               <div key={row.deviation_id} className="compliance-row">
                 <StatusBadge label={row.severity} tone={statusTone(row.severity)} compact />
                 <div>
@@ -734,26 +749,44 @@ function ComplianceWorkspace() {
             ))}
             {openGovernedDeviations.length === 0 && !governedLoading && !governedError ? <StatePanel title="No open governed deviations in loaded pages" message="No open policy or security baseline deviations are present in the loaded rows. Unqueried pages are not assessed." /> : null}
           </div>
+          <TablePagination
+            total={deviationPage.total}
+            pageRows={deviationPage.pageRows.length}
+            page={deviationPage.page}
+            pageSize={deviationPage.pageSize}
+            onPageChange={deviationPage.setPage}
+            onPageSizeChange={deviationPage.setPageSize}
+            label="governed deviations"
+          />
         </section>
 
-        <aside className="card">
+        <aside className="card" aria-labelledby="compliance-drift">
           <div className="card-header">
-            <div><h2>Configuration drift</h2><p>Resources whose observed configuration no longer matches the expected baseline.</p></div>
+            <div><h2 id="compliance-drift">Configuration drift</h2><p>Review resources whose observed configuration differs from the expected baseline.</p></div>
           </div>
           <div className="card-body compliance-detail">
             {driftRows.length > 0 ? (
-              <StructuredData value={driftRows} />
+              <StructuredData value={driftPage.pageRows} />
             ) : drift.error ? <StatePanel title="Configuration drift unavailable" message={drift.error.message} tone="error" /> : (
               <StatePanel title={drift.loading ? "Loading drift data" : "No drift rows in loaded evidence"} message={drift.loading ? "Evaluating configuration drift." : "No drift rows were returned in this page; absent rows do not establish complete baseline conformance."} tone={drift.loading ? "loading" : undefined} />
             )}
           </div>
+          <TablePagination
+            total={driftPage.total}
+            pageRows={driftPage.pageRows.length}
+            page={driftPage.page}
+            pageSize={driftPage.pageSize}
+            onPageChange={driftPage.setPage}
+            onPageSizeChange={driftPage.setPageSize}
+            label="drift records"
+          />
         </aside>
       </div>
 
       <div className="compliance-layout">
-        <section className="card">
+        <section className="card" aria-labelledby="compliance-policy">
           <div className="card-header">
-            <div><h2>Policy administration</h2><p>Governed customer-specific policy pack for architecture compliance.</p></div>
+            <div><h2 id="compliance-policy">Policy administration</h2><p>Configure the policy pack used to evaluate architecture compliance.</p></div>
             <StatusBadge label="Customer governed" tone="warning" />
           </div>
           <section className="card-body compliance-policy-explanation" aria-label="Policy change explanation">
@@ -802,12 +835,13 @@ function ComplianceWorkspace() {
           <div className="card-body"><button type="button" disabled={policyBusy} onClick={policyRead.refetch}>Reload saved policy</button><p>Revision {policyState?.revision ?? "unavailable"}. Reloading replaces the draft; review again after a conflict.</p></div>
         </section>
 
-        <aside className="card">
+        <aside className="card" aria-labelledby="compliance-exceptions">
           <div className="card-header">
-            <div><h2>Exceptions and risk acceptance</h2><p>Approve temporary exceptions with owner, reason, and expiry.</p></div>
+            <div><h2 id="compliance-exceptions">Exceptions and risk acceptance</h2><p>Record a temporary exception for the selected violation with an owner, reason, and expiry.</p></div>
           </div>
           <fieldset className="card-body compliance-policy-grid" disabled={!policyState || policyBusy}>
             <legend>Authenticated server decision</legend>
+            <p>Selected violation: <strong>{selected?.title ?? "None selected"}</strong></p>
             <label>Exception owner<input value={exceptionDraft.owner} onChange={(event) => setExceptionDraft({ ...exceptionDraft, owner: event.target.value })} /></label>
             <label>Risk acceptance reason<textarea rows={3} value={exceptionDraft.reason} onChange={(event) => setExceptionDraft({ ...exceptionDraft, reason: event.target.value })} /></label>
             <label>Expires at (00:00 UTC)<input type="date" value={exceptionDraft.expiresAt} onChange={(event) => setExceptionDraft({ ...exceptionDraft, expiresAt: event.target.value })} /></label>
@@ -827,6 +861,14 @@ function ComplianceWorkspace() {
           </details>
         </aside>
       </div>
+
+      <CopilotInsights
+        snapshot={complianceCopilot.snapshot}
+        ready={assessmentReady}
+        requestedScope={complianceCopilot.requestedScope}
+        contextLabel="Security posture"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ScopeProvider } from "@/lib/scope-context";
 import { ApiError } from "@/lib/types";
@@ -762,6 +762,29 @@ describe("Inventory OS tracer", () => {
     expect(exportApi.create).toHaveBeenCalledWith({}, "gen-1");
     expect(resources).not.toHaveBeenCalled();
     expect(downloadCsv).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { tab: "OS Inventory", action: /View machines for Windows Server 2019/, request: osGroup, region: "OS machine details" },
+    { tab: "Installed Software", action: /View machines for 7-Zip 19.00/, request: softwareGroup, region: "Installed software machine details" },
+    { tab: "Azure Inventory", action: /View resources for/, request: paasGroup, region: "Azure resource detail" },
+  ])("reloads the first inline detail page when paging backward in $tab", async ({ tab, action, request, region }) => {
+    const detail = await request();
+    request.mockClear();
+    request.mockImplementation((_key, _scope, offset) => Promise.resolve({
+      ...detail,
+      pagination: { offset, limit: 25, total: 26, next_offset: offset === 0 ? 25 : null },
+    }));
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+    fireEvent.click(screen.getByRole("tab", { name: tab }));
+    fireEvent.click(await screen.findByRole("button", { name: action }));
+    const panel = await screen.findByRole("region", { name: region });
+    fireEvent.click(await within(panel).findByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(request).toHaveBeenLastCalledWith(expect.any(String), {}, 25, 25));
+    await waitFor(() => expect(within(screen.getByRole("region", { name: region })).getByText(/Showing 26/)).toBeInTheDocument());
+    fireEvent.click(within(screen.getByRole("region", { name: region })).getByRole("button", { name: "Previous page" }));
+    await waitFor(() => expect(request).toHaveBeenLastCalledWith(expect.any(String), {}, 0, 25));
+    expect(request).toHaveBeenCalledTimes(3);
   });
 
   it("explains how to load inventory when the API provider has no snapshot", async () => {

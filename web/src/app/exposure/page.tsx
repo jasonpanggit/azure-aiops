@@ -65,6 +65,7 @@ interface OverviewFinding extends ExposureFinding {
 }
 
 interface OverviewSectionProps<T> {
+  id: string;
   title: string;
   description: string;
   sourceName: string;
@@ -166,6 +167,7 @@ function sourceStatus<T>(section: ExposureSectionResult<T>): string {
 }
 
 function OverviewSection<T>({
+  id,
   title,
   description,
   sourceName,
@@ -175,7 +177,7 @@ function OverviewSection<T>({
   children,
 }: OverviewSectionProps<T>) {
   return (
-    <section className="card queue-card">
+    <section id={id} className="card queue-card">
       <div className="card-header">
         <div>
           <h2>{title}</h2>
@@ -368,7 +370,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
   });
 
   return (
-    <div className="page-container exposure-overview-page">
+    <div className="page-container operational-page exposure-overview-page">
       <PageHeader
         eyebrow="Exposure management"
         title="Which exposure should be reduced first?"
@@ -385,13 +387,6 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
         }
       />
 
-      <CopilotInsights
-        snapshot={exposureCopilot.snapshot}
-        ready={!facets.loading}
-        requestedScope={exposureCopilot.requestedScope}
-        contextLabel="Vulnerability exposure"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
 
       <EvidenceBar
         evidence={evidence}
@@ -413,10 +408,21 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
         />
       )}
 
+      <nav className="section-nav" aria-label="Exposure overview sections">
+        <a href="#exposure-findings">Findings</a>
+        <a href="#exposure-dashboard">Dashboard</a>
+        <a href="#exposure-severity">Severity</a>
+        <a href="#exposure-targets">Targets</a>
+        <a href="#exposure-priority">Priority preview</a>
+        <a href="#exposure-sources">Sources</a>
+        <a href="#exposure-sla">SLA classification</a>
+        <a href="#exposure-evidence">Evidence classification</a>
+      </nav>
       <div className="exposure-landing-sections">
         <ExposureDecision data={facetData} sourceStatus={facets.status} query={loadedQuery} />
         <ExposureMovement scope={scope} generation={knowledgeVersion ?? generation} />
         <OverviewSection
+          id="exposure-findings"
           title="Exposure findings"
           description="Current findings in the authorized, generation-pinned Fabric SQL partition."
           sourceName="Exposure findings"
@@ -435,6 +441,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
         </OverviewSection>
 
         <OverviewSection
+          id="exposure-dashboard"
           title="Findings dashboard"
           description="At-a-glance visual summary of the current generation-pinned partition."
           sourceName="Findings dashboard"
@@ -469,6 +476,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
         </OverviewSection>
 
         <OverviewSection
+          id="exposure-severity"
           title="Severity distribution"
           description="Finding counts by provider-reported severity."
           sourceName="Severity distribution"
@@ -483,6 +491,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
         </OverviewSection>
 
         <OverviewSection
+          id="exposure-targets"
           title="Target distribution"
           description="Finding counts by target kind; these are not distinct asset totals."
           sourceName="Target distribution"
@@ -496,6 +505,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
         </OverviewSection>
 
         <OverviewSection
+          id="exposure-priority"
           title="Priority preview"
           description="Highest-ranked findings from the current query; the complete queue remains on Patch priorities."
           sourceName="Priority preview"
@@ -520,6 +530,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
         </OverviewSection>
 
         <OverviewSection
+          id="exposure-sources"
           title="Source distribution"
           description="Finding counts by durable source family, without inferring alerts or posture records."
           sourceName="Source distribution"
@@ -534,6 +545,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
         </OverviewSection>
 
         <OverviewSection
+          id="exposure-sla"
           title="SLA classification"
           description="Finding counts by recorded SLA state; indeterminate evidence is never treated as compliant."
           sourceName="SLA classification"
@@ -556,6 +568,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
         </OverviewSection>
 
         <OverviewSection
+          id="exposure-evidence"
           title="Evidence classification"
           description="Finding counts by source completeness and current lifecycle state."
           sourceName="Evidence classification"
@@ -572,6 +585,14 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
           </div>
         </OverviewSection>
       </div>
+
+      <CopilotInsights
+        snapshot={exposureCopilot.snapshot}
+        ready={!facets.loading}
+        requestedScope={exposureCopilot.requestedScope}
+        contextLabel="Vulnerability exposure"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

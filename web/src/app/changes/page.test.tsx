@@ -218,6 +218,31 @@ describe("Independent change observations", () => {
     ));
   });
 
+  it("pages all loaded timeline events and bounds its Copilot to the visible page", async () => {
+    mocks.incidents.mockResolvedValue({
+      ...response([]), data: { incidents: [{
+        incident: { incident_id: "incident-1", title: "Authorized incident" },
+        blast_radius: { business_services: ["Checkout"] },
+        timeline: Array.from({ length: 61 }, (_, index) => ({
+          event_id: `event-${index}`, event_type: "change", summary: `Association ${index}`,
+          timestamp: row.changed_at, source: "Legacy fixture", evidence: [],
+        })),
+      }] },
+    });
+    render(subject({}, <ChangesPage />));
+    await screen.findByText("Association 0");
+    const timeline = screen.getByRole("region", { name: "Incident timeline associations" });
+    expect(within(timeline).getAllByText(/^Association \d+$/)).toHaveLength(20);
+    const snapshot = () => screen.getByLabelText("Incident timeline associations snapshot").textContent;
+    expect(snapshot()).toContain("Association 0");
+    expect(snapshot()).not.toContain("Association 60");
+    fireEvent.click(within(timeline).getByRole("button", { name: "Page 4" }));
+    expect(within(timeline).getByText("Association 60")).toBeInTheDocument();
+    expect(within(timeline).queryByText("Association 0")).not.toBeInTheDocument();
+    expect(snapshot()).toContain("Association 60");
+    expect(snapshot()).not.toContain("Association 0");
+  });
+
   it("keeps timeline evidence available when the independent source fails", async () => {
     mocks.observations.mockRejectedValue(new Error("Change projection deferred"));
     mocks.incidents.mockResolvedValue({

@@ -98,7 +98,7 @@ function ServiceWorkspace({ name }: { name: string }) {
   });
 
   return (
-    <div className="page-container">
+    <div className="page-container operational-page">
       <div className="breadcrumb"><Link href={overviewHref("/services", scope)}>Services</Link><span>/</span><span>{name}</span></div>
       <PageHeader
         eyebrow="Business service"
@@ -107,13 +107,6 @@ function ServiceWorkspace({ name }: { name: string }) {
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label={`Ask Copilot about ${name}`} />}
       />
 
-      <CopilotInsights
-        snapshot={serviceCopilot.snapshot}
-        ready={!context.loading && !risk.loading && !impact.loading}
-        requestedScope={serviceCopilot.requestedScope}
-        contextLabel={name}
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
       <EvidenceBar
         evidence={[...(context.data?.evidence ?? []), ...(risk.data?.evidence ?? []), ...(impact.data?.evidence ?? [])]}
         knowledgeVersion={context.data?.knowledge_version}
@@ -126,12 +119,23 @@ function ServiceWorkspace({ name }: { name: string }) {
         <StatePanel title="Building service operating view" message="Resolving context, risk, and blast radius." tone="loading" />
       ) : (
         <><ServiceBrief context={context} risk={risk} impact={impact} scope={scope} />
+        <nav className="section-nav" aria-label="Service detail sections">
+          <a href="#service-context">Source context</a><a href="#service-risk">Risk evidence</a><a href="#service-impact">Dependency impact</a>
+        </nav>
         <div className="service-detail-grid">
-          <section className="card"><div className="card-header"><h2>Service context</h2></div><div className="card-body">{context.error ? <StatePanel title="Service context unavailable" message={context.error.message} tone="partial" /> : <details><summary>Inspect source context</summary><StructuredData value={context.data?.data ?? {}} /></details>}</div></section>
-          <section className="card"><div className="card-header"><h2>Aggregated risk</h2></div><div className="card-body">{risk.error ? <StatePanel title="Risk evidence unavailable" message={risk.error.message} tone="partial" /> : <details><summary>Inspect source risk</summary><StructuredData value={risk.data?.data ?? {}} /></details>}</div></section>
-          <section className="card service-impact-card"><div className="card-header"><h2>Dependency impact</h2></div><div className="card-body">{impact.error ? <StatePanel title="Dependency evidence unavailable" message={impact.error.message} tone="partial" /> : <details><summary>Inspect source impact</summary><StructuredData value={impact.data?.data ?? {}} /></details>}</div></section>
+          <section id="service-context" className="card" aria-label="Service context"><div className="card-header"><h2>Service context</h2><p>Review the returned service context and its source qualifications.</p></div><div className="card-body">{context.error ? <StatePanel title="Service context unavailable" message={context.error.message} tone="partial" /> : <details><summary>Inspect source context</summary><StructuredData value={context.data?.data ?? {}} /></details>}</div></section>
+          <section id="service-risk" className="card" aria-label="Aggregated risk"><div className="card-header"><h2>Aggregated risk</h2><p>Review reported risk evidence without inferring source completeness.</p></div><div className="card-body">{risk.error ? <StatePanel title="Risk evidence unavailable" message={risk.error.message} tone="partial" /> : <details><summary>Inspect source risk</summary><StructuredData value={risk.data?.data ?? {}} /></details>}</div></section>
+          <section id="service-impact" className="card service-impact-card" aria-label="Dependency impact"><div className="card-header"><h2>Dependency impact</h2><p>Dependency context does not establish verified deployment impact.</p></div><div className="card-body">{impact.error ? <StatePanel title="Dependency evidence unavailable" message={impact.error.message} tone="partial" /> : <details><summary>Inspect source impact</summary><StructuredData value={impact.data?.data ?? {}} /></details>}</div></section>
         </div></>
       )}
+
+      <CopilotInsights
+        snapshot={serviceCopilot.snapshot}
+        ready={!context.loading && !risk.loading && !impact.loading}
+        requestedScope={serviceCopilot.requestedScope}
+        contextLabel={name}
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

@@ -190,7 +190,7 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
   });
 
   return (
-    <div className="page-container identity-workspace">
+    <div className="page-container operational-page identity-workspace">
       <PageHeader
         eyebrow="Access governance"
         title="Who has access, and how wide is it?"
@@ -209,13 +209,17 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
         }
       />
 
-      <CopilotInsights
-        snapshot={identityCopilot.snapshot}
-        ready={!loading && !leastPrivilege.loading}
-        requestedScope={identityCopilot.requestedScope}
-        contextLabel="Access governance"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
+      {!error && !loading && (
+        <nav className="section-nav" aria-label="Identity sections">
+          <a href="#identity-overview">Overview</a>
+          <a href="#identity-principals">Principals</a>
+          <a href="#identity-least-privilege">Least-privilege review</a>
+          <a href="#identity-owners">Subscription owners</a>
+          <a href="#identity-stale">Stale access</a>
+          <a href="#identity-non-human">Non-human identities</a>
+          <a href="#identity-credentials">Credentials</a>
+        </nav>
+      )}
 
       <EvidenceBar
         evidence={identityEvidence}
@@ -241,7 +245,7 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
         />
       ) : (
         <>
-          <div className="metric-grid">
+          <div id="identity-overview" className="metric-grid" role="region" aria-label="Access overview">
             <MetricCard
               label="Principals with access"
               value={totals?.principal_count ?? 0}
@@ -266,10 +270,10 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
             />
           </div>
 
-          <section className="card">
+          <section id="identity-principals" className="card" aria-labelledby="identity-principals-heading">
             <div className="card-header">
               <div>
-                <h2>Principals and observed grant breadth</h2>
+                <h2 id="identity-principals-heading">Principals and observed grant breadth</h2>
                 <p>
                   Counts describe recorded assignments by scope breadth, not distinct
                   reachable resources or a verified compromise blast radius. Group
@@ -368,10 +372,10 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
             </div>
           </section>
 
-          <section className="card">
+          <section id="identity-least-privilege" className="card" aria-labelledby="identity-least-privilege-heading">
             <div className="card-header">
               <div>
-                <h2>Least-privilege review candidates</h2>
+                <h2 id="identity-least-privilege-heading">Least-privilege review candidates</h2>
                 <p>
                   Advisory queue based on observed role definitions, scope breadth,
                   and assignment change age. It does not calculate effective access
@@ -526,15 +530,20 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
             </div>
           </section>
 
-          <section className="card">
+          <section id="identity-owners" className="card" aria-labelledby="identity-owners-heading">
             <div className="card-header">
               <div>
-                <h2>Subscription owners</h2>
+                <h2 id="identity-owners-heading">Subscription owners</h2>
                 <p>Principals holding owner rights over a whole subscription.</p>
               </div>
             </div>
             <div className="card-body">
-              {(owners.data?.data.owners.length ?? 0) === 0 ? (
+              {owners.error ? (
+                <StatePanel title="Subscription owners are unavailable" message={owners.error.message} tone="error"
+                  action={<button className="button button-secondary" type="button" onClick={owners.refetch}>Retry subscription owners</button>} />
+              ) : owners.loading ? (
+                <StatePanel title="Reading subscription owners" message="Resolving observed owner-scoped assignments." tone="loading" />
+              ) : (owners.data?.data.owners.length ?? 0) === 0 ? (
                 <StatePanel
                   title="No subscription owners observed"
                   message="No owner-scoped assignment was found in the synced data for this scope."
@@ -547,7 +556,7 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                   resultCount={filteredOwners.length}
                   totalCount={ownerRows.length}
                 />
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0} role="region" aria-label="Subscription owner records">
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -593,7 +602,7 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                 </div>
                 </>
               )}
-              <TablePagination
+              {!owners.error && !owners.loading && <TablePagination
                 total={ownersPaging.total}
                 pageRows={ownersPaging.pageRows.length}
                 page={ownersPaging.page}
@@ -601,14 +610,14 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                 pageSize={ownersPaging.pageSize}
                 onPageSizeChange={ownersPaging.setPageSize}
                 label="owners"
-              />
+              />}
             </div>
           </section>
 
-          <section className="card">
+          <section id="identity-stale" className="card" aria-labelledby="identity-stale-heading">
             <div className="card-header">
               <div>
-                <h2>Stale access</h2>
+                <h2 id="identity-stale-heading">Stale access</h2>
                 <p>
                   Assignments unchanged past the review threshold, privileged
                   ones first.
@@ -616,7 +625,12 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
               </div>
             </div>
             <div className="card-body">
-              {(stale.data?.data.assignments.length ?? 0) === 0 ? (
+              {stale.error ? (
+                <StatePanel title="Stale access is unavailable" message={stale.error.message} tone="error"
+                  action={<button className="button button-secondary" type="button" onClick={stale.refetch}>Retry stale access</button>} />
+              ) : stale.loading ? (
+                <StatePanel title="Reading stale access" message="Checking observed assignments against the review threshold." tone="loading" />
+              ) : (stale.data?.data.assignments.length ?? 0) === 0 ? (
                 <StatePanel
                   title="No overdue change-age signal observed"
                   message="Missing, future, malformed or unzoned change timestamps cannot establish assignment age. Change recency does not prove use, continued need or an access review."
@@ -629,7 +643,7 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                   resultCount={filteredStale.length}
                   totalCount={staleRows.length}
                 />
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0} role="region" aria-label="Stale access records">
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -675,7 +689,7 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                 </div>
                 </>
               )}
-              <TablePagination
+              {!stale.error && !stale.loading && <TablePagination
                 total={stalePaging.total}
                 pageRows={stalePaging.pageRows.length}
                 page={stalePaging.page}
@@ -683,19 +697,24 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                 pageSize={stalePaging.pageSize}
                 onPageSizeChange={stalePaging.setPageSize}
                 label="stale assignments"
-              />
+              />}
             </div>
           </section>
 
-          <section className="card">
+          <section id="identity-non-human" className="card" aria-labelledby="identity-non-human-heading">
             <div className="card-header">
               <div>
-                <h2>Non-human identities</h2>
+                <h2 id="identity-non-human-heading">Non-human identities</h2>
                 <p>Service principals and managed identities holding access.</p>
               </div>
             </div>
             <div className="card-body">
-              {(nonHuman.data?.data.identities.length ?? 0) === 0 ? (
+              {nonHuman.error ? (
+                <StatePanel title="Non-human identities are unavailable" message={nonHuman.error.message} tone="error"
+                  action={<button className="button button-secondary" type="button" onClick={nonHuman.refetch}>Retry non-human identities</button>} />
+              ) : nonHuman.loading ? (
+                <StatePanel title="Reading non-human identities" message="Resolving service principals and managed identities in scope." tone="loading" />
+              ) : (nonHuman.data?.data.identities.length ?? 0) === 0 ? (
                 <StatePanel
                   title="No non-human identities observed"
                   message="No service principal or managed identity was found in the synced data for this scope."
@@ -708,7 +727,7 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                   resultCount={filteredNonHuman.length}
                   totalCount={nonHumanRows.length}
                 />
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0} role="region" aria-label="Non-human identity records">
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -742,7 +761,7 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                 </div>
                 </>
               )}
-              <TablePagination
+              {!nonHuman.error && !nonHuman.loading && <TablePagination
                 total={nonHumanPaging.total}
                 pageRows={nonHumanPaging.pageRows.length}
                 page={nonHumanPaging.page}
@@ -750,14 +769,14 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                 pageSize={nonHumanPaging.pageSize}
                 onPageSizeChange={nonHumanPaging.setPageSize}
                 label="identities"
-              />
+              />}
             </div>
           </section>
 
-          <section className="card">
+          <section id="identity-credentials" className="card" aria-labelledby="identity-credentials-heading">
             <div className="card-header">
               <div>
-                <h2>Service principal governance</h2>
+                <h2 id="identity-credentials-heading">Service principal governance</h2>
                 <p>
                   Credential owner, scope, rotation status, and expiry for every
                   onboarding connection.
@@ -808,7 +827,7 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                   resultCount={filteredSpn.length}
                   totalCount={spnRows.length}
                 />
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0} role="region" aria-label="Credential records">
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -885,6 +904,15 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
           </section>
         </>
       )}
+
+
+      <CopilotInsights
+        snapshot={identityCopilot.snapshot}
+        ready={!loading && !leastPrivilege.loading}
+        requestedScope={identityCopilot.requestedScope}
+        contextLabel="Access governance"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

@@ -21,6 +21,7 @@ import { buildConnectionsCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { scopeToSearchParams } from "@/lib/scope";
+import { handleTabListKeyDown } from "@/lib/tab-list";
 import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
 import { ApiError, type ConnectionCreateRequest, type ConnectionPreflightReport, type SubscriptionConnection, type SyncState } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
@@ -486,7 +487,7 @@ function ConnectionsPageContent() {
   });
 
   return (
-    <div className="page-container">
+    <div className="page-container operational-page connections-workspace">
       <PageHeader
         eyebrow="Data & integrations"
         title={
@@ -523,20 +524,23 @@ function ConnectionsPageContent() {
             )}
             {tab === "fabric-medallion" ? (
             <div className="page-header-actions-group">
-              <select 
-                name="subscriptionId"
-                className="form-control"
-                value={copilotConnection?.connection_id ?? ""}
-                onChange={(event) => continueWorkflow(tab, event.target.value)}
-                disabled={activeConnections.length === 0}
-              >
-                <option value="">Select a subscription</option>
-                {activeConnections.map((conn) => (
-                  <option key={conn.connection_id} value={conn.connection_id}>
-                    {conn.name} ({conn.subscription_id})
-                  </option>
-                ))}
-              </select>
+              <label className="form-field connection-scope-control">
+                <span>Subscription connection</span>
+                <select
+                  name="subscriptionId"
+                  className="form-control"
+                  value={copilotConnection?.connection_id ?? ""}
+                  onChange={(event) => continueWorkflow(tab, event.target.value)}
+                  disabled={activeConnections.length === 0}
+                >
+                  <option value="">Select a subscription</option>
+                  {activeConnections.map((conn) => (
+                    <option key={conn.connection_id} value={conn.connection_id}>
+                      {conn.name} ({conn.subscription_id})
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button
                 type="button"
                 className="button button-primary"
@@ -547,7 +551,7 @@ function ConnectionsPageContent() {
             </div>
           ) : tab === "ontology-automation" ? (
             <div className="page-header-actions-group">
-              <label className="ontology-connection-selector">
+              <label className="ontology-connection-selector connection-scope-control">
                 <span>Connection</span>
                 <select
                   name="ontologyConnectionId"
@@ -597,19 +601,7 @@ function ConnectionsPageContent() {
         }
       />
 
-      {copilotConnection ? <CopilotInsights
-        snapshot={connectionsCopilot.snapshot}
-        ready={!connections.loading}
-        requestedScope={connectionsCopilot.requestedScope}
-        contextLabel="Data & integrations"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      /> : <StatePanel
-        title="Select a connection for Copilot insights"
-        message="Choose an available connection above. Copilot will use the same connection scope as the readiness journey."
-        tone={connections.loading ? "loading" : "empty"}
-      />}
-
-      <div role="tablist" aria-label="Data & integrations views" className="tab-list">
+      <div role="tablist" aria-label="Data & integrations views" className="tab-list" onKeyDown={handleTabListKeyDown}>
         <button
           id="subscriptions-tab"
           type="button"
@@ -739,7 +731,13 @@ function ConnectionsPageContent() {
         ) : rows.length === 0 ? (
           <StatePanel title="No subscriptions onboarded" message="Select Add subscription connection to open the onboarding form and establish operational coverage." />
         ) : (
-          <div className="card connection-table">
+          <section className="card connection-table" aria-labelledby="connection-registry-heading">
+            <div className="card-header">
+              <div>
+                <h2 id="connection-registry-heading">Connection registry</h2>
+                <p>Review health, sync status, and business context before managing a connection.</p>
+              </div>
+            </div>
             <TableColumnFilters
               filters={filters}
               onReset={resetFilters}
@@ -794,7 +792,7 @@ function ConnectionsPageContent() {
               onPageSizeChange={rowsPaging.setPageSize}
               label="connections"
             />
-          </div>
+          </section>
         )}
       </section>}
 
@@ -846,6 +844,18 @@ function ConnectionsPageContent() {
           onRefresh={() => setOntologyRefreshKey((value) => value + 1)}
         />
       ))}
+
+      {copilotConnection ? <CopilotInsights
+        snapshot={connectionsCopilot.snapshot}
+        ready={!connections.loading}
+        requestedScope={connectionsCopilot.requestedScope}
+        contextLabel="Data & integrations"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      /> : <StatePanel
+        title="Select a connection for Copilot insights"
+        message="Choose an available connection above. Copilot will use the same connection scope as the readiness journey."
+        tone={connections.loading ? "loading" : "empty"}
+      />}
 
       <CopilotDrawer
         open={copilotOpen && Boolean(copilotConnection)}

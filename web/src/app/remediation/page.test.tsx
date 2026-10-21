@@ -237,6 +237,19 @@ function ChangeScope({ scope }: { scope: ScopeSelection }) {
 }
 
 describe("Governed remediation workflow", () => {
+  it("shows one compact empty workflow without a duplicate selection panel", async () => {
+    remediationPlans.mockResolvedValue(envelope({ plans: [] }));
+    const { container } = renderPage();
+
+    expect(await screen.findByText("No fixes generated")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Select a fix" })).not.toBeInTheDocument();
+    expect(container.querySelector(".remediation-workflow-main")).not.toBeInTheDocument();
+    expect(container.querySelector(".remediation-workflow-empty")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Remediation workflow" })).toBeInTheDocument();
+    expect(workflow).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     searchParams.current = new URLSearchParams();
@@ -1261,6 +1274,13 @@ describe("Governed remediation workflow", () => {
       await screen.findByRole("heading", { name: "Governed container review" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/No executable container action is available/)).toBeInTheDocument();
+    const insight = document.querySelector(".copilot-insights");
+    expect(document.querySelectorAll(".copilot-insights")).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: "Governed container review" })
+      .compareDocumentPosition(insight!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Ask Copilot about remediation" }));
+    expect(await screen.findByRole("dialog", { name: "Operations Copilot" })).toBeVisible();
+    await user.click(within(screen.getByRole("dialog", { name: "Operations Copilot" })).getByRole("button", { name: /^Close$/ }));
     await user.click(
       screen.getByRole("checkbox", {
         name: "I acknowledge this is a non-executable review handoff",

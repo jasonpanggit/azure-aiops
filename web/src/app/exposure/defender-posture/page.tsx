@@ -266,7 +266,7 @@ export default function DefenderPosturePage() {
   });
 
   return (
-    <div className="page-container exposure-defender-page">
+    <div className="page-container operational-page exposure-defender-page">
       <PageHeader
         eyebrow="Exposure management"
         title="Defender image exposure"
@@ -287,13 +287,6 @@ export default function DefenderPosturePage() {
         }
       />
 
-      <CopilotInsights
-        snapshot={defenderCopilot.snapshot}
-        ready={!section.loading && !facets.loading}
-        requestedScope={defenderCopilot.requestedScope}
-        contextLabel="Defender posture"
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
 
       <EvidenceBar
         evidence={section.envelope?.evidence ?? []}
@@ -326,7 +319,11 @@ export default function DefenderPosturePage() {
         />
       )}
 
-      <section className="card queue-card">
+      <nav className="section-nav" aria-label="Defender posture sections">
+        <a href="#defender-image-findings">Image findings</a>
+        {page && <a href="#defender-image-records">Finding records</a>}
+      </nav>
+      <section id="defender-image-findings" className="card queue-card">
         <div className="card-header">
           <div>
             <h2>Defender image findings</h2>
@@ -384,7 +381,7 @@ export default function DefenderPosturePage() {
               </div>
             )}
 
-            <div className="exposure-finding-list" aria-label="Defender image finding list">
+            <div id="defender-image-records" className="exposure-finding-list" aria-label="Defender image finding list">
               {rows.map((item) => (
                 <article className="exposure-finding-row" key={item.exposure_id}>
                   <div>
@@ -467,6 +464,14 @@ export default function DefenderPosturePage() {
       </section>
       {page && !section.restart.required && <PatchReview key={exposureQueryKey(loadedQuery)} query={loadedQuery}
         rows={rows} ready={!section.loading && !section.refreshing && !section.retained} imageOwner />}
+      <CopilotInsights
+        snapshot={defenderCopilot.snapshot}
+        ready={!section.loading && !facets.loading}
+        requestedScope={defenderCopilot.requestedScope}
+        contextLabel="Defender posture"
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
+
       <CopilotDrawer
         open={copilotOpen}
         onClose={() => setCopilotOpen(false)}

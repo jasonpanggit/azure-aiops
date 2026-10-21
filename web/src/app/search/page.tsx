@@ -166,13 +166,17 @@ function SearchPageContent() {
   }, [initialQuery, runSearch]);
 
   return (
-    <div className="page-container">
+    <div className="page-container operational-page search-workspace">
       <PageHeader
         eyebrow="Operational discovery"
         title="Find authorized records"
         description="Use a supported operational intent or an exact identity identifier to find scoped entities, understand how they were interpreted, and open the context you are authorized to see."
       />
-      <div className="search-hero card">
+      <nav className="section-nav" aria-label="Search sections">
+        <a href="#search-query">Search and saved views</a>
+        {!error && !loading && envelope && <a href="#search-results">Authorized records</a>}
+      </nav>
+      <div id="search-query" className="search-hero card">
         <div className="search-hero-form">
           <input
             className="form-control"
@@ -223,7 +227,7 @@ function SearchPageContent() {
       )}
       {!error && loading && <StatePanel title="Searching operational context" message="Applying the intent to the current scope." tone="loading" />}
       {!error && !loading && envelope && (
-        <section className="search-results">
+        <section id="search-results" className="search-results" aria-label="Authorized records">
           <div className="section-heading">
             <div>
               <h2>{envelope.pagination?.total ?? recordsFrom(envelope.data).length} matching authorized records</h2>
@@ -271,7 +275,7 @@ function SearchPageContent() {
                     <Link className="button button-secondary search-result-link" href={navigation.href}>{navigation.label} <span aria-hidden="true">→</span></Link>
                     <details className="search-result-raw">
                       <summary>View raw structured data</summary>
-                      <StructuredData value={result} />
+                      <div className="search-raw-data" tabIndex={0} role="region" aria-label={`Raw data for ${title}`}><StructuredData value={result} /></div>
                     </details>
                   </div>
                 </article>

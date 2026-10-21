@@ -280,12 +280,14 @@ function metricCompleteness(
 }
 
 function Section({
+  id,
   label,
   sourceName,
   itemLabel,
   state,
   children,
 }: {
+  id: string;
   label: string;
   sourceName: string;
   itemLabel: string;
@@ -293,7 +295,7 @@ function Section({
   children?: React.ReactNode;
 }) {
   return (
-    <section role="region" aria-label={`${label} section`}>
+    <section id={id} className="exposure-detail-section" role="region" aria-label={`${label} section`}>
       <div className="card-header"><h2>{label}</h2></div>
       <SourceSectionState sourceName={sourceName} itemLabel={itemLabel} state={state}>
         {children}
@@ -572,7 +574,7 @@ function KbDetailBody({ params }: { params: { id: string } }) {
   });
 
   return (
-    <div className="page-container exposure-detail-page">
+    <div className="page-container operational-page exposure-detail-page">
       <div className="breadcrumb">
         <Link href="/exposure">Exposure</Link>
         <span>/</span>
@@ -606,13 +608,6 @@ function KbDetailBody({ params }: { params: { id: string } }) {
         }
       />
 
-      <CopilotInsights
-        snapshot={kbCopilot.snapshot}
-        ready={!detail.loading}
-        requestedScope={kbCopilot.requestedScope}
-        contextLabel={data?.kb_id ?? kbId}
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
       <EvidenceBar
         evidence={common.envelope?.evidence ?? detail.envelope?.evidence}
         knowledgeVersion={common.envelope?.knowledge_version ?? detail.envelope?.knowledge_version}
@@ -643,6 +638,14 @@ function KbDetailBody({ params }: { params: { id: string } }) {
         </div>
       )}
 
+      {!(metadataState.status === "unavailable" && !data && rows.length === 0) && (
+        <nav className="section-nav" aria-label="KB detail sections">
+          <a href="#kb-metadata">KB metadata</a>
+          <a href="#kb-cves">Associated CVEs</a>
+          <a href="#kb-findings">Affected findings</a>
+        </nav>
+      )}
+
       <div className="exposure-detail-layout">
         <main className="exposure-detail-content">
           {metadataState.status === "unavailable" && !data && rows.length === 0 ? (
@@ -653,7 +656,7 @@ function KbDetailBody({ params }: { params: { id: string } }) {
             />
           ) : (
             <>
-              <section className="exposure-detail-summary" aria-labelledby="update-identity-heading">
+              <section id="kb-metadata" className="exposure-detail-summary" aria-labelledby="update-identity-heading">
                 <div className="card-header">
                   <div>
                     <p className="eyebrow">Update record</p>
@@ -720,6 +723,7 @@ function KbDetailBody({ params }: { params: { id: string } }) {
               </section>
 
               <Section
+                id="kb-cves"
                 label="Associated CVEs"
                 sourceName="MSRC CVE associations"
                 itemLabel="CVE associations"
@@ -794,6 +798,7 @@ function KbDetailBody({ params }: { params: { id: string } }) {
               <KbMaintenanceReview kbId={kbId} scope={findingState.scope} generation={data?.generation} />
               <KbObservations kbId={kbId} scope={findingState.scope} generation={data?.generation} />
               <Section
+                id="kb-findings"
                 label="Affected assets"
                 sourceName="Affected findings"
                 itemLabel="findings"
@@ -950,6 +955,14 @@ function KbDetailBody({ params }: { params: { id: string } }) {
           ]}
         />
       </div>
+
+      <CopilotInsights
+        snapshot={kbCopilot.snapshot}
+        ready={!detail.loading}
+        requestedScope={kbCopilot.requestedScope}
+        contextLabel={data?.kb_id ?? kbId}
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

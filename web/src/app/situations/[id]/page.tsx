@@ -32,6 +32,7 @@ function linkedEntities(situation: DurableSituation) {
   return situation.links ?? [];
 }
 
+/** Evidence-backed situation brief with read-only source and audit inspection. */
 export default function SituationDetailPage({ params }: { params: { id: string } }) {
   const { scope } = useScope();
   return <SituationDetailContent key={`${JSON.stringify(scope)}:${params.id}`} situationId={params.id} />;
@@ -182,7 +183,7 @@ function SituationDetailContent({ situationId }: { situationId: string }) {
   });
 
   return (
-    <div className="page-container investigation-page">
+    <div className="page-container investigation-page operational-page">
       <div className="breadcrumb">
         <Link href="/situations">Situations</Link><span>/</span><code>{record.situation_id}</code>
       </div>
@@ -207,13 +208,6 @@ function SituationDetailContent({ situationId }: { situationId: string }) {
         }
       />
 
-      <CopilotInsights
-        snapshot={situationCopilot.snapshot}
-        requestedScope={situationCopilot.requestedScope}
-        contextLabel={record.title || record.situation_id}
-        onOpenCopilot={() => setCopilotOpen(true)}
-      />
-
       <section className="card" aria-label="Situation identity">
         <div className="card-body command-grid">
           <span>Situation ID <code tabIndex={0}>{record.situation_id}</code></span>
@@ -231,7 +225,17 @@ function SituationDetailContent({ situationId }: { situationId: string }) {
         warnings={record.warnings}
       />
 
-      <section className="answer-grid" aria-label="Situation summary">
+      <nav className="section-nav" aria-label="Situation detail sections">
+        <a href="#situation-summary">Summary</a>
+        {conflicts.length > 0 && <a href="#conflicts-heading">Evidence conflicts</a>}
+        {record.unknowns.length > 0 && <a href="#unknown-heading">What is not known</a>}
+        <a href="#evidence-heading">Evidence by source</a>
+        <a href="#links-heading">Linked entities</a>
+        <a href="#timeline-heading">Evidence timeline</a>
+        <a href="#audit-heading">Audit history</a>
+      </nav>
+
+      <section id="situation-summary" className="answer-grid" aria-label="Situation summary">
         <article className="answer-card answer-critical">
           <h2>What failed?</h2>
           <strong>{record.evidence_state === "contradictory" ? "Evidence conflicts" : record.evidence_state}</strong>
@@ -251,26 +255,28 @@ function SituationDetailContent({ situationId }: { situationId: string }) {
 
       {conflicts.length > 0 && (
         <section className="card callout callout-warning" aria-labelledby="conflicts-heading">
-          <h2 id="conflicts-heading">Evidence conflicts</h2>
-          <p>Evidence conflicts — review the source records before drawing a conclusion.</p>
-          <p>{conflicts.length} contradictory source record{conflicts.length === 1 ? "" : "s"} remain visible.</p>
+          <div>
+            <h2 id="conflicts-heading">Evidence conflicts</h2>
+            <p>Evidence conflicts — review the source records before drawing a conclusion.</p>
+            <p>{conflicts.length} contradictory source record{conflicts.length === 1 ? "" : "s"} remain visible.</p>
+          </div>
         </section>
       )}
       {record.unknowns.length > 0 && (
         <section className="card" aria-labelledby="unknown-heading">
-          <h2 id="unknown-heading">What is not known</h2>
-          <ul>{record.unknowns.map((unknown) => <li key={unknown}>{unknown}</li>)}</ul>
+          <div className="card-header"><div><h2 id="unknown-heading">What is not known</h2><p>These gaps remain unresolved in the available evidence.</p></div></div>
+          <div className="card-body"><ul>{record.unknowns.map((unknown) => <li key={unknown}>{unknown}</li>)}</ul></div>
         </section>
       )}
 
       <section className="card" aria-labelledby="evidence-heading">
-        <div className="card-header"><div><h2 id="evidence-heading">Evidence by source</h2><p>Every row retains source identity, provenance, freshness, quality, and ingestion facts.</p></div></div>
+        <div className="card-header"><div><h2 id="evidence-heading">Evidence by source</h2><p>Compare source quality and freshness, then open a record for provenance and ingestion details.</p></div></div>
         <div className="card-body reasoning-stack">
           {Object.entries(grouped).map(([source, rows]) => (
             <section key={source} aria-labelledby={`source-${source}`}>
               <h3 id={`source-${source}`}>{source}</h3>
               {rows.map((item) => (
-                <div className="reasoning-card" key={item.evidence_id}>
+                <div className="reasoning-card situation-record" key={item.evidence_id}>
                   <strong>{item.assertion || item.source_object_id}</strong>
                   <span>{item.source_object_id} · {item.quality} · {item.availability} · {item.freshness} · {item.ingestion_status}</span>
                   <button type="button" className="button" onClick={(event) => { lastTrigger.current = event.currentTarget; setSelectedEvidence(item); }}>
@@ -285,7 +291,7 @@ function SituationDetailContent({ situationId }: { situationId: string }) {
       </section>
 
       <section className="card" aria-labelledby="links-heading">
-        <div className="card-header"><div><h2 id="links-heading">Linked entities</h2><p>Bounded links are labelled and retain unresolved quality.</p></div></div>
+        <div className="card-header"><div><h2 id="links-heading">Linked entities</h2><p>Review related entities and their reported relationship quality, including unresolved links.</p></div></div>
         <div className="card-body">
           <ul>{links.map(link => {
             const href = situationEntityHref(link, scope);
@@ -307,7 +313,7 @@ function SituationDetailContent({ situationId }: { situationId: string }) {
         <div className="card-header"><div><h2 id="audit-heading">Audit history</h2><p>Source events recorded by the service. Handover annotations have their own server-attributed revision history; “Save view locally” stores only navigation preferences.</p></div></div>
         <div className="card-body">
         {auditError ? <p>Audit history unavailable from the service</p> : audit?.data.length ? audit.data.map((event) => (
-            <article className="reasoning-card" key={event.event_id}>
+            <article className="reasoning-card situation-record" key={event.event_id}>
               <strong>Recorded event · {event.action}</strong>
               <span>Event ID: <code>{event.event_id}</code> · Actor: {event.actor} · {formatDateTime(event.timestamp)}</span>
               <span>Scope snapshot: {JSON.stringify(event.scope_snapshot)} · Evidence: {event.evidence_ids.join(", ") || "none"} · Sources: {event.source_references.join(", ") || "none"}</span>
@@ -331,6 +337,13 @@ function SituationDetailContent({ situationId }: { situationId: string }) {
           </div>
         </aside>
       )}
+
+      <CopilotInsights
+        snapshot={situationCopilot.snapshot}
+        requestedScope={situationCopilot.requestedScope}
+        contextLabel={record.title || record.situation_id}
+        onOpenCopilot={() => setCopilotOpen(true)}
+      />
 
       <CopilotDrawer
         open={copilotOpen}

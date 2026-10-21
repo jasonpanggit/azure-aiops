@@ -115,7 +115,7 @@ async function mockExposureApis(page: import("@playwright/test").Page) {
     if (url.pathname.endsWith("/vulnerabilities/risk-exceptions")) {
       return route.fulfill({ json: envelope([]) });
     }
-    if (url.pathname.endsWith("/remediation/plans")) {
+    if (url.pathname.endsWith("/remediation-plans")) {
       return route.fulfill({ json: envelope({ plans: [] }) });
     }
     return route.fulfill({ json: envelope({}) });
@@ -168,8 +168,12 @@ for (const viewport of [
       expect(layout.rowDisplay).toBe("table-row");
     }
 
-    const search = page.getByRole("searchbox", { name: "Search exposure" });
+    const search = page.getByRole("searchbox", { name: "Search patches and vulnerabilities" });
     await search.focus();
+    await page.keyboard.press("Tab");
+    await expect(
+      page.getByRole("checkbox", { name: "Include already-installed / resolved findings" }),
+    ).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(
       page.getByRole("combobox", { name: "Filter by Target kind" }),

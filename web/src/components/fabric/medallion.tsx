@@ -108,6 +108,7 @@ function FabricMedallionPanelContent({
 
   return (
     <section
+      className="fabric-medallion-workspace"
       id={asTabPanel ? "fabric-medallion-panel" : undefined}
       role={asTabPanel ? "tabpanel" : undefined}
       aria-labelledby={asTabPanel ? "fabric-medallion-tab" : undefined}
@@ -122,6 +123,16 @@ function FabricMedallionPanelContent({
           warnings={layerSummary.data.warnings}
         />
       )}
+
+      <nav className="section-nav" aria-label="Fabric sections">
+        <a href="#bronze-layer">Bronze layer</a>
+        <a href="#silver-layer">Silver layer</a>
+        <a href="#gold-layer">Gold layer</a>
+        <a href="#fabric-manifest">Publication lifecycle</a>
+        <a href="#fabric-governance">Governance gaps</a>
+        <a href="#fabric-ingestion">Ingestion history</a>
+        <a href="#fabric-readiness">Readiness</a>
+      </nav>
 
       <div className="metric-grid">
         <MetricCard label="Bronze tables" value={formatHealthCount(counts?.bronze)} detail="Raw dataset health and source freshness" tone={fabricMetricTone(counts?.bronze)} />
@@ -174,7 +185,17 @@ function FabricMedallionPanelContent({
       <FabricManifestPanel manifest={manifest} />
       <FabricGovernancePanel governance={governance} />
       <FabricIngestionPanel ingestionHistory={ingestionHistory} />
-      <FabricReadinessPanel capabilities={capabilities} />
+      <section id="fabric-readiness" className="card" aria-labelledby="fabric-readiness-heading">
+        <div className="card-header">
+          <div>
+            <h2 id="fabric-readiness-heading">Semantic model and Data Agent readiness</h2>
+            <p>Review deployment limits and grounding coverage before relying on these surfaces.</p>
+          </div>
+        </div>
+        <div className="card-body">
+          <FabricReadinessPanel capabilities={capabilities} />
+        </div>
+      </section>
     </section>
   );
 }
@@ -371,8 +392,8 @@ function FabricManifestPanel({ manifest }: { manifest: { data: Envelope<FabricMa
   const entries = manifest.data?.data.entries ?? [];
   const observation = manifest.data?.data.observation;
   return (
-    <section className="card">
-      <div className="card-header"><div><h2>Publication manifest & lifecycle</h2><p>Disposition for every published Fabric dataset contract.</p></div></div>
+    <section id="fabric-manifest" className="card" aria-labelledby="fabric-manifest-heading">
+      <div className="card-header"><div><h2 id="fabric-manifest-heading">Publication manifest & lifecycle</h2><p>Review active, dormant, retired, and blocked dataset publications.</p></div></div>
       <div className="card-body">
         {manifest.error ? (
           <StatePanel title="Publication manifest is unavailable" message={manifest.error.message} tone="error" />
@@ -415,8 +436,8 @@ function FabricGovernancePanel({ governance }: { governance: { data: Envelope<Fa
   const gaps = summary?.gaps ?? [];
   const observation = summary?.observation;
   return (
-    <section className="card">
-      <div className="card-header"><div><h2>Governance gaps</h2><p>Ownership, tag coverage, and referential-integrity blockers.</p></div></div>
+    <section id="fabric-governance" className="card" aria-labelledby="fabric-governance-heading">
+      <div className="card-header"><div><h2 id="fabric-governance-heading">Governance gaps</h2><p>Review missing ownership, tags, and relationship integrity blockers.</p></div></div>
       <div className="card-body">
         {governance.error ? (
           <StatePanel title="Governance gaps are unavailable" message={governance.error.message} tone="error" />
@@ -468,8 +489,8 @@ function unverifiedObservationCopy(
 function FabricIngestionPanel({ ingestionHistory }: { ingestionHistory: { data: Envelope<{ runs: FabricIngestionRun[] }> | null; error: Error | null; loading: boolean } }) {
   const runs = ingestionHistory.data?.data.runs ?? [];
   return (
-    <section className="card">
-      <div className="card-header"><div><h2>Ingestion history / failed runs</h2><p>Recent source and publication attempts with retry guidance.</p></div></div>
+    <section id="fabric-ingestion" className="card" aria-labelledby="fabric-ingestion-heading">
+      <div className="card-header"><div><h2 id="fabric-ingestion-heading">Ingestion history / failed runs</h2><p>Review recent source and publication attempts, failures, and retry guidance.</p></div></div>
       <div className="card-body">
         {ingestionHistory.error ? (
           <StatePanel title="Ingestion history is unavailable" message={ingestionHistory.error.message} tone="error" />
