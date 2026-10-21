@@ -447,6 +447,72 @@ def test_sql_mode_rejects_identical_target_head_from_unrelated_transaction(tmp_p
     assert delta.version(target) == 3
 
 
+@pytest.mark.parametrize("case", [
+    "late-success", "boundary-success", "before-next-observation",
+    "first-observation-overrun", "final-readback-overrun", "before-deadline",
+])
+def test_sql_propagation_deadline_is_acceptance_cutoff_even_on_success(
+    tmp_path, monkeypatch, case,
+):
+    request, observer, lake, delta, *_, sql = sql_fixture(tmp_path)
+    target = lake.table_uri("ontology", "container_image_exposure_entities")
+    original_query, original_read, original_write = sql.query, delta.read, delta.write
+    now, sleeps, writes = [0.0], [], []
+    post_queries = []
+    committed_observations = []
+
+    def query(statement, parameters=(), *, max_rows):
+        result = original_query(statement, parameters, max_rows=max_rows)
+        if delta.version(target) == 2:
+            post_queries.append(statement)
+            if parameters and parameters[1] == TABLE:
+                committed_observations.append(True)
+                if len(committed_observations) == 1 and case not in (
+                    "first-observation-overrun", "final-readback-overrun",
+                ):
+                    return [row for row in result if row["name"] not in cli._SCALARS]
+                if case == "boundary-success":
+                    now[0] = 120
+                elif case in ("late-success", "first-observation-overrun"):
+                    now[0] = 121
+                elif case == "before-deadline":
+                    now[0] = 119
+        return result
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] = 120 if case == "before-next-observation" else now[0] + seconds
+
+    def read(uri, **kwargs):
+        result = original_read(uri, **kwargs)
+        if case == "final-readback-overrun" and uri == target and kwargs.get("version") == 2:
+            now[0] = 121
+        return result
+
+    def write(uri, *args, **kwargs):
+        writes.append(uri)
+        return original_write(uri, *args, **kwargs)
+
+    sql.query = query
+    monkeypatch.setattr(delta, "read", read)
+    monkeypatch.setattr(delta, "write", write)
+    monkeypatch.setattr(migration.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(migration.time, "sleep", sleep)
+    if case == "before-deadline":
+        assert run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)["status"] == "completed"
+        assert delta.version(target) == 2
+    else:
+        with pytest.raises(RuntimeError, match="original table restored") as error:
+            run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)
+        assert "deadline exceeded" in str(error.value.__cause__)
+        assert delta.read(target, version=3) == delta.read(target, version=1)
+    if case == "before-next-observation":
+        assert len(committed_observations) == 1
+        assert sleeps == [5]
+    assert writes == [target]
+    assert post_queries
+
+
 @pytest.mark.parametrize("case", ["registry-collision", "registry-scope", "silver-scope", "malformed-registry"])
 def test_sql_mode_preserves_full_delta_authority_checks(tmp_path, monkeypatch, case):
     request, observer, lake, delta, *_, _sql = sql_fixture(tmp_path)

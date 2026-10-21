@@ -184,6 +184,10 @@ native definition, endpoint and all heads; every wait checks lease and heads.
 No write retry, DDL or payload truncation is introduced. The monotonic deadline
 failing explicitly invokes the existing guarded rollback/manual-reconciliation
 rules. Pre-write, no-op and unproved commits never enter this wait.
+The monotonic deadline is an acceptance cutoff: it is checked before each
+observation, after successful observations and around final readback. Success
+at or after the cutoff is rejected. Synchronous bounded reads are not forcibly
+cancelled; an in-flight read may finish after the cutoff but cannot qualify.
 The observer rechecks all four heads around SQL reads; the migration also
 retains its lease/CAS/transaction/rollback guards around each observation.
 Failed post-publication parity invokes the existing guarded restore, or reports

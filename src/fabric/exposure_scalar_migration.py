@@ -154,7 +154,13 @@ def migrate_exposure_scalars(
 
         def verify(version: int) -> None:
             deadline = time.monotonic() + SQL_PROPAGATION_TIMEOUT_SECONDS
+
+            def check_deadline() -> None:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("SQL publication propagation deadline exceeded")
+
             while True:
+                check_deadline()
                 try:
                     guard(target_version=version)
                 except PublicationPropagationPending as error:
@@ -172,12 +178,15 @@ def migrate_exposure_scalars(
                     time.sleep(min(SQL_PROPAGATION_POLL_SECONDS, remaining))
                     lock.assert_held()
                 else:
+                    check_deadline()
                     break
             if delta.describe(target, version=version)["schema"] != expected_schema:
                 raise RuntimeError("Migration readback schema mismatch")
             if migration_rows_hash(delta.read(target, version=version)) != plan.projected_rows_hash:
                 raise RuntimeError("Migration readback full-record mismatch")
+            check_deadline()
             guard(target_version=version)
+            check_deadline()
 
         if committed is not None:
             verify(current)
