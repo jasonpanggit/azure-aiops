@@ -16,6 +16,7 @@ import httpx
 from azure.core import MatchConditions
 from azure.identity import ManagedIdentityCredential
 from azure.storage.filedatalake import DataLakeServiceClient
+from deltalake import Schema
 
 from fabric.auth import build_delta_storage_options
 from fabric.exposure_scalar_migration import (
@@ -23,8 +24,12 @@ from fabric.exposure_scalar_migration import (
     ExposureScalarMigrationPlan,
     migrate_exposure_scalars,
     migration_rows_hash,
+    migration_transaction_digest,
+    project_exposure_scalars,
 )
 from fabric.fabric_client import FabricClient
+from fabric.schema_registry import schema_for
+from fabric.sql_endpoint import FabricSqlReader, SqlEndpoint
 from ontology.ontology_manager import OntologyManager
 from storage.delta_writer import DeltaWriter
 from storage.onelake_writer import OneLakeWriter
@@ -37,6 +42,27 @@ SOURCE_POINTER = "Files/aiops/current.json"
 CATALOG = "Files/ontology/metadata/catalog.json"
 _EVIDENCE_PREFIX = "Files/aiops/validation/native-scalar/"
 _OBSERVATION_COLUMNS = ("resource_id", "tenant_id", "subscription_id", "change_version")
+SQL_ASSURANCE = "sql-source-publication/v1"
+STRICT_ASSURANCE = "native-consumption/v1"
+_SQL_KEYS = (*_OBSERVATION_COLUMNS, "lifecycle_status")
+_SCALARS = ("registry_resource_id", "connection_id")
+
+
+def _assurance_mode(request: Mapping[str, Any]) -> str:
+    mode = request.get("assurance_mode", STRICT_ASSURANCE)
+    if mode not in (STRICT_ASSURANCE, SQL_ASSURANCE):
+        raise ValueError("Unknown assurance mode; no implicit downgrade is permitted")
+    return mode
+
+
+def _local_evidence(request: Mapping[str, Any], name: str) -> dict[str, Any]:
+    payload = request.get("reviewed_evidence", {}).get(name)
+    if (
+        not isinstance(payload, dict)
+        or document_hash(payload) != request.get(name + "_hash")
+    ):
+        raise ValueError("Reviewed local authority evidence missing or changed")
+    return {"payload": payload, "etag": document_hash(payload)}
 
 
 def document_hash(value: Mapping[str, Any]) -> str:
@@ -92,7 +118,18 @@ def validate_request(request: Mapping[str, Any], env: Mapping[str, str]) -> None
         f"abfss://{WORKSPACE}@onelake.dfs.fabric.microsoft.com/{LAKEHOUSE}/Files/aiops"
     ):
         raise ValueError("Caller requires the existing combined source root")
-    for name in ("consumption_evidence", "product_authority_evidence"):
+    mode = _assurance_mode(request)
+    if mode == SQL_ASSURANCE:
+        for name in ("sql_publication_evidence", "product_authority_evidence"):
+            _local_evidence(request, name)
+        endpoint = request.get("sql_endpoint", {})
+        if (
+            not re.fullmatch(r"[a-z0-9-]+\.datawarehouse\.fabric\.microsoft\.com", str(endpoint.get("server", "")))
+            or not re.fullmatch(r"[0-9a-f-]{36}", str(endpoint.get("database", "")))
+            or endpoint.get("schema") != "dbo"
+        ):
+            raise ValueError("SQL endpoint must be an explicitly reviewed Fabric endpoint")
+    for name in (() if mode == SQL_ASSURANCE else ("consumption_evidence", "product_authority_evidence")):
         path = request.get(name, "")
         if (
             not isinstance(path, str) or not path.startswith(_EVIDENCE_PREFIX)
@@ -124,16 +161,16 @@ def validate_identity_token(token: str, request: Mapping[str, Any]) -> None:
 
 
 class ExposureMigrationAuthorityObserver:
-    """Re-read source, completed products, native binding and consumption evidence.
+    """Re-read source/products/binding and the explicitly selected assurance.
 
-    No definition preview or GET-derived annotation is treated as consumption.
-    The approved evidence must contain actual differing native-query observations
-    matched to retained historical Delta content under the SAME definition.
+    Strict mode requires differing native-query observations. Explicit SQL mode
+    qualifies source publication only; neither mode infers native freshness.
     """
 
     def __init__(
         self, *, request: Mapping[str, Any], documents: ReadOnlyLakeDocuments,
         manager: OntologyManager, onelake: OneLakeWriter, delta: DeltaWriter,
+        sql_reader: FabricSqlReader | None = None,
     ) -> None:
         self.request = request
         self.plan = ExposureScalarMigrationPlan(**request["plan"])
@@ -141,9 +178,13 @@ class ExposureMigrationAuthorityObserver:
         self.manager = manager
         self.onelake = onelake
         self.delta = delta
+        self.sql_reader = sql_reader
+        self.mode = _assurance_mode(request)
 
     def __call__(self) -> str:
         """Return current authority fingerprint, or reject unqualified observations."""
+        if _assurance_mode(self.request) != self.mode:
+            raise ValueError("Reviewed assurance mode changed")
         pointer = self.documents.read(SOURCE_POINTER)
         generation = pointer["payload"].get("generation")
         if not isinstance(generation, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", generation):
@@ -197,14 +238,20 @@ class ExposureMigrationAuthorityObserver:
         definition = self.manager.get_definition(NATIVE_ITEM)
         definition_digest = document_hash(definition)
         self._binding(definition)
-        consumption = self._evidence("consumption_evidence")
-        self._consumption(consumption["payload"], definition_digest)
+        evidence_name = (
+            "sql_publication_evidence" if self.mode == SQL_ASSURANCE else "consumption_evidence"
+        )
+        consumption = self._evidence(evidence_name)
+        if self.mode == SQL_ASSURANCE:
+            self._sql_publication(consumption["payload"], definition_digest)
+        else:
+            self._consumption(consumption["payload"], definition_digest)
         if (
             self.documents.read(SOURCE_POINTER) != pointer
             or self.documents.read(manifest_path) != manifest
             or self.documents.read(CATALOG) != catalog
             or self._evidence("product_authority_evidence") != products
-            or self._evidence("consumption_evidence") != consumption
+            or self._evidence(evidence_name) != consumption
             or document_hash(self.manager.get_definition(NATIVE_ITEM)) != definition_digest
             or self.delta.version(marker_uri) != marker_version
             or self.delta.version(self.onelake.table_uri("ontology", "entities"))
@@ -222,10 +269,119 @@ class ExposureMigrationAuthorityObserver:
         })
 
     def _evidence(self, name: str) -> dict[str, Any]:
+        if self.mode == SQL_ASSURANCE:
+            return _local_evidence(self.request, name)
         result = self.documents.read(self.request[name])
         if document_hash(result["payload"]) != self.request[name + "_hash"]:
             raise ValueError("Reviewed authority evidence changed")
         return result
+
+    def _sql_publication(self, evidence: Mapping[str, Any], definition_hash: str) -> None:
+        expected = {
+            "kind": SQL_ASSURANCE, "workspace_id": WORKSPACE,
+            "lakehouse_id": LAKEHOUSE, "item_id": NATIVE_ITEM, "table": TABLE,
+            "definition_hash": definition_hash,
+            "versions": {name: getattr(self.plan, name + "_version") for name in (
+                "target", "canonical", "silver", "registry",
+            )},
+            "projected_rows_hash": self.plan.projected_rows_hash,
+            "sql_endpoint": self.request.get("sql_endpoint"),
+            "payload_projection": "varchar(8000);not-connection-authority",
+            "acceptance": "source-publication-only;not-native-freshness",
+        }
+        if evidence != expected or self.sql_reader is None:
+            raise ValueError("SQL source-publication evidence missing or mismatched")
+        endpoint = SqlEndpoint(**self.request["sql_endpoint"])
+        if self.sql_reader.endpoint != endpoint:
+            raise ValueError("SQL reader differs from reviewed endpoint")
+        self._sql_binding(endpoint)
+        tables = {
+            "target": ("ontology", "container_image_exposure_entities"),
+            "canonical": ("ontology", "entities"),
+            "silver": ("silver", "container_image_exposure"),
+            "registry": ("ontology", "container_registry_entities"),
+        }
+        uris = {name: self.onelake.table_uri(*parts) for name, parts in tables.items()}
+        heads = {name: self.delta.version(uri) for name, uri in uris.items()}
+        for name in ("canonical", "silver", "registry"):
+            if heads[name] != getattr(self.plan, name + "_version"):
+                raise RuntimeError("SQL assurance pinned source head changed")
+        previous = self.delta.read(uris["target"], version=self.plan.target_version)
+        canonical = self.delta.read(uris["canonical"], version=self.plan.canonical_version)
+        silver = self.delta.read(uris["silver"], version=self.plan.silver_version)
+        registries = self.delta.read(uris["registry"], version=self.plan.registry_version)
+        projected = project_exposure_scalars(previous, canonical, silver, registries)
+        if migration_rows_hash(projected) != self.plan.projected_rows_hash:
+            raise ValueError("SQL assurance full projection differs from review")
+        if heads["target"] is None:
+            raise ValueError("SQL assurance target is missing")
+        if heads["target"] != self.plan.target_version:
+            committed = self.delta.committed_transaction(
+                uris["target"], transaction_id=self.plan.transaction_id,
+                transaction_digest=migration_transaction_digest(
+                    ExposureScalarMigrationPlan(**self.request["plan"]), uris["target"],
+                ),
+            )
+            if committed is None or committed.version != heads["target"]:
+                raise RuntimeError("SQL assurance target head changed outside reviewed transaction")
+        current = self.delta.read(uris["target"], version=heads["target"])
+        if heads["target"] == self.plan.target_version:
+            if migration_rows_hash(current) != migration_rows_hash(previous):
+                raise ValueError("SQL assurance original records changed")
+        elif migration_rows_hash(current) != self.plan.projected_rows_hash:
+            raise ValueError("SQL assurance current target differs from full projection")
+        target_schema = self.delta.describe(uris["target"], version=heads["target"])["schema"]
+        supported = [
+            json.loads(Schema.from_arrow(schema_for(name)).to_json())
+            for name in ("ontology_entities", TABLE)
+        ]
+        if target_schema not in supported:
+            raise ValueError("SQL assurance unexpected Delta schema")
+        target_columns = tuple(field["name"] for field in target_schema["fields"])
+        self._sql_table(TABLE, current, target_columns, (*_SQL_KEYS, *(
+            _SCALARS if set(_SCALARS).issubset(target_columns) else ()
+        )))
+        registry_table = "ontology_container_registry_entities"
+        self._sql_table(
+            registry_table, registries, schema_for("ontology_entities").names, _SQL_KEYS,
+        )
+        self._sql_binding(endpoint)
+        if {name: self.delta.version(uri) for name, uri in uris.items()} != heads:
+            raise RuntimeError("SQL assurance heads changed during parity read")
+
+    def _sql_binding(self, endpoint: SqlEndpoint) -> None:
+        lakehouse = self.manager.client.request(
+            "GET", f"/workspaces/{WORKSPACE}/lakehouses/{LAKEHOUSE}",
+        )
+        properties = lakehouse.get("properties", {}).get("sqlEndpointProperties", {})
+        if (
+            lakehouse.get("id") != LAKEHOUSE
+            or properties.get("connectionString") != endpoint.server
+            or properties.get("id") != endpoint.database
+        ):
+            raise ValueError("Live Lakehouse SQL endpoint identity changed")
+
+    def _sql_table(self, table, rows, expected_columns, columns) -> None:
+        assert self.sql_reader is not None
+        schema = self.sql_reader.query(
+            "SELECT COLUMN_NAME AS name, DATA_TYPE AS type, "
+            "CHARACTER_MAXIMUM_LENGTH AS length FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+            ("dbo", table), max_rows=256,
+        )
+        if (
+            len(schema) != len(expected_columns)
+            or {row["name"] for row in schema} != set(expected_columns)
+            or any(row["type"] != "varchar" or row["length"] != 8000 for row in schema)
+        ):
+            raise ValueError("SQL scalar schema or varchar(8000) projection mismatch")
+        actual = self.sql_reader.query(
+            "SELECT " + ", ".join(f"[{name}]" for name in columns)
+            + f" FROM [dbo].[{table}]", max_rows=max(1, len(rows)),
+        )
+        expected = [{name: row[name] for name in columns} for row in rows]
+        if migration_rows_hash(actual) != migration_rows_hash(expected):
+            raise ValueError("SQL full scalar keyset/multiplicity/scope parity mismatch")
 
     @staticmethod
     def _binding(definition: dict[str, Any]) -> None:
@@ -311,11 +467,17 @@ def run_caller(
     if observed != request["plan"]["authority_fingerprint"]:
         raise RuntimeError("Current authority differs from reviewed migration plan")
     if not execute:
-        return {"status": "inspected", "authority_fingerprint": observed, "mutated": False}
-    return migrate_exposure_scalars(
+        return {
+            "status": "inspected", "authority_fingerprint": observed, "mutated": False,
+            "assurance_mode": observer.mode, "native_freshness_qualified": False,
+        }
+    result = migrate_exposure_scalars(
         onelake, delta, ExposureScalarMigrationPlan(**request["plan"]),
         observe_authority=observer,
     )
+    return {
+        **result, "assurance_mode": observer.mode, "native_freshness_qualified": False,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -354,6 +516,10 @@ def main(argv: list[str] | None = None) -> int:
                     request=request,
                     documents=ReadOnlyLakeDocuments(service.get_file_system_client(WORKSPACE)),
                     manager=manager, onelake=onelake, delta=delta,
+                    sql_reader=(
+                        FabricSqlReader(SqlEndpoint(**request["sql_endpoint"]), credential)
+                        if _assurance_mode(request) == SQL_ASSURANCE else None
+                    ),
                 )
                 result = run_caller(
                     request, observer=observer, onelake=onelake, delta=delta,

@@ -58,6 +58,13 @@ class ExposureScalarMigrationPlan:
     transaction_id: str
 
 
+def migration_transaction_digest(plan: ExposureScalarMigrationPlan, target: str) -> str:
+    """Bind durable transaction evidence to the exact reviewed plan and URI."""
+    return hashlib.sha256(json.dumps(
+        {**vars(plan), "table_uri": target}, sort_keys=True,
+    ).encode()).hexdigest()
+
+
 def migrate_exposure_scalars(
     onelake: OneLakeWriter,
     delta: DeltaWriter,
@@ -97,9 +104,7 @@ def migrate_exposure_scalars(
             raise ValueError("Migration requires reviewed SHA256 digests")
     uris = {name: onelake.table_uri(*parts) for name, parts in _TABLES.items()}
     target = uris["target"]
-    digest = hashlib.sha256(json.dumps(
-        {**vars(plan), "table_uri": target}, sort_keys=True,
-    ).encode()).hexdigest()
+    digest = migration_transaction_digest(plan, target)
     rollback_id = hashlib.sha256((plan.transaction_id + "-rollback").encode()).hexdigest()
 
     with onelake.sync_lock() as lock:
@@ -127,7 +132,7 @@ def migrate_exposure_scalars(
         guard(target_version=current)
         previous = delta.read(target, version=plan.target_version)
         before_description = delta.describe(target, version=plan.target_version)
-        expected = _project(
+        expected = project_exposure_scalars(
             previous,
             delta.read(uris["canonical"], version=plan.canonical_version),
             delta.read(uris["silver"], version=plan.silver_version),
@@ -248,7 +253,13 @@ def _connection(row: Mapping[str, Any]) -> str:
     return values[0]
 
 
-def _project(previous, canonical, silver, registries):
+def project_exposure_scalars(
+    previous: Sequence[Mapping[str, Any]],
+    canonical: Sequence[Mapping[str, Any]],
+    silver: Sequence[Mapping[str, Any]],
+    registries: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Validate full all-scope membership/authority and return additive records."""
     active = _index([
         row for row in canonical
         if row["entity_type"] == "ContainerImageExposure"

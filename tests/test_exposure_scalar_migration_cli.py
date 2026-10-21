@@ -184,6 +184,279 @@ def test_readonly_observer_and_finite_caller_then_transaction_replay(tmp_path):
     assert run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)["status"] == "replayed"
 
 
+def sql_fixture(tmp_path):
+    request, observer, lake, delta, docs, definition, marker = fixture(tmp_path)
+    request["assurance_mode"] = cli.SQL_ASSURANCE
+    request["sql_endpoint"] = {
+        "server": "reviewed.datawarehouse.fabric.microsoft.com",
+        "database": "33333333-3333-3333-3333-333333333333", "schema": "dbo",
+    }
+    request["reviewed_evidence"] = {
+        "product_authority_evidence": copy.deepcopy(docs[request["product_authority_evidence"]]),
+        "sql_publication_evidence": {
+            "kind": cli.SQL_ASSURANCE, "workspace_id": WORKSPACE, "lakehouse_id": LAKEHOUSE,
+            "item_id": NATIVE_ITEM, "table": TABLE, "definition_hash": document_hash(definition),
+            "versions": {name: request["plan"][name + "_version"]
+                         for name in ("target", "canonical", "silver", "registry")},
+            "projected_rows_hash": request["plan"]["projected_rows_hash"],
+            "sql_endpoint": request["sql_endpoint"],
+            "payload_projection": "varchar(8000);not-connection-authority",
+            "acceptance": "source-publication-only;not-native-freshness",
+        },
+    }
+    for name, payload in request["reviewed_evidence"].items():
+        request[name + "_hash"] = document_hash(payload)
+    # No remote evidence files or synthetic native-instance observations.
+    del docs[request["consumption_evidence"]]
+    del docs[request["product_authority_evidence"]]
+    for key in ("consumption_evidence", "consumption_evidence_hash", "product_authority_evidence"):
+        request.pop(key)
+    endpoint = cli.SqlEndpoint(**request["sql_endpoint"])
+
+    class Sql:
+        def __init__(self):
+            self.endpoint = endpoint
+            self.transform = lambda table, rows: rows
+            self.on_query = lambda: None
+
+        def query(self, statement, parameters=(), *, max_rows):
+            self.on_query()
+            table = parameters[1] if parameters else (
+                TABLE if f"[{TABLE}]" in statement else "ontology_container_registry_entities"
+            )
+            name = "container_image_exposure_entities" if table == TABLE else "container_registry_entities"
+            uri = lake.table_uri("ontology", name)
+            version = delta.version(uri)
+            if parameters:
+                fields = delta.describe(uri, version=version)["schema"]["fields"]
+                result = [{"name": field["name"], "type": "varchar", "length": 8000} for field in fields]
+            else:
+                columns = statement.split(" FROM ")[0].removeprefix("SELECT ").replace("[", "").replace("]", "").split(", ")
+                result = [{key: row[key] for key in columns} for row in delta.read(uri, version=version)]
+            result = self.transform(table, result)
+            if len(result) > max_rows:
+                raise ValueError("SQL row bound exceeded")
+            return result
+
+    sql = Sql()
+
+    def metadata(method, path):
+        assert method == "GET" and path == f"/workspaces/{WORKSPACE}/lakehouses/{LAKEHOUSE}"
+        return {"id": LAKEHOUSE, "properties": {"sqlEndpointProperties": {
+            "connectionString": endpoint.server, "id": endpoint.database,
+        }}}
+
+    observer.manager.client = SimpleNamespace(request=metadata)
+    observer = ExposureMigrationAuthorityObserver(
+        request=request, documents=observer.documents, manager=observer.manager,
+        onelake=lake, delta=delta, sql_reader=sql,
+    )
+    request["plan"]["authority_fingerprint"] = observer()
+    return request, observer, lake, delta, docs, definition, marker, sql
+
+
+def test_sql_mode_inspect_execute_replay_without_native_receipts_or_remote_evidence(tmp_path):
+    request, observer, lake, delta, *_, _sql = sql_fixture(tmp_path)
+    validate_request(request, {"AIOPS_IDENTITY_CLASS": "publisher", "AZURE_CLIENT_ID": request["publisher_client_id"]})
+    initial = observer()
+    assert run_caller(request, observer=observer, onelake=lake, delta=delta)["mutated"] is False
+    assert run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)["status"] == "completed"
+    assert observer() == initial
+    assert run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)["status"] == "replayed"
+
+
+@pytest.mark.parametrize("case", [
+    "missing-evidence", "wrong-hash", "wrong-definition", "wrong-endpoint",
+    "missing-reader", "schema", "missing-key", "same-count-wrong-key",
+    "wrong-scope", "registry-multiplicity", "wrong-scalars", "unknown-mode",
+    "silver-head", "registry-head", "source", "definition",
+])
+def test_sql_assurance_rejects_unqualified_inputs_without_writes(tmp_path, case):
+    request, observer, lake, delta, docs, definition, _, sql = sql_fixture(tmp_path)
+    target = lake.table_uri("ontology", "container_image_exposure_entities")
+    evidence = request["reviewed_evidence"]["sql_publication_evidence"]
+    if case == "missing-evidence":
+        request["reviewed_evidence"].pop("sql_publication_evidence")
+    elif case == "wrong-hash":
+        request["sql_publication_evidence_hash"] = "0" * 64
+    elif case in ("wrong-definition", "wrong-scalars"):
+        evidence["definition_hash" if case == "wrong-definition" else "projected_rows_hash"] = "0" * 64
+        request["sql_publication_evidence_hash"] = document_hash(evidence)
+    elif case == "wrong-endpoint":
+        sql.endpoint = cli.SqlEndpoint("foreign.datawarehouse.fabric.microsoft.com", sql.endpoint.database)
+    elif case == "missing-reader":
+        observer.sql_reader = None
+    elif case == "unknown-mode":
+        request["assurance_mode"] = "fallback"
+        with pytest.raises(ValueError, match="Unknown assurance"):
+            ExposureMigrationAuthorityObserver(
+                request=request, documents=observer.documents, manager=observer.manager,
+                onelake=lake, delta=delta, sql_reader=sql,
+            )
+        return
+    elif case in ("silver-head", "registry-head"):
+        name = "silver" if case == "silver-head" else "registry"
+        uri = lake.table_uri(*{
+            "silver": ("silver", "container_image_exposure"),
+            "registry": ("ontology", "container_registry_entities"),
+        }[name])
+        original = delta.version
+        delta.version = lambda value: original(value) + (1 if value == uri else 0)
+    elif case == "source":
+        docs[SOURCE_POINTER]["generation"] = "wrong"
+    elif case == "definition":
+        definition["parts"][0]["payload"] = base64.b64encode(b"wrong").decode()
+    else:
+        def transform(table, rows):
+            rows = copy.deepcopy(rows)
+            if case == "schema" and rows and "name" in rows[0]:
+                rows[0]["length"] = 4000
+            if rows and "resource_id" in rows[0]:
+                if case == "missing-key":
+                    rows = []
+                elif case == "same-count-wrong-key":
+                    rows[0]["resource_id"] = "invented"
+                elif case == "wrong-scope":
+                    rows[0]["tenant_id"] = "foreign"
+                elif case == "registry-multiplicity" and table != TABLE:
+                    rows.append(rows[0].copy())
+            return rows
+        sql.transform = transform
+    with pytest.raises((ValueError, RuntimeError, KeyError)):
+        run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)
+    assert delta.version(target) == 1
+
+
+def test_sql_postpublication_scalar_mismatch_restores_original_table(tmp_path):
+    request, observer, lake, delta, *_, sql = sql_fixture(tmp_path)
+    target = lake.table_uri("ontology", "container_image_exposure_entities")
+
+    def stale(table, rows):
+        if table == TABLE and rows and "connection_id" in rows[0]:
+            rows[0]["connection_id"] = "stale"
+        return rows
+
+    sql.transform = stale
+    with pytest.raises(RuntimeError, match="original table restored"):
+        run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)
+    assert delta.version(target) == 3
+    assert delta.read(target, version=3) == delta.read(target, version=1)
+    assert delta.describe(target, version=3)["schema"] == delta.describe(target, version=1)["schema"]
+
+
+def test_sql_mode_rejects_identical_target_head_from_unrelated_transaction(tmp_path):
+    request, observer, lake, delta, *_ = sql_fixture(tmp_path)
+    target = lake.table_uri("ontology", "container_image_exposure_entities")
+    rows = delta.read(target)
+    rows[0]["change_version"] = "unrelated"
+    delta.write(target, rows, mode="overwrite", schema=schema_for("ontology_entities"))
+    delta.restore(target, 1, expected_version=2, transaction_id="e" * 64, transaction_digest="f" * 64)
+    with pytest.raises(RuntimeError, match="outside reviewed transaction"):
+        run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)
+    assert delta.version(target) == 3
+
+
+@pytest.mark.parametrize("case", ["registry-collision", "registry-scope", "silver-scope", "malformed-registry"])
+def test_sql_mode_preserves_full_delta_authority_checks(tmp_path, monkeypatch, case):
+    request, observer, lake, delta, *_, _sql = sql_fixture(tmp_path)
+    original_read = delta.read
+    layer, name = (
+        ("silver", "container_image_exposure") if case == "silver-scope"
+        else ("ontology", "container_registry_entities")
+    )
+    uri = lake.table_uri(layer, name)
+
+    def read(value, **kwargs):
+        rows = original_read(value, **kwargs)
+        if value == uri:
+            if case == "registry-collision":
+                rows.append({**rows[0], "tenant_id": "other-tenant"})
+            elif case == "malformed-registry":
+                rows[0]["payload_json"] = '{"connection_id":'
+            else:
+                payload = json.loads(rows[0]["payload_json"])
+                payload["connection_id"] = "other-connection"
+                rows[0]["payload_json"] = json.dumps(payload)
+        return rows
+
+    monkeypatch.setattr(delta, "read", read)
+    with pytest.raises(ValueError):
+        run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)
+    assert delta.version(lake.table_uri("ontology", "container_image_exposure_entities")) == 1
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_sql_mode_old_empty_and_already_additive_noop(tmp_path, empty):
+    request, observer, lake, delta, _, _, marker, _ = sql_fixture(tmp_path)
+    target = lake.table_uri("ontology", "container_image_exposure_entities")
+    if empty:
+        for layer, name, schema in (
+            ("ontology", "container_image_exposure_entities", "ontology_entities"),
+            ("ontology", "entities", "ontology_entities"),
+            ("silver", "container_image_exposure", "silver_container_image_exposure"),
+            ("ontology", "container_registry_entities", "ontology_entities"),
+        ):
+            delta.write(lake.table_uri(layer, name), [], mode="overwrite", schema=schema_for(schema))
+        for name, parts in {
+            "target": ("ontology", "container_image_exposure_entities"),
+            "canonical": ("ontology", "entities"),
+            "silver": ("silver", "container_image_exposure"),
+            "registry": ("ontology", "container_registry_entities"),
+        }.items():
+            request["plan"][name + "_version"] = delta.version(lake.table_uri(*parts))
+        marker["ontology_entity_version"] = request["plan"]["canonical_version"]
+        request["plan"]["projected_rows_hash"] = migration_rows_hash([])
+        products = request["reviewed_evidence"]["product_authority_evidence"]
+        products["canonical_version"] = request["plan"]["canonical_version"]
+        request["product_authority_evidence_hash"] = document_hash(products)
+        evidence = request["reviewed_evidence"]["sql_publication_evidence"]
+        evidence["versions"] = {name: request["plan"][name + "_version"]
+                                for name in ("target", "canonical", "silver", "registry")}
+        evidence["projected_rows_hash"] = request["plan"]["projected_rows_hash"]
+        request["sql_publication_evidence_hash"] = document_hash(evidence)
+        observer.plan = ExposureScalarMigrationPlan(**request["plan"])
+        request["plan"]["authority_fingerprint"] = observer()
+    assert run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)["status"] == "completed"
+    request["plan"]["target_version"] = delta.version(target)
+    request["plan"]["transaction_id"] = "e" * 64
+    evidence = request["reviewed_evidence"]["sql_publication_evidence"]
+    evidence["versions"]["target"] = request["plan"]["target_version"]
+    request["sql_publication_evidence_hash"] = document_hash(evidence)
+    observer.plan = ExposureScalarMigrationPlan(**request["plan"])
+    request["plan"]["authority_fingerprint"] = observer()
+    before = delta.version(target)
+    assert run_caller(request, observer=observer, onelake=lake, delta=delta, execute=True)["status"] == "unchanged"
+    assert delta.version(target) == before
+
+
+@pytest.mark.parametrize("drift", ["definition", "source", "registry", "silver"])
+def test_sql_parity_rereads_detect_drift_during_live_query(tmp_path, drift):
+    _request, observer, lake, delta, docs, definition, _, sql = sql_fixture(tmp_path)
+    calls = []
+
+    def change():
+        calls.append(True)
+        if len(calls) != 1:
+            return
+        if drift == "definition":
+            definition["changed"] = True
+        elif drift == "source":
+            docs[SOURCE_POINTER]["changed"] = True
+        else:
+            uri = lake.table_uri(*{
+                "registry": ("ontology", "container_registry_entities"),
+                "silver": ("silver", "container_image_exposure"),
+            }[drift])
+            name = "ontology_entities" if drift == "registry" else "silver_container_image_exposure"
+            rows = delta.read(uri)
+            rows[0]["change_version"] = "intervening-writer"
+            delta.write(uri, rows, mode="overwrite", schema=schema_for(name))
+
+    sql.on_query = change
+    with pytest.raises((RuntimeError, ValueError), match="changed|parity mismatch"):
+        observer()
+
+
 @pytest.mark.parametrize("case", [
     "source", "catalog", "manifest", "definition", "marker", "consumption",
     "missing-consumption", "same-observation", "wrong-reader", "wrong-native-rows", "pinned-products",
@@ -359,10 +632,12 @@ def test_document_reader_rejects_changed_or_malformed_read(case):
 
 
 @pytest.mark.parametrize("execute", [False, True])
+@pytest.mark.parametrize("sql_mode", [False, True])
 def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
-    tmp_path, monkeypatch, capsys, execute,
+    tmp_path, monkeypatch, capsys, execute, sql_mode,
 ):
-    request, observer, lake, delta, *_ = fixture(tmp_path)
+    values = sql_fixture(tmp_path) if sql_mode else fixture(tmp_path)
+    request, observer, lake, delta, *_ = values
     calls = []
     requests = []
     real_http_client = httpx.Client
@@ -374,6 +649,13 @@ def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
     def respond(request):
         assert request.headers["x-ms-fabric-skill"] == "fabriciq-ontology-cli"
         requests.append((request.method, request.url.path))
+        if "/lakehouses/" in request.url.path:
+            endpoint = observer.sql_reader.endpoint
+            return httpx.Response(200, json={
+                "id": LAKEHOUSE, "properties": {"sqlEndpointProperties": {
+                    "connectionString": endpoint.server, "id": endpoint.database,
+                }},
+            })
         if request.url.path.endswith("/getDefinition"):
             return httpx.Response(202, headers={"Location": operation, "Retry-After": "0"})
         if request.url.path.endswith("/result"):
@@ -451,6 +733,12 @@ def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
     monkeypatch.setattr(cli, "FabricClient", fabric)
     monkeypatch.setattr(cli, "OntologyManager", manager)
     monkeypatch.setattr(cli, "ReadOnlyLakeDocuments", lambda fs: observer.documents)
+    if sql_mode:
+        def sql_reader(endpoint, credential):
+            assert endpoint == observer.sql_reader.endpoint
+            assert isinstance(credential, Credential)
+            return observer.sql_reader
+        monkeypatch.setattr(cli, "FabricSqlReader", sql_reader)
     monkeypatch.setattr(cli.httpx, "Client", http_client)
     monkeypatch.setenv("AZURE_CLIENT_ID", request["publisher_client_id"])
     monkeypatch.setenv("AIOPS_IDENTITY_CLASS", "publisher")
@@ -464,6 +752,9 @@ def test_cli_composes_explicit_identity_single_attempt_and_readonly_default(
     assert result["status"] == ("completed" if execute else "inspected")
     assert delta.version(lake.table_uri("ontology", "container_image_exposure_entities")) == (2 if execute else 1)
     assert calls == ["identity", "single-attempt"]
+    if sql_mode:
+        assert any("/lakehouses/" in path for _, path in requests)
+        requests = [(method, path) for method, path in requests if "/lakehouses/" not in path]
     assert len(requests) >= 6 and len(requests) % 3 == 0
     for offset in range(0, len(requests), 3):
         assert requests[offset] == (

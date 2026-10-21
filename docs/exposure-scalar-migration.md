@@ -16,10 +16,11 @@ The plan specifies the exact workspace/Lakehouse/schema, four existing Delta
 versions (target, canonical entities, Silver exposure and registry entities),
 SHA256 transaction ID, full projected-record hash and external authority proof
 fingerprint. The observer must re-read the approved source/product pointers,
-native binding and actual mutable-head consumption proof. A constant callback
+native binding and the explicitly reviewed assurance contract described below.
+The default strict mode requires actual mutable-head consumption proof. A constant callback
 is appropriate only in local tests, not production qualification. Neither an
 `ONT_PinnedAtUtc` annotation nor absence of an explicit version selector proves
-head consumption. Missing live proof blocks execution outside this composition.
+head consumption. Missing evidence for the selected mode blocks execution.
 
 Under the existing single-writer lease, the function checks all four heads and
 authority repeatedly, reads pinned full Delta records and requires exact
@@ -121,7 +122,7 @@ expression source and exact workspace/Lakehouse annotations and root; it never
 calls create/updateDefinition/preview/Act. Definition content contributes to
 the fingerprint. This checks binding, **not consumption**.
 
-**Current evidence-only blocker:** retained native TMDL has a table-name
+**Strict-mode evidence limitation:** retained native TMDL has a table-name
 DirectLake binding and `ONT_PinnedAtUtc`, but there are no independently retained
 two-version native result observations proving mutable-head consumption.
 No such evidence documents have been created, no observer run in production,
@@ -130,3 +131,58 @@ observations to exercise acceptance/rejection offline; they are not live proof.
 Missing or changed evidence makes the concrete caller fail before table writes.
 Execution-specific packaging/request delivery, current pinned plan and cloud
 review remain operational gates; this source does not change a Job template.
+
+## Explicit SQL-backed source-publication assurance
+
+User-approved `assurance_mode=sql-source-publication/v1` separates publication
+qualification from downstream native refresh. Omitting the mode retains
+`native-consumption/v1` and its original two-observation contract; unknown modes
+are rejected. There is no automatic fallback if native or SQL evidence is absent.
+SQL qualification is **not** native freshness, graph refresh, preview or Act
+acceptance. Native schema-addition preview/Act and any optional **existing**
+GraphModel refresh/readback remain separately reviewed post-source stages.
+
+This mode embeds two immutable reviewed JSON objects under `reviewed_evidence`
+in the SHA256-pinned local request: `product_authority_evidence` (the same
+completed-source/product contract above), and `sql_publication_evidence`.
+Each has its own `<name>_hash` using `document_hash`. No evidence file needs to
+be uploaded or created in OneLake. The caller never uploads the local request.
+The SQL publication object contains exactly:
+
+- `kind=sql-source-publication/v1`, the existing workspace/Lakehouse/native
+  `item_id`/table, and exact full `definition_hash`.
+- `versions` containing `target`, `canonical`, `silver`, `registry`, matching
+  the reviewed plan, plus `projected_rows_hash`.
+- `sql_endpoint` matching the request's explicit Fabric server, SQL endpoint
+  database UUID and `schema=dbo`.
+- `payload_projection=varchar(8000);not-connection-authority` and
+  `acceptance=source-publication-only;not-native-freshness`.
+
+Every observation rechecks the live Lakehouse GET metadata against that SQL
+endpoint and rereads the exact unchanged native definition/binding. A dedicated
+`FabricSqlReader` uses the same explicit publisher MI, bounded queries and
+timeouts, with no adapter/credential fallback. Completed activation/marker,
+catalog/product inventory and pinned canonical/Silver/registry heads are
+rechecked. Pinned full records are reprojected through the same migration
+membership/original-field/Silver/registry validation; the full projected hash
+must match review. Full registry JSON supplies connection authority, never
+SQL `JSON_VALUE` on the known truncated projection.
+
+Before publication, SQL must expose the exact current old or additive schema,
+all as the reviewed `varchar(8000)` projection. Full unfiltered target and
+registry scalar rows (resource/tenant/subscription/change-version/lifecycle,
+and target registry/connection fields whenever present) must match pinned
+Delta records, preserving duplicate multiplicity—not just row counts.
+After publication the same checks require the additive SQL schema and exact
+registry/connection values on every target row. SQL propagation delay or stale
+rows fail closed; no retry, sleep, DDL or payload truncation is introduced.
+The observer rechecks all four heads around SQL reads; the migration also
+retains its lease/CAS/transaction/rollback guards around each observation.
+Failed post-publication parity invokes the existing guarded restore, or reports
+why restoration is unsafe. Empty and already-additive tables use the same
+schema/keyset contract.
+
+Local review artifacts do not replace live reads, authorize execution, or
+assert that source publication refreshed native consumers. Approval of release
+stages does not waive a current pinned all-scope plan, exact-source review,
+read-only qualification, authoring preview confirmation or rollback boundaries.
