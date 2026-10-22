@@ -9,7 +9,7 @@ from dataclasses import replace
 import httpx
 
 from api.inventory_orchestration import run_inventory_refresh_all_connections
-from fabric.graph_refresh import GraphRefresher
+from fabric.graph_refresh import GraphRefresher, GraphRefreshError
 from onboarding.config import ConnectorConfig
 from onboarding.runtime import build_onboarding_service
 from storage.locking import RunLock
@@ -17,7 +17,7 @@ from storage.onelake_documents import OneLakeDocumentStore
 from storage.renewing_run import renewing_run_lock
 
 
-def _graph_refresher(state_root: str) -> GraphRefresher | None:
+def _graph_refresher(state_root: str, guard=lambda: None) -> GraphRefresher | None:
     workspace = os.environ.get("AIOPS_GRAPH_REFRESH_WORKSPACE_ID", "").strip()
     graph = os.environ.get("AIOPS_GRAPH_REFRESH_GRAPH_MODEL_ID", "").strip()
     if not workspace and not graph:
@@ -31,6 +31,7 @@ def _graph_refresher(state_root: str) -> GraphRefresher | None:
         workspace_id=workspace,
         graph_model_id=graph,
         state_store=OneLakeDocumentStore(state_root),
+        guard=guard,
         http_client=httpx.Client(),
     )
 
@@ -76,14 +77,19 @@ def main() -> int:
             and publication.get("status") == "completed"
         )
         graph_refresh: dict[str, object] | None = None
-        refresher = _graph_refresher(config["AIOPS_CONNECTION_HOME"]) if published else None
+        refresher = (
+            _graph_refresher(config["AIOPS_CONNECTION_HOME"], lock.assert_held)
+            if published
+            else None
+        )
         if refresher is not None:
             lock.assert_held()
             try:
                 if not publication.get("sourceRunId"):
-                    raise RuntimeError("graph_refresh_missing_source_run")
+                    raise GraphRefreshError("graph_refresh_missing_source_run")
                 graph_refresh = refresher.refresh(source_run_id=publication["sourceRunId"])
-            except RuntimeError as exc:
+                lock.assert_held()
+            except GraphRefreshError as exc:
                 graph_refresh = {"status": "failed", "reason": str(exc)}
     summary = {
         "status": result["status"],

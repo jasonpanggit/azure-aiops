@@ -10,10 +10,15 @@ from fabric.graph_refresh import (
     GraphRefresher,
     GraphRefreshError,
 )
+from storage.onelake_documents import DocumentConflictError
 
 WORKSPACE = "2c1fea36-104d-4c26-86db-12e09e432b41"
 GRAPH = "e4aa8669-82d3-4ef4-9241-47252fca23fd"
-LOCATION = f"https://api.fabric.microsoft.com/v1/workspaces/{WORKSPACE}/items/{GRAPH}/jobs/instances/j1"
+JOB = "7b0f4d58-1111-4222-8333-444455556666"
+LOCATION = (
+    f"https://api.fabric.microsoft.com/v1/workspaces/{WORKSPACE}/items/{GRAPH}"
+    f"/jobs/instances/{JOB}"
+)
 
 
 class Credential:
@@ -29,7 +34,8 @@ class Store:
         return dict(self.doc)
 
     def write(self, name, payload, *, expected_revision):
-        assert int(self.doc.get("revision") or 0) == expected_revision
+        if int(self.doc.get("revision") or 0) != expected_revision:
+            raise DocumentConflictError("conflict")
         self.doc = dict(payload)
 
 
@@ -45,7 +51,7 @@ def refresher(handler, store, **kwargs):
     )
 
 
-def flow(statuses, post_status=202):
+def flow(statuses, post_status=202, retry="1", extra=None):
     calls = []
     queue = list(statuses)
 
@@ -53,8 +59,8 @@ def flow(statuses, post_status=202):
         calls.append(request.method)
         if request.method == "POST":
             assert request.url.path.endswith("/jobs/refreshGraph/instances")
-            return httpx.Response(post_status, headers={"Location": LOCATION, "Retry-After": "1"})
-        return httpx.Response(200, json={"id": "j1", "status": queue.pop(0)})
+            return httpx.Response(post_status, headers={"Location": LOCATION, "Retry-After": retry})
+        return httpx.Response(200, json={"id": JOB, "status": queue.pop(0), **(extra or {})})
 
     return handler, calls
 
@@ -130,3 +136,152 @@ def test_invalid_ids_and_timeout():
     with pytest.raises(ValueError):
         GraphRefresher(Credential(), workspace_id=WORKSPACE, graph_model_id=GRAPH,
                        state_store=Store(), http_client=httpx.Client(), timeout_seconds=0)
+
+
+@pytest.mark.parametrize("code", [500, 502, 504, 408, 200])
+def test_gateway_or_unexpected_post_status_is_ambiguous(code):
+    store = Store()
+    handler, calls = flow([], post_status=code)
+    with pytest.raises(GraphRefreshAmbiguousError):
+        refresher(handler, store).refresh(source_run_id="a")
+    assert store.doc["phase"] == "requested"
+    assert calls == ["POST"]
+
+
+def test_full_retry_after_honored_and_not_polled_early():
+    store, slept = Store(), []
+    handler, _ = flow(["Completed"], retry="120")
+    GraphRefresher(
+        Credential(), workspace_id=WORKSPACE, graph_model_id=GRAPH, state_store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=slept.append,
+    ).refresh(source_run_id="a")
+    assert slept == [120.0]
+
+
+def test_retry_after_http_date_honored():
+    store, slept = Store(), []
+    handler, _ = flow(["Completed"], retry="Wed, 21 Oct 2026 07:30:00 GMT")
+    base = 1792567800.0 - 40  # 2026-10-21T07:30:00Z minus 40s
+    GraphRefresher(
+        Credential(), workspace_id=WORKSPACE, graph_model_id=GRAPH, state_store=store,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=slept.append, wall_clock=lambda: base,
+    ).refresh(source_run_id="a")
+    assert 39 <= slept[0] <= 41
+
+
+def test_delay_beyond_deadline_stops_without_polling():
+    store, slept = Store(), []
+    handler, calls = flow(["Completed"], retry="500")
+    with pytest.raises(GraphRefreshAmbiguousError):
+        GraphRefresher(
+            Credential(), workspace_id=WORKSPACE, graph_model_id=GRAPH, state_store=store,
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+            sleep=slept.append, timeout_seconds=100, clock=lambda: 0.0,
+        ).refresh(source_run_id="a")
+    assert slept == [] and calls == ["POST"]
+    assert store.doc["phase"] == "requested"
+
+
+def test_concurrent_contender_loses_cas_before_post():
+    store = Store()
+    handler, calls = flow(["Completed"])
+    r = refresher(handler, store)
+    real_read = store.read
+
+    def racing_read(name):
+        doc = real_read(name)
+        store.doc = {"phase": "completed", "revision": 1, "owner": "other"}
+        return doc
+
+    store.read = racing_read
+    with pytest.raises(GraphRefreshAmbiguousError):
+        r.refresh(source_run_id="a")
+    assert calls == []
+
+
+def test_terminal_record_never_overwrites_newer_state():
+    store = Store()
+    handler, _ = flow(["Completed"])
+
+    def handler_swap(request):
+        if request.method == "GET":
+            store.doc = {"phase": "completed", "revision": 9, "owner": "other"}
+        return handler(request)
+
+    with pytest.raises(GraphRefreshAmbiguousError):
+        refresher(handler_swap, store).refresh(source_run_id="a")
+    assert store.doc["owner"] == "other"
+
+
+@pytest.mark.parametrize("extra", [{"failureReason": {"message": "x"}}])
+def test_completed_with_failure_reason_not_success(extra):
+    store = Store()
+    handler, _ = flow(["Completed"], extra=extra)
+    with pytest.raises(GraphRefreshAmbiguousError):
+        refresher(handler, store).refresh(source_run_id="a")
+    assert store.doc["phase"] == "requested"
+
+
+def test_job_id_mismatch_and_bad_location_rejected():
+    store = Store()
+
+    def wrong_id(request):
+        if request.method == "POST":
+            return httpx.Response(202, headers={"Location": LOCATION})
+        return httpx.Response(200, json={"id": "00000000-0000-4000-8000-000000000000",
+                                         "status": "Completed"})
+
+    with pytest.raises(GraphRefreshAmbiguousError):
+        refresher(wrong_id, store).refresh(source_run_id="a")
+    store2 = Store()
+
+    def other_graph(request):
+        return httpx.Response(202, headers={"Location": LOCATION.replace(GRAPH, WORKSPACE)})
+
+    with pytest.raises(GraphRefreshAmbiguousError):
+        refresher(other_graph, store2).refresh(source_run_id="a")
+
+
+def test_late_completion_after_deadline_not_success():
+    store, now = Store(), [0.0]
+    inner, _ = flow(["Completed"])
+
+    def handler(request):
+        if request.method == "GET":
+            now[0] = 1000.0
+        return inner(request)
+
+    with pytest.raises(GraphRefreshAmbiguousError):
+        refresher(handler, store, timeout_seconds=600, clock=lambda: now[0]).refresh(
+            source_run_id="a"
+        )
+    assert store.doc["phase"] == "requested"
+
+
+def test_guard_runs_before_post_and_each_record_and_blocks_on_loss():
+    store = Store()
+    handler, calls = flow(["Completed"])
+    seen = []
+
+    def guard():
+        seen.append(len(calls))
+        if len(calls) == 0 and len(seen) > 1:
+            raise RuntimeError("lease lost")
+
+    with pytest.raises(RuntimeError, match="lease lost"):
+        refresher(handler, store, guard=guard).refresh(source_run_id="a")
+    assert calls == []
+
+    store2, n = Store(), {"v": 0}
+    handler2, calls2 = flow(["Completed"])
+
+    def guard2():
+        n["v"] += 1
+        if calls2 == ["POST", "GET"]:
+            raise RuntimeError("lease lost")
+
+    with pytest.raises(RuntimeError, match="lease lost"):
+        refresher(handler2, store2, guard=guard2).refresh(source_run_id="a")
+    assert store2.doc["phase"] == "requested"

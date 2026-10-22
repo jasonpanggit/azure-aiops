@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from fabric.graph_refresh import GraphRefreshError
 from intelligence.inventory import publication_cli
 
 
@@ -141,7 +142,7 @@ class _Refresher:
     ("status", "publication_status", "outcome", "code", "calls"),
     [
         ("completed", "completed", {"status": "Completed"}, 0, ["activation-1"]),
-        ("completed", "completed", RuntimeError("graph_refresh_failed"), 1, ["activation-1"]),
+        ("completed", "completed", GraphRefreshError("graph_refresh_failed"), 1, ["activation-1"]),
         ("completed", "partial", {"status": "Completed"}, 1, []),
         ("failed", "completed", {"status": "Completed"}, 1, []),
     ],
@@ -151,7 +152,7 @@ def test_refresh_chained_only_after_verified_publication(
 ):
     _chain_setup(monkeypatch, tmp_path, status, publication_status)
     refresher = _Refresher(outcome)
-    monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root: refresher)
+    monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root, _guard=None: refresher)
     assert publication_cli.main() == code
     assert refresher.calls == calls
 
@@ -159,7 +160,7 @@ def test_refresh_chained_only_after_verified_publication(
 def test_refresh_requires_source_run_id(monkeypatch, tmp_path):
     _chain_setup(monkeypatch, tmp_path, "completed", "completed", source=None)
     refresher = _Refresher({"status": "Completed"})
-    monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root: refresher)
+    monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root, _guard=None: refresher)
     assert publication_cli.main() == 1
     assert refresher.calls == []
 
@@ -171,3 +172,33 @@ def test_graph_refresher_env_is_all_or_nothing(monkeypatch):
     monkeypatch.setenv("AIOPS_GRAPH_REFRESH_WORKSPACE_ID", "2c1fea36-104d-4c26-86db-12e09e432b41")
     with pytest.raises(ValueError):
         publication_cli._graph_refresher("abfss://w/r")
+
+
+def test_lease_loss_after_refresh_is_not_success(monkeypatch, tmp_path):
+    _chain_setup(monkeypatch, tmp_path, "completed", "completed")
+    refresher = _Refresher({"status": "Completed"})
+    monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root, _guard=None: refresher)
+
+    class Lost(RuntimeError):
+        pass
+
+    real = publication_cli.RunLock.assert_held
+    calls = {"n": 0}
+
+    def held(self):
+        calls["n"] += 1
+        if refresher.calls:
+            raise Lost("lease lost")
+        return real(self)
+
+    monkeypatch.setattr(publication_cli.RunLock, "assert_held", held)
+    with pytest.raises(Lost):
+        publication_cli.main()
+
+
+def test_non_refresh_runtime_error_is_not_swallowed(monkeypatch, tmp_path):
+    _chain_setup(monkeypatch, tmp_path, "completed", "completed")
+    refresher = _Refresher(RuntimeError("private-storage-detail"))
+    monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root, _guard=None: refresher)
+    with pytest.raises(RuntimeError, match="private-storage-detail"):
+        publication_cli.main()
