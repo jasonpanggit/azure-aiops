@@ -69,6 +69,16 @@ from .dataset_mapper import (
     temporal_products_from_legacy,
 )
 from .lakehouse_manager import LakehouseManager
+from .native_registry_mapping import (
+    KEY_COLUMNS as NATIVE_MAPPING_KEYS,
+)
+from .native_registry_mapping import (
+    TABLE as NATIVE_MAPPING_TABLE,
+)
+from .native_registry_mapping import (
+    native_registry_mapping_schema,
+    project_native_registry_mapping,
+)
 from .publication_checkpoint import (
     PreparedPublicationCheckpoint,
     PublicationCheckpointError,
@@ -640,6 +650,7 @@ class FabricSyncService:
         sql_reader=None,
         publication_checkpoint_store: PublicationCheckpointStore | None = None,
         semantic_evolution_callback: Callable[..., None] | None = None,
+        native_registry_mapping: bool = False,
     ) -> None:
         # ``source_root`` is normally a local disk path (CLI/manual sync), but
         # the API-triggered refresh path (``inventory_orchestration.
@@ -678,6 +689,7 @@ class FabricSyncService:
         self.write_workers = write_workers
         self.topology_enabled = topology_enabled
         self.ontology_publisher = ontology_publisher
+        self.native_registry_mapping = native_registry_mapping
         self.ontology_id = ontology_id
         self.ontology_name = ontology_name
         self.patch_policies = patch_policies
@@ -1493,11 +1505,7 @@ class FabricSyncService:
                         table_name,
                         rows,
                         mode=mode,
-                        key_columns=(
-                            ("event_id",)
-                            if table_name == "metadata_audit_events"
-                            else ("resource_id",)
-                        ),
+                        key_columns=self._key_columns_for_table(table_name),
                         partition_by=(
                             (
                                 *self.partitioning.columns_for(table_name),
@@ -1514,15 +1522,18 @@ class FabricSyncService:
                     table_uri,
                     rows,
                     mode=mode,
-                    key_columns=("event_id",)
-                    if table_name == "metadata_audit_events"
-                    else ("resource_id",),
+                    key_columns=self._key_columns_for_table(table_name),
                     partition_by=(
                         (*self.partitioning.columns_for(table_name), "ingestion_run_id")
                         if table_name == "silver_patch_snapshot_findings"
                         else self.partitioning.columns_for(table_name)
                     ),
-                    schema=schema_for(table_name),
+                    schema=self._schema_for_table(table_name),
+                    **(
+                        {"required_columns": NATIVE_MAPPING_KEYS}
+                        if self._native_mapping_active(table_name)
+                        else {}
+                    ),
                     append_replay_columns=self._APPEND_REPLAY_COLUMNS.get(
                         table_name,
                         (),
@@ -1552,6 +1563,10 @@ class FabricSyncService:
                 patch_barrier_present=patch_barrier_present,
                 patch_tables=self._PATCH_PUBLICATION_TABLES,
                 barrier_table=self._PATCH_PUBLICATION_BARRIER,
+            )
+            publish_items = self._native_mapping_publish_items(
+                publish_items,
+                datasets,
             )
             _LOGGER.info(
                 "Preparing Fabric publish: %d datasets (%d non-empty, %d empty skipped)",
@@ -3961,6 +3976,46 @@ class FabricSyncService:
                 target=shortcut.target,
                 conflict_policy=shortcut.conflict_policy,
             )
+
+    def _native_mapping_active(self, table_name: str) -> bool:
+        return self.native_registry_mapping and table_name == NATIVE_MAPPING_TABLE
+
+    def _schema_for_table(self, table_name: str) -> pa.Schema:
+        if self._native_mapping_active(table_name):
+            return native_registry_mapping_schema()
+        return schema_for(table_name)
+
+    def _key_columns_for_table(self, table_name: str) -> tuple[str, ...]:
+        if self._native_mapping_active(table_name):
+            return NATIVE_MAPPING_KEYS
+        if table_name == "metadata_audit_events":
+            return ("event_id",)
+        return ("resource_id",)
+
+    def _native_mapping_publish_items(
+        self,
+        publish_items: list[tuple[str, list[dict[str, Any]]]],
+        datasets: Mapping[str, list[dict[str, Any]]],
+    ) -> list[tuple[str, list[dict[str, Any]]]]:
+        """Swap the generic exposes rows for native pairs at the write boundary.
+
+        Validation, checkpoints and the aggregate relationship table keep the
+        full rows; projection failures abort before any table write.
+        """
+        if not self.native_registry_mapping:
+            return publish_items
+        products = (
+            NATIVE_MAPPING_TABLE,
+            ontology_entity_table("ContainerImageExposure"),
+            ontology_entity_table("ContainerRegistry"),
+        )
+        if any(name not in datasets for name in products):
+            raise ValueError("Native registry mapping missing typed product")
+        pairs = project_native_registry_mapping(*(datasets[name] for name in products))
+        return [
+            (name, pairs if name == NATIVE_MAPPING_TABLE else rows)
+            for name, rows in publish_items
+        ]
 
     def _write_mode_for_table(self, table_name: str) -> DeltaWriteMode:
         if (

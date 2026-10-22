@@ -107,6 +107,19 @@ rejecting native TMDL targets before any write; reproducing the supported
 native mapping-table rebind and Manage graph selection remains a separate,
 unqualified authoring step.
 
+`fabric.native_registry_mapping` provides a separate, pure publication-boundary
+projection for this fixed table's native two-column contract. Given complete
+active typed relationships, exposures and registries, it requires exact parity
+with explicit `registry_resource_id` bindings and same-tenant endpoints, rejects
+duplicate identities or pairs, and returns deterministic `subject_id` /
+`object_id` rows with a two-nullable-string-column Arrow schema. Explicit empty
+registry bindings produce no pair; missing or malformed bindings fail closed.
+It does not change the generic relationship schema or aggregate graph metadata.
+The helper alone does not activate publication: the caller must retain source
+scope, collapse guards, leases, version checks, transaction reconciliation and
+rollback, and hash the actual persisted pair payload. Empty output is not
+authority to clear a live table, and projection parity is not source freshness.
+
 ## Sources
 
 [1] Microsoft, “OneLake access APIs.” https://learn.microsoft.com/en-us/fabric/onelake/onelake-access-api
