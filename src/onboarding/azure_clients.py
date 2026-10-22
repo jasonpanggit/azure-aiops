@@ -89,6 +89,36 @@ class AzureMcpClient:
         return rows
 
 
+def _arg_continuation_token(payload: dict[str, Any], query_name: str) -> str | None:
+    token: str | None = None
+    for key in ("skip_token", "skipToken", "$skipToken"):
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise TypeError(f"ARG query '{query_name}' returned invalid continuation metadata")
+        if token is not None and token != value:
+            raise TypeError(f"ARG query '{query_name}' returned conflicting continuation metadata")
+        token = value
+
+    truncated = False
+    for key in ("resultTruncated", "result_truncated"):
+        if key not in payload:
+            continue
+        value = payload[key]
+        if isinstance(value, bool):
+            truncated = truncated or value
+        elif isinstance(value, str) and value in ("true", "false"):
+            truncated = truncated or value == "true"
+        else:
+            raise TypeError(f"ARG query '{query_name}' returned invalid truncation metadata")
+    if truncated and token is None:
+        raise RuntimeError(
+            f"ARG query '{query_name}' paging is truncated without a usable continuation token"
+        )
+    return token
+
+
 class AzureCliArgClient:
     """ARG query fallback because Azure MCP has no arbitrary ARG query tool."""
 
@@ -151,12 +181,7 @@ class AzureCliArgClient:
             if any(not isinstance(item, dict) for item in page):
                 raise TypeError(f"ARG query '{spec.name}' returned an invalid page row")
             rows.extend(page)
-            raw_token = (
-                (payload or {}).get("skip_token")
-                or (payload or {}).get("skipToken")
-                or (payload or {}).get("$skipToken")
-            )
-            continuation_token = str(raw_token) if raw_token else None
+            continuation_token = _arg_continuation_token(payload, spec.name)
             if not continuation_token:
                 return PagedArgQueryResult(
                     rows=tuple(rows),
@@ -241,7 +266,7 @@ class AzureResourceGraphClient:
                 raise TypeError(f"ARG query '{spec.name}' returned an invalid page row")
             rows.extend(page)
             skip_token = (
-                payload.get("$skipToken") or payload.get("skipToken")
+                _arg_continuation_token(payload, spec.name)
                 if isinstance(payload, dict)
                 else None
             )
