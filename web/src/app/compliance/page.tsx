@@ -591,7 +591,7 @@ function ComplianceWorkspace() {
             <h2>Posture score</h2>
           </div>
           <div className="card-body risk-gauge-body">
-            {assessmentReady ? <RiskGauge score={postureScore} invert detail="Accepted exceptions excluded from active penalty" /> : <p>Posture score unavailable until policy and evidence load.</p>}
+            {assessmentReady ? <RiskGauge score={postureScore} invert label="Posture score" detail="Accepted exceptions excluded from active penalty" /> : <p>Posture score unavailable until policy and evidence load.</p>}
           </div>
         </section>
         <section className="metric-grid compliance-metrics">

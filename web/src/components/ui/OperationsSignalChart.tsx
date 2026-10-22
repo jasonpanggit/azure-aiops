@@ -21,7 +21,7 @@ export function OperationsSignalChart({ signals }: { signals: OperationsSignal[]
   }
 
   return (
-    <div className="operations-chart" role="img" aria-label="Operational signal counts">
+    <div className="operations-chart" role="img" aria-label={`Operational signal counts: ${signals.map(signal => `${signal.label} ${signal.value}`).join(", ")}`}>
       <div className="operations-chart-bars">
         {signals.map((signal) => (
           <div className="operations-chart-row" key={signal.label}>

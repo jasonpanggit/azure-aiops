@@ -170,6 +170,60 @@ beforeEach(() => {
 });
 
 describe("FinOps currency normalization", () => {
+  it("uses isolated currency scales and filtered row totals instead of a mixed-currency denominator", async () => {
+    render(<FinOpsPage />);
+    const charts = await screen.findByRole("region", { name: "Identified annual savings by currency" });
+    expect(within(charts).getByRole("list", { name: "Identified annual savings in EUR" })).toHaveTextContent("200 EUR");
+    expect(within(charts).getByRole("list", { name: "Identified annual savings in USD" })).toHaveTextContent("100 USD");
+    expect(within(charts).queryByRole("img")).not.toBeInTheDocument();
+    expect(within(charts).getByText("EUR: 200 identified annually")).toBeVisible();
+    expect(within(charts).getByText("USD: 100 identified annually")).toBeVisible();
+    expect(within(charts).getByText(/1 unquantified or invalid amounts; 1 quantified amounts with unreported currency/)).toBeVisible();
+    expect(within(charts).getByText(/Each currency has its own scale/)).toBeVisible();
+    expect(within(charts).getByRole("link", { name: "Review filtered opportunity records" })).toHaveAttribute("href", "#cost-opportunities");
+    const records = screen.getByRole("region", { name: "Savings opportunities" });
+    fireEvent.change(within(records).getByRole("combobox", { name: "Filter by Impact" }), { target: { value: "Low" } });
+    expect(within(charts).queryByRole("list")).not.toBeInTheDocument();
+    expect(within(charts).getByText(/2 filtered returned opportunities/)).toBeVisible();
+    expect(within(records).getByText("Unreported currency", { exact: true })).toBeVisible();
+    expect(within(records).getByText("Unquantified recommendation", { exact: true })).toBeVisible();
+  });
+
+  it("retains every source and zero amounts without silently truncating beyond six", async () => {
+    services.finopsOpportunities.mockResolvedValueOnce(envelope({
+      count: 9,
+      opportunities: Array.from({ length: 9 }, (_, index) => ({
+        recommendation_id: `source-${index}`, resource_id: `/vm/${index}`,
+        problem: `Opportunity ${index}`, solution: "Review", impact: "Medium",
+        annual_savings: index === 0 ? 0 : index + 0.25,
+        currency: " usd ", savings_source: `source_${index}`, application: "App",
+      })),
+    }));
+    render(<FinOpsPage />);
+    const charts = await screen.findByRole("region", { name: "Identified annual savings by currency" });
+    const list = within(charts).getByRole("list", { name: "Identified annual savings in USD" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(9);
+    expect(within(list).getByText("0 USD")).toBeVisible();
+    expect(within(charts).getByText("USD: 38 identified annually")).toBeVisible();
+    expect(within(list).getAllByRole("listitem")[0]).toHaveTextContent("Source 88.25 USD");
+  });
+
+  it("does not turn invalid amounts into zero savings or erase their records", async () => {
+    services.finopsOpportunities.mockResolvedValueOnce(envelope({
+      count: 3,
+      opportunities: [-1, Number.NaN, Number.POSITIVE_INFINITY].map((amount, index) => ({
+        recommendation_id: `invalid-${index}`, resource_id: `/vm/invalid-${index}`,
+        problem: `Invalid amount ${index}`, solution: "Review", impact: "Medium",
+        annual_savings: amount, currency: "USD", savings_source: "azure_advisor", application: "App",
+      })),
+    }));
+    render(<FinOpsPage />);
+    const charts = await screen.findByRole("region", { name: "Identified annual savings by currency" });
+    expect(within(charts).queryByRole("list")).not.toBeInTheDocument();
+    expect(within(charts).getByText(/3 unquantified or invalid amounts/)).toBeVisible();
+    expect(screen.getByRole("region", { name: "Savings opportunity records" }).querySelectorAll("tbody tr")).toHaveLength(3);
+  });
+
   it("keeps mixed and unreported currencies separate instead of summing them", async () => {
     render(<FinOpsPage />);
 

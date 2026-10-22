@@ -4,7 +4,6 @@ import { useMemo, useState, type FormEvent } from "react";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CountBarChart } from "@/components/ui/CountBarChart";
-import { DonutChart } from "@/components/ui/DonutChart";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -254,24 +253,38 @@ export default function FinOpsPage() {
     { id: "impact", label: "Impact", getValues: (row) => row.impact || "unknown" },
     { id: "owner", label: "Owner", getValues: (row) => row.owner || row.business_service || row.subscription || "Unattributed" },
   ]);
-  const savingsByCategory = useMemo(() => {
-    const palette = ["var(--color-brand)", "#3ea3e0", "var(--color-success)", "var(--color-warning)", "var(--color-text-muted)"];
-    const totalsBySource = new Map<string, number>();
+  const savingsCharts = useMemo(() => {
+    const byCurrency = new Map<string, Map<string, number>>();
+    let unquantified = 0;
+    let unreportedCurrency = 0;
     for (const opportunity of filteredOpportunities) {
       const currencyCode = opportunity.currency.trim().toUpperCase();
       if (
-        opportunity.annual_savings === null ||
-        !/^[A-Z]{3}$/.test(currencyCode)
+        typeof opportunity.annual_savings !== "number" ||
+        !Number.isFinite(opportunity.annual_savings) ||
+        opportunity.annual_savings < 0
       ) {
+        unquantified += 1;
         continue;
       }
-      const key = `${titleize(opportunity.savings_source || "unknown")} (${currencyCode})`;
-      totalsBySource.set(key, (totalsBySource.get(key) ?? 0) + (opportunity.annual_savings ?? 0));
+      if (!/^[A-Z]{3}$/.test(currencyCode)) {
+        unreportedCurrency += 1;
+        continue;
+      }
+      const source = opportunity.savings_source || "unknown";
+      const totals = byCurrency.get(currencyCode) ?? new Map<string, number>();
+      totals.set(source, (totals.get(source) ?? 0) + opportunity.annual_savings);
+      byCurrency.set(currencyCode, totals);
     }
-    return Array.from(totalsBySource.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([label, value], index) => ({ label, value, color: palette[index % palette.length] }));
+    return {
+      unquantified, unreportedCurrency,
+      currencies: Array.from(byCurrency, ([code, totals]) => ({
+        code,
+        total: Array.from(totals.values()).reduce((sum, value) => sum + value, 0),
+        sources: Array.from(totals, ([id, value]) => ({ id, label: titleize(id), value }))
+          .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label)),
+      })).sort((a, b) => a.code.localeCompare(b.code)),
+    };
   }, [filteredOpportunities]);
   const {
     filteredRows: filteredWasteRows,
@@ -514,20 +527,28 @@ export default function FinOpsPage() {
             />
           </div>
 
-          {(savingsByCategory.length > 0 || wasteByType.length > 0) && (
+          {(filteredOpportunities.length > 0 || wasteByType.length > 0) && (
             <div className="card dashboard-charts-row">
-              {savingsByCategory.length > 0 && (
-                <div className="chart-card">
-                  <h3 className="chart-card-title">Savings by source and currency</h3>
-                  <DonutChart
-                    segments={savingsByCategory}
-                    centerValue={aggregateMoney(
-                      totals?.identified_annual_savings,
-                      currency,
-                    )}
-                    centerLabel="Identified"
-                  />
-                </div>
+              {filteredOpportunities.length > 0 && (
+                <section className="chart-card savings-currency-charts" aria-label="Identified annual savings by currency">
+                  <h3 className="chart-card-title">Identified annual savings by currency</h3>
+                  <p>{filteredOpportunities.length} filtered returned opportunities. Each currency has its own scale; totals cover these rows only, not the whole estate. All chartable sources are shown.</p>
+                  <p>Annual opportunities, not billed spend or realized savings. No foreign-exchange conversion is applied.</p>
+                  {savingsCharts.currencies.map(group => (
+                    <figure key={group.code}>
+                      <figcaption>{group.code}: {group.total.toLocaleString("en-US", { maximumFractionDigits: 20 })} identified annually</figcaption>
+                      <CountBarChart
+                        data={group.sources}
+                        ariaLabel={`Identified annual savings in ${group.code}`}
+                        formatValue={value => `${value.toLocaleString("en-US", { maximumFractionDigits: 20 })} ${group.code}`}
+                      />
+                    </figure>
+                  ))}
+                  {(savingsCharts.unquantified > 0 || savingsCharts.unreportedCurrency > 0) && (
+                    <p>{savingsCharts.unquantified} unquantified or invalid amounts; {savingsCharts.unreportedCurrency} quantified amounts with unreported currency. Excluded from charts, retained in the opportunity records.</p>
+                  )}
+                  <a href="#cost-opportunities">Review filtered opportunity records</a>
+                </section>
               )}
               {wasteByType.length > 0 && (
                 <div className="chart-card">
