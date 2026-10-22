@@ -27,6 +27,23 @@ environment variables) or one object containing both `workspace_id` and
 `graph_model_id` UUIDs. Refresh remains ordered after completed publication under
 the source lease; do not add an independent Fabric refresh schedule.
 
+The durable `graph-refresh/state.json` receipt is not a freshness or GQL
+queryability verdict. A valid accepted job is CAS-recorded with workspace,
+GraphModel, source generation and job instance ID **before** polling; its phase
+remains `requested` until a verified terminal result is saved. A timeout,
+transport failure or lost state ownership cannot be called a definitive job
+failure. The CLI reports these refresh outcomes as `ambiguous`, with
+`operator_review_required: true`, and exits nonzero even when publication
+completed. It never retries the POST or clears the intent automatically.
+Operator review must reconcile the recorded job against the exact target and
+source before permitting another refresh. An acceptance-record CAS conflict
+stops polling and never overwrites another owner's record.
+
+An accepted request adds a state revision before its terminal record: revision
+numbers are CAS tokens, not a fixed two-revisions-per-run counter. Requests
+rejected before acceptance need not have a job ID; an unresolved pre-acceptance
+intent can also lack one. Do not infer failure or rerun from that absence.
+
 The reviewed dev settings are in `environments/dev.native-ontology.tfvars`:
 F8, daily `30 14 * * *` UTC, immutable producer image, native pair mapping and
 the accepted GraphModel target. These preserve the approved live configuration,

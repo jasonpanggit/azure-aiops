@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from fabric.graph_refresh import GraphRefreshError
+from fabric.graph_refresh import GraphRefreshAmbiguousError, GraphRefreshError
 from intelligence.inventory import publication_cli
 
 
@@ -163,6 +163,28 @@ def test_refresh_requires_source_run_id(monkeypatch, tmp_path):
     monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root, _guard=None: refresher)
     assert publication_cli.main() == 1
     assert refresher.calls == []
+
+@pytest.mark.parametrize(
+    ("error", "status", "review"),
+    [
+        (GraphRefreshAmbiguousError("graph_refresh_poll_failure"), "ambiguous", True),
+        (GraphRefreshError("graph_refresh_failed"), "failed", False),
+    ],
+)
+def test_refresh_summary_distinguishes_ambiguous_outcome(
+    monkeypatch, capsys, tmp_path, error, status, review,
+):
+    import json
+
+    _chain_setup(monkeypatch, tmp_path, "completed", "completed")
+    refresher = _Refresher(error)
+    monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root, _guard=None: refresher)
+    assert publication_cli.main() == 1
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["publication_status"] == "completed"
+    assert summary["graph_refresh"]["status"] == status
+    assert summary["graph_refresh"]["operator_review_required"] is review
+    assert summary["graph_refresh"]["reason"] == str(error)
 
 
 def test_graph_refresher_env_is_all_or_nothing(monkeypatch):

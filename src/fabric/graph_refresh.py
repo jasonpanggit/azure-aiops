@@ -49,6 +49,8 @@ class GraphRefresher:
     the exact observed revision before the POST, and the terminal record only
     replaces that same record (same owner and revision). Any leftover
     "requested" state blocks later refreshes until an operator reviews it.
+    A validated accepted job identity is saved before polling; it remains
+    requested, not completed, if polling or the finite deadline fails.
     ``guard`` (e.g. the source lease check) runs before the POST, around every
     poll, and before every state record, and must raise when ownership is lost.
     """
@@ -100,7 +102,8 @@ class GraphRefresher:
         current = self._store.read(_STATE)
         if current.get("phase") == "requested":
             raise GraphRefreshAmbiguousError("graph_refresh_unresolved_intent")
-        started = {"sourceRunId": source_run_id, "graphModelId": self._graph}
+        started = {"sourceRunId": source_run_id, "graphModelId": self._graph,
+                   "workspaceId": self._workspace}
         self._revision = int(current.get("revision") or 0)
         self._commit({**started, "phase": "requested"}, expect_requested=False)
         try:
@@ -124,6 +127,8 @@ class GraphRefresher:
             )
         location = response.headers.get("Location", "")
         job_id = self._job_id(location)
+        started = {**started, "jobInstanceId": job_id}
+        self._commit({**started, "phase": "requested"})
         retry = self._retry_after(response)
         while True:
             self._guard()

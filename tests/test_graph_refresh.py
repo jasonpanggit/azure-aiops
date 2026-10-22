@@ -75,6 +75,98 @@ def test_success_polls_until_completed_and_persists_outcome():
     assert store.doc["sourceRunId"] == "activation-1"
     assert "private-token" not in str(store.doc)
 
+def test_accepted_job_is_durable_before_poll_failure_and_blocks_replay():
+    store = Store()
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        if request.method == "POST":
+            return httpx.Response(202, headers={"Location": LOCATION, "Retry-After": "1"})
+        assert store.doc["phase"] == "requested"
+        assert store.doc["jobInstanceId"] == JOB
+        assert store.doc["workspaceId"] == WORKSPACE
+        assert store.doc["sourceRunId"] == "activation-a"
+        raise httpx.ReadTimeout("private-provider-detail")
+
+    with pytest.raises(GraphRefreshAmbiguousError):
+        refresher(handler, store).refresh(source_run_id="activation-a")
+    assert store.doc["phase"] == "requested"
+    assert store.doc["jobInstanceId"] == JOB
+    assert store.doc["revision"] == 2
+    with pytest.raises(GraphRefreshAmbiguousError, match="unresolved_intent"):
+        refresher(handler, store).refresh(source_run_id="activation-b")
+    assert calls == ["POST", "GET"]
+
+
+def test_accepted_job_record_cas_conflict_prevents_poll_and_preserves_newer_owner():
+    store = Store()
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        store.doc = {"phase": "requested", "owner": "new-owner", "revision": 7}
+        return httpx.Response(202, headers={"Location": LOCATION})
+
+    with pytest.raises(GraphRefreshAmbiguousError, match="state_superseded"):
+        refresher(handler, store).refresh(source_run_id="activation-a")
+    assert calls == ["POST"]
+    assert store.doc["owner"] == "new-owner"
+    assert store.doc["revision"] == 7
+
+
+def test_lease_loss_after_acceptance_never_polls_or_writes_without_ownership():
+    store = Store()
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        return httpx.Response(202, headers={"Location": LOCATION})
+
+    def guard():
+        if calls:
+            raise RuntimeError("lease lost")
+
+    with pytest.raises(RuntimeError, match="lease lost"):
+        refresher(handler, store, guard=guard).refresh(source_run_id="activation-a")
+    assert calls == ["POST"]
+    assert store.doc["revision"] == 1
+    assert store.doc["phase"] == "requested"
+    assert "jobInstanceId" not in store.doc
+
+
+def test_accepted_state_cas_write_conflict_never_polls_or_overwrites():
+    store = Store()
+    calls = []
+    original_write = store.write
+
+    def write(name, payload, *, expected_revision):
+        if payload.get("jobInstanceId"):
+            store.doc = {"phase": "requested", "revision": 8, "owner": "other"}
+        original_write(name, payload, expected_revision=expected_revision)
+
+    store.write = write
+    handler, calls = flow(["Completed"])
+    with pytest.raises(GraphRefreshAmbiguousError, match="state_conflict"):
+        refresher(handler, store).refresh(source_run_id="activation-a")
+    assert calls == ["POST"]
+    assert store.doc == {"phase": "requested", "revision": 8, "owner": "other"}
+
+
+@pytest.mark.parametrize("status", ["Failed", "Cancelled", "Deduped", "Completed"])
+def test_terminal_receipt_retains_accepted_job_identity(status):
+    store = Store()
+    handler, calls = flow([status])
+    if status == "Completed":
+        refresher(handler, store).refresh(source_run_id="activation-a")
+    else:
+        with pytest.raises(GraphRefreshError):
+            refresher(handler, store).refresh(source_run_id="activation-a")
+    assert calls == ["POST", "GET"]
+    assert store.doc["jobInstanceId"] == JOB
+    assert store.doc["workspaceId"] == WORKSPACE
+    assert store.doc["revision"] == 3
+
 
 def test_failed_job_raises_and_records_failure():
     store = Store()
@@ -127,6 +219,8 @@ def test_untrusted_location_rejected():
 
     with pytest.raises(GraphRefreshAmbiguousError):
         refresher(handler, store).refresh(source_run_id="a")
+    assert store.doc["phase"] == "requested"
+    assert "jobInstanceId" not in store.doc
 
 
 def test_invalid_ids_and_timeout():
@@ -182,6 +276,7 @@ def test_delay_beyond_deadline_stops_without_polling():
         ).refresh(source_run_id="a")
     assert slept == [] and calls == ["POST"]
     assert store.doc["phase"] == "requested"
+    assert store.doc["jobInstanceId"] == JOB
 
 
 def test_concurrent_contender_loses_cas_before_post():
