@@ -149,6 +149,12 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await mockSources(page);
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/search?q=resources%20missing%20ownership");
+    await expect(page.getByRole("form", { name: "Find authorized records", exact: true })).toBeVisible();
+    await expect(page.locator(".search-suggestions button").first()).toBeVisible();
+    for (const suggestion of await page.locator(".search-suggestions button").all()) {
+      await expect(suggestion).toHaveClass(/button button-secondary/);
+      await expect(suggestion).toHaveCSS("min-height", width <= 820 ? "44px" : "40px");
+    }
     const records = page.getByRole("region", { name: "Authorized records", exact: true });
     await expect(records.getByRole("article")).toHaveCount(25);
     await expect(page.getByText(/The source result is truncated/)).toBeVisible();
@@ -194,7 +200,11 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await expect(page.getByRole("region", { name: "Evidence reconciliation", exact: true })).toContainText("Provider records disagree");
     await expect(page.getByRole("region", { name: "Deterministic synthesis", exact: true })).toContainText("Current vulnerability coverage remains unknown.");
     const sectionIds = await page.locator(".workspace-grid > section").evaluateAll((sections) => sections.map((section) => section.id));
-    expect(sectionIds).toEqual(["agent-synthesis", "agent-decisions", "agent-activity", "agent-reconciliation", "agent-evaluation", "agent-ledger"]);
+    expect(sectionIds).toEqual(["agent-reconciliation", "agent-synthesis", "agent-decisions", "agent-activity", "agent-evaluation", "agent-ledger"]);
+    expect(await page.getByRole("navigation", { name: "Agent investigation sections" }).getByRole("link")
+      .evaluateAll(links => links.map(link => link.getAttribute("href")))).toEqual([
+      "#agent-objective", ...sectionIds.map(id => `#${id}`),
+    ]);
     const owner = decisions.getByRole("textbox", { name: "Owner", exact: true });
     await expect(owner).toHaveCSS("min-height", width <= 820 ? "44px" : "40px");
     await owner.fill("Payments Ops");

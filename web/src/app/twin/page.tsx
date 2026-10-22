@@ -389,6 +389,8 @@ export default function OperationalTwinPage() {
         <section className="card">
           <div className="card-header"><div><h2>Copilot grounding context</h2><p>Time-aware questions agents can answer from the twin.</p></div></div>
           <div className="card-body">
+          <details className="source-section-details">
+          <summary>View suggested questions</summary>
           <div className="recommended-action-list">
             {[
               "Which business services are affected if this route changes?",
@@ -399,6 +401,7 @@ export default function OperationalTwinPage() {
               <span key={question}>{question}</span>
             ))}
           </div>
+          </details>
           </div>
         </section>
       </section>
@@ -409,7 +412,7 @@ export default function OperationalTwinPage() {
           <div className="card-body">
             <details className="twin-export-details" open={exportExpanded} onToggle={(event) => setExportExpanded(event.currentTarget.open)}>
               <summary>Inspect full twin export</summary>
-              <div className="twin-export-data" tabIndex={0} role="region" aria-label="Raw twin export"><StructuredData value={exported?.data ?? snapshot?.data ?? {}} /></div>
+              {exportExpanded && <div className="twin-export-data" tabIndex={0} role="region" aria-label="Raw twin export"><StructuredData value={exported?.data ?? snapshot?.data ?? {}} /></div>}
             </details>
           </div>
         </section>

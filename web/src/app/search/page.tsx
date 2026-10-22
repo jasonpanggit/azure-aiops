@@ -177,20 +177,28 @@ function SearchPageContent() {
         {!error && !loading && envelope && <a href="#search-results">Authorized records</a>}
       </nav>
       <div id="search-query" className="search-hero card">
-        <div className="search-hero-form">
+        <form className="search-hero-form" aria-label="Find authorized records" onSubmit={(event) => {
+          event.preventDefault();
+          navigateSearch(query, { entityType: "", source: "" });
+        }}>
           <input
             className="form-control"
             aria-label="Operational search intent"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => event.key === "Enter" && !event.nativeEvent.isComposing && navigateSearch(query, { entityType: "", source: "" })}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                navigateSearch(query, { entityType: "", source: "" });
+              }
+            }}
             maxLength={512}
             placeholder="Find production applications, failed patches, or missing ownership"
           />
-          <button type="button" className="button button-primary" onClick={() => navigateSearch(query, { entityType: "", source: "" })} disabled={loading || !query.trim()}>
+          <button type="submit" className="button button-primary" disabled={loading || !query.trim()}>
             {loading ? "Finding records…" : "Find authorized records"}
           </button>
-        </div>
+        </form>
         <p>Bookmark or share the submitted URL. Results are fetched again using the current authorized scope; the URL never grants access.</p>
         {capabilityError ? <StatePanel title="Search readiness is unavailable" message={capabilityError} tone="error" /> : !capabilities
           ? <p role="status">Checking search prerequisites...</p>
@@ -198,7 +206,7 @@ function SearchPageContent() {
             {(["live", "semantic"] as const).map(mode => <div key={mode} className="search-suggestions">
               <span>{mode === "live" ? "Live resource search" : "Semantic intents"}: {capabilities[mode].state}</span>
               {capabilities[mode].phrases.map(phrase => <button
-                type="button" key={phrase} disabled={!capabilities[mode].can_query}
+                className="button button-secondary" type="button" key={phrase} disabled={!capabilities[mode].can_query}
                 onClick={() => navigateSearch(phrase, { entityType: "", source: "" })}
               >{phrase}</button>)}
               <span>{capabilities[mode].prerequisite}</span>

@@ -203,10 +203,10 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
       <nav className="section-nav" aria-label="Agent investigation sections">
         <a href="#agent-objective">Objective and scope</a>
         {ledger && <>
+          <a href="#agent-reconciliation">Evidence reconciliation</a>
           <a href="#agent-synthesis">Final synthesis</a>
           <a href="#agent-decisions">Human decisions</a>
           <a href="#agent-activity">Agent activity</a>
-          <a href="#agent-reconciliation">Evidence reconciliation</a>
           <a href="#agent-evaluation">Evaluation</a>
           <a href="#agent-ledger">Task ledger</a>
         </>}
@@ -304,6 +304,22 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
           </section>
 
           <section className="workspace-grid">
+            <section id="agent-reconciliation" className="card" aria-labelledby="agent-reconciliation-heading">
+              <div className="card-header"><div><h2 id="agent-reconciliation-heading">Evidence reconciliation</h2><p>Conflicts, stale evidence, missing providers, and unsupported conclusions.</p></div></div>
+              <div className="card-body">
+                <div className="split-kpis">
+                  <MetricCard label="Evidence" value={ledger.data.reconciliation.evidence_count} detail="Cited evidence items" />
+                  <MetricCard label="Confidence" value={ledger.data.reconciliation.reconciled_confidence} detail="After reconciliation" />
+                </div>
+                <StructuredData value={{
+                  conflicts: ledger.data.reconciliation.conflicts,
+                  stale_evidence: ledger.data.reconciliation.stale_evidence,
+                  missing_providers: ledger.data.reconciliation.missing_providers,
+                  unsupported_conclusions: ledger.data.reconciliation.unsupported_conclusions,
+                }} />
+              </div>
+            </section>
+
             <section id="agent-synthesis" className="card" aria-labelledby="agent-synthesis-heading">
               <div className="card-header"><div><h2 id="agent-synthesis-heading">{deterministicDegraded ? "Deterministic synthesis" : "Final synthesis"}</h2><p>Citation-backed conclusion and recommended next plan.</p></div><StatusBadge label={ledger.data.synthesis.confidence} tone={statusTone(ledger.data.synthesis.confidence)} /></div>
               <div className="card-body recommended-action-list">
@@ -393,22 +409,6 @@ function AgentsWorkspace({ scope, ledgerId, jobId }: { scope: ScopeSelection; le
                     </ul>
                   </article>
                 ))}
-              </div>
-            </section>
-
-            <section id="agent-reconciliation" className="card" aria-labelledby="agent-reconciliation-heading">
-              <div className="card-header"><div><h2 id="agent-reconciliation-heading">Evidence reconciliation</h2><p>Conflicts, stale evidence, missing providers, and unsupported conclusions.</p></div></div>
-              <div className="card-body">
-                <div className="split-kpis">
-                  <MetricCard label="Evidence" value={ledger.data.reconciliation.evidence_count} detail="Cited evidence items" />
-                  <MetricCard label="Confidence" value={ledger.data.reconciliation.reconciled_confidence} detail="After reconciliation" />
-                </div>
-                <StructuredData value={{
-                  conflicts: ledger.data.reconciliation.conflicts,
-                  stale_evidence: ledger.data.reconciliation.stale_evidence,
-                  missing_providers: ledger.data.reconciliation.missing_providers,
-                  unsupported_conclusions: ledger.data.reconciliation.unsupported_conclusions,
-                }} />
               </div>
             </section>
 

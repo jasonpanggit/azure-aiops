@@ -59,6 +59,22 @@ describe("Scoped operational search", () => {
     expect(screen.queryByText("stale result")).not.toBeInTheDocument();
   });
 
+  it("uses shared suggestion controls and a named form without submitting IME composition", async () => {
+    render(<SearchPage />);
+    const suggestion = await screen.findByRole("button", { name: "show list of VMs" });
+    expect(suggestion).toHaveClass("button", "button-secondary");
+    const deferred = screen.getByRole("button", { name: "production applications" });
+    expect(deferred).toHaveClass("button", "button-secondary");
+    expect(deferred).toBeDisabled();
+    const input = screen.getByRole("textbox", { name: "Operational search intent" });
+    fireEvent.change(input, { target: { value: "show list of VMs" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(mocks.push).not.toHaveBeenCalled();
+    fireEvent.submit(screen.getByRole("form", { name: "Find authorized records" }));
+    expect(mocks.push).toHaveBeenCalledTimes(1);
+    expect(mocks.push).toHaveBeenCalledWith("/search?q=show+list+of+VMs", { scroll: false });
+  });
+
   it("reruns deep links on scope or URL changes and clears old evidence", async () => {
     mocks.query = "q=first";
     const view = render(<SearchPage />);
