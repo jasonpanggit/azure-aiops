@@ -80,6 +80,23 @@ credential. It does not prove entity/edge membership, source freshness, tenant
 isolation for other callers, automatic refresh or unattended ontology authoring.
 Those qualification and admission gates remain mandatory before recurrence.
 
+### Regenerated exposure-to-registry mapping
+
+Inventory dataset mapping emits
+`ontology_rel_exposes_container_image_exposure_container_registry` through
+the shared ontology relationship builder. Each row joins the exposure's
+`resource_id` (`subject_id`) to its explicitly declared `registryResourceId`
+or `registry_resource_id` (`object_id`). The target must already exist as a
+`ContainerRegistry` entity. Missing bindings, absent registries and targets of
+other types produce no edge; registry hostnames, image paths and generic
+`targetResourceId` fields are never used to infer the binding.
+
+The relationship participates in the authoritative vocabulary, aggregate
+ontology relationships, typed mapping table and normal graph validation.
+Stable identities and semantic versions survive ingestion retries. Source
+generation does not itself update a native definition or refresh its graph;
+publication and supported materialization remain separately governed.
+
 ## Sources
 
 [1] Microsoft, “OneLake access APIs.” https://learn.microsoft.com/en-us/fabric/onelake/onelake-access-api

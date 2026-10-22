@@ -530,6 +530,7 @@ ONTOLOGY_RELATIONSHIP_TYPES = (
     ("DefenderVulnerabilityFinding", "derivedFrom", "DefenderAssessment"),
     ("ContainerImageExposure", "impacts", "Resource"),
     ("Resource", "hasImageExposure", "ContainerImageExposure"),
+    ("ContainerImageExposure", "exposes", "ContainerRegistry"),
     *(
         ("VulnerabilityObservation", "affects", asset)
         for asset in ("Resource", "VirtualMachine", "ArcServer", "ImageDigest")

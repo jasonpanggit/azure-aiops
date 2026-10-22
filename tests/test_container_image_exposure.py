@@ -385,6 +385,15 @@ def test_normalizer_and_mapper_dual_write_granular_container_products(
     assert datasets["silver_container_image_exposure"], (
         "aggregate dual-write must remain available for rollback"
     )
+    edge_table = "ontology_rel_exposes_container_image_exposure_container_registry"
+    edges = datasets[edge_table]
+    assert len(edges) == 1
+    assert edges[0]["subject_id"] == (
+        datasets["ontology_container_image_exposure_entities"][0]["resource_id"]
+    )
+    assert edges[0]["object_id"] == REGISTRY.casefold()
+    assert edges[0] in datasets["ontology_relationships"]
+    assert {"subject_id", "object_id"} <= set(schema_for(edge_table).names)
 
     expected_fields = {
         "silver_container_registries": {"registry_id", "registry_resource_id"},
@@ -412,6 +421,10 @@ def test_normalizer_and_mapper_dual_write_granular_container_products(
         assert fields <= set(schema_for(table_name).names)
 
     remapped = InventoryDatasetMapper().load(snapshot, "fabric-run-2")
+    replay_edges = remapped[edge_table]
+    assert len(replay_edges) == 1
+    assert replay_edges[0]["resource_id"] == edges[0]["resource_id"]
+    assert replay_edges[0]["change_version"] == edges[0]["change_version"]
     assert (
         remapped["silver_container_vulnerability_observations"]
         == observations
