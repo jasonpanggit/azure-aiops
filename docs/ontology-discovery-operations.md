@@ -17,6 +17,28 @@ JSON configuration overrides baked configuration and derives replacement
 workspace/lakehouse/capacity IDs from resources. It contains no credentials.
 Malformed overrides fail closed rather than falling back to deleted resources.
 
+The inventory producer has independent opt-ins:
+`inventory_publication_image_digest` pins only this Job, while
+`inventory_publication_native_registry_mapping` selects the qualified two-column
+registry mapping and forces Ontology definition publication off for this Job.
+The API, coordinator and dedicated ontology publisher configurations are not
+changed. `inventory_publication_graph_refresh_target` is either null (no refresh
+environment variables) or one object containing both `workspace_id` and
+`graph_model_id` UUIDs. Refresh remains ordered after completed publication under
+the source lease; do not add an independent Fabric refresh schedule.
+
+The reviewed dev settings are in `environments/dev.native-ontology.tfvars`:
+F8, daily `30 14 * * *` UTC, immutable producer image, native pair mapping and
+the accepted GraphModel target. These preserve the approved live configuration,
+not a claim that recurrence, capacity sufficiency or production SLOs are proven.
+Generic defaults remain manual, with mapping and graph refresh disabled. A
+plain apply without the dev overlay can revert the accepted schedule and SKU.
+Always pass `-var-file=environments/dev.native-ontology.tfvars` **after** other
+dev variable files, inspect the complete plan and retain the immutable prior
+image/configuration. This source update does not authorize an apply, import,
+replacement, permission change or resource deletion. Do not apply a historical
+plan or default tfvars to the corrected tenant.
+
 Back up and checksum-migrate existing local connection state before switching
 the API roots. Run the job manually, wait for terminal success, verify both
 table families and inventory API readback, then enable a UTC cron through a

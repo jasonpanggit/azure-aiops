@@ -10,6 +10,58 @@ variable "inventory_publication_schedule" {
   default     = ""
 }
 
+variable "inventory_publication_image_digest" {
+  description = "Optional immutable API image digest for this producer only; empty preserves the discovery image selection."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = var.inventory_publication_image_digest == "" || can(regex("^sha256:[0-9a-f]{64}$", var.inventory_publication_image_digest))
+    error_message = "inventory_publication_image_digest must be empty or a sha256 digest."
+  }
+}
+
+variable "inventory_publication_native_registry_mapping" {
+  description = "Publish the qualified native registry pair table without enabling legacy Ontology definition writes."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "inventory_publication_graph_refresh_target" {
+  description = "Optional reviewed workspace and GraphModel UUIDs for the bounded post-publication refresh chain; null disables it."
+  type = object({
+    workspace_id   = string
+    graph_model_id = string
+  })
+  default = null
+
+  validation {
+    condition = var.inventory_publication_graph_refresh_target == null ? true : alltrue([
+      for id in [var.inventory_publication_graph_refresh_target.workspace_id, var.inventory_publication_graph_refresh_target.graph_model_id] :
+      can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))
+    ])
+    error_message = "inventory_publication_graph_refresh_target requires both workspace_id and graph_model_id UUIDs."
+  }
+}
+
+locals {
+  inventory_publication_image = var.inventory_publication_image_digest != "" ? "${local.registry_server}/${var.api_image_repository}@${var.inventory_publication_image_digest}" : local.ontology_discovery_image
+  inventory_publication_runtime_config = var.enable_fabric ? merge(local.fabric_publisher_runtime_config, {
+    table_schema = var.inventory_publication_native_registry_mapping ? "" : local.fabric_publisher_runtime_config.table_schema
+    ontology = merge(local.fabric_publisher_runtime_config.ontology, {
+      enabled                 = var.inventory_publication_native_registry_mapping ? false : local.fabric_publisher_runtime_config.ontology.enabled
+      ontology_id             = var.inventory_publication_native_registry_mapping ? "" : local.fabric_publisher_runtime_config.ontology.ontology_id
+      native_registry_mapping = var.inventory_publication_native_registry_mapping
+    })
+  }) : null
+  inventory_publication_graph_refresh_env = var.inventory_publication_graph_refresh_target == null ? {} : {
+    AIOPS_GRAPH_REFRESH_WORKSPACE_ID   = var.inventory_publication_graph_refresh_target.workspace_id
+    AIOPS_GRAPH_REFRESH_GRAPH_MODEL_ID = var.inventory_publication_graph_refresh_target.graph_model_id
+  }
+}
+
 resource "azurerm_role_assignment" "inventory_publisher_key_vault" {
   count = var.enable_fabric && var.enable_inventory_publication_job ? 1 : 0
 
@@ -70,7 +122,7 @@ resource "azurerm_container_app_job" "inventory_publication" {
   template {
     container {
       name    = "inventory-publication"
-      image   = local.ontology_discovery_image
+      image   = local.inventory_publication_image
       cpu     = 2
       memory  = "4Gi"
       command = ["python", "-m", "intelligence.inventory.publication_cli"]
@@ -101,11 +153,18 @@ resource "azurerm_container_app_job" "inventory_publication" {
       }
       env {
         name  = "AIOPS_FABRIC_CONFIG_JSON"
-        value = jsonencode({ fabric = local.fabric_publisher_runtime_config })
+        value = jsonencode({ fabric = local.inventory_publication_runtime_config })
       }
       env {
         name  = "AIOPS_IDENTITY_CLASS"
         value = "publisher"
+      }
+      dynamic "env" {
+        for_each = local.inventory_publication_graph_refresh_env
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
     }
   }
