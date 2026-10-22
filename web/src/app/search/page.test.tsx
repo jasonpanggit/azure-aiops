@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScopeSelection } from "@/lib/scope";
 
@@ -135,6 +135,64 @@ describe("Scoped operational search", () => {
     expect((await screen.findAllByText("current result")).length).toBeGreaterThan(0);
     expect(mocks.search).toHaveBeenCalledTimes(attempts + 1);
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it("retries the submitted page and filters without submitting or losing an edited draft", async () => {
+    mocks.scope = { subscription: ["sub-a"], environment: ["prod"] };
+    mocks.query = "q=review&entity_type=VirtualMachine&source=ARG&offset=25";
+    mocks.search.mockRejectedValueOnce(new Error("Provider unavailable"));
+    render(<SearchPage />);
+    await screen.findByText("Provider unavailable");
+    fireEvent.change(screen.getByRole("textbox", { name: "Operational search intent" }), { target: { value: "unsent draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Retry submitted search" }));
+    await screen.findAllByText("current result");
+    expect(mocks.search).toHaveBeenLastCalledWith("review", mocks.scope, {
+      offset: 25, limit: 25, entity_type: "VirtualMachine", source: "ARG",
+    });
+    expect(screen.getByRole("textbox", { name: "Operational search intent" })).toHaveValue("unsent draft");
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.capabilities).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers readiness independently without rerunning or discarding query results", async () => {
+    mocks.query = "q=review";
+    mocks.capabilities.mockRejectedValueOnce(new Error("Readiness unavailable"));
+    render(<SearchPage />);
+    await screen.findByText("Readiness unavailable");
+    await screen.findAllByText("current result");
+    const panel = screen.getByRole("heading", { name: "Search readiness is unavailable" }).closest('[role="alert"]')!;
+    expect(within(panel as HTMLElement).getByText(/You can still submit a known intent/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry search readiness" }));
+    await screen.findByRole("button", { name: "show list of VMs" });
+    expect(mocks.capabilities).toHaveBeenCalledTimes(2);
+    expect(mocks.search).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByText("current result").length).toBeGreaterThan(0);
+  });
+
+  it("keeps repeated search failures explicit and preserves scoped setup navigation", async () => {
+    mocks.scope = { subscription: ["sub-a", "sub-b"], owner: ["Operations"] };
+    mocks.query = "q=review";
+    mocks.search.mockRejectedValue(new Error("Provider still unavailable"));
+    render(<SearchPage />);
+    await screen.findByText("Provider still unavailable");
+    const link = screen.getByRole("link", { name: "Review scoped connections" });
+    const url = new URL(link.getAttribute("href")!, "http://test");
+    expect(url.pathname).toBe("/connections");
+    expect(url.searchParams.getAll("subscription")).toEqual(["sub-a", "sub-b"]);
+    expect(url.searchParams.get("owner")).toBe("Operations");
+    fireEvent.click(screen.getByRole("button", { name: "Retry submitted search" }));
+    await waitFor(() => expect(mocks.search).toHaveBeenCalledTimes(2));
+    await screen.findByRole("button", { name: "Retry submitted search" });
+    expect(screen.queryByRole("region", { name: "Authorized records" })).not.toBeInTheDocument();
+  });
+
+  it("routes unsupported intents to the query instead of offering an identical failing retry", async () => {
+    mocks.query = "q=unsupported";
+    mocks.search.mockRejectedValueOnce(new Error("Unsupported intent"));
+    render(<SearchPage />);
+    await screen.findByRole("heading", { name: "Unsupported search intent" });
+    expect(screen.getByRole("link", { name: "Review supported search intents" })).toHaveAttribute("href", "#search-query");
+    expect(screen.queryByRole("button", { name: "Retry submitted search" })).not.toBeInTheDocument();
   });
 
   it.each([

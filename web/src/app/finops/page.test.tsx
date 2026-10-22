@@ -26,7 +26,7 @@ vi.mock("@/components/ui/CopilotDrawer", () => ({
   CopilotDrawer: () => null,
 }));
 
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import FinOpsPage from "./page";
 
 function envelope(data: object) {
@@ -167,6 +167,70 @@ beforeEach(() => {
       ],
     }),
   );
+});
+
+describe("FinOps source recovery", () => {
+  it("shows independent source failures and retries only the selected source", async () => {
+    services.finopsSummary.mockRejectedValueOnce(new Error("Summary source unavailable"));
+    services.finopsWaste.mockRejectedValueOnce(new Error("Inventory source unavailable"));
+    render(<FinOpsPage />);
+    const sources = await screen.findByRole("list", { name: "Cost source recovery" });
+    expect(within(sources).getByText("Summary source unavailable")).toBeVisible();
+    expect(within(sources).getByText("Inventory source unavailable")).toBeVisible();
+    await within(sources).findByText("Loaded for the current scope; not a guarantee of source freshness.");
+    expect(screen.queryByRole("button", { name: "Retry savings opportunities" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry cost summary" }));
+    await waitFor(() => expect(services.finopsSummary).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry cost summary" })).not.toBeInTheDocument());
+    expect(services.finopsWaste).toHaveBeenCalledTimes(1);
+    expect(services.finopsOpportunities).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Retry waste inventory" }));
+    await screen.findByRole("region", { name: "Cost overview" });
+    expect(services.finopsSummary).toHaveBeenLastCalledWith(scope);
+    expect(services.finopsWaste).toHaveBeenLastCalledWith(scope);
+    expect(services.finopsOpportunities).toHaveBeenCalledTimes(1);
+    expect(services.finopsAttribution).toHaveBeenCalledTimes(1);
+    expect(services.finopsVerifiedRemediations).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces pending recovery without allowing another retry while the request is running", async () => {
+    services.finopsWaste.mockRejectedValueOnce(new Error("Waste failed"));
+    let resolveRetry!: (value: ReturnType<typeof envelope>) => void;
+    services.finopsWaste.mockImplementationOnce(() => new Promise(resolve => { resolveRetry = resolve; }));
+    render(<FinOpsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retry waste inventory" }));
+    await screen.findByRole("heading", { name: "Reading cost signals" });
+    expect(screen.queryByRole("button", { name: "Retry waste inventory" })).not.toBeInTheDocument();
+    await act(async () => { resolveRetry(envelope({ count: 0, waste: [] })); });
+    await screen.findByRole("region", { name: "Cost overview" });
+    expect(services.finopsWaste).toHaveBeenCalledTimes(2);
+    expect(services.finopsSummary).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps repeated provider errors explicit instead of presenting missing data as zero", async () => {
+    services.finopsOpportunities.mockRejectedValue(new Error("Advisor still unavailable"));
+    render(<FinOpsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retry savings opportunities" }));
+    await waitFor(() => expect(services.finopsOpportunities).toHaveBeenCalledTimes(2));
+    await screen.findByRole("button", { name: "Retry savings opportunities" });
+    expect(screen.queryByRole("region", { name: "Cost overview" })).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Cost source recovery" })).toHaveTextContent("Advisor still unavailable");
+    expect(screen.getByRole("link", { name: "Review scoped connections" })).toHaveAttribute("href", "/connections");
+  });
+
+  it("retries verified evidence without resetting healthy charts or opportunity filters", async () => {
+    services.finopsVerifiedRemediations.mockRejectedValueOnce(new Error("Stored verification unavailable"));
+    render(<FinOpsPage />);
+    const records = await screen.findByRole("region", { name: "Savings opportunities" });
+    fireEvent.change(within(records).getByRole("combobox", { name: "Filter by Impact" }), { target: { value: "Low" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Retry verified remediation evidence" }));
+    await screen.findByRole("heading", { name: "No verified remediation changes in this scope" });
+    expect(within(records).getByRole("combobox", { name: "Filter by Impact" })).toHaveValue("Low");
+    expect(services.finopsVerifiedRemediations).toHaveBeenLastCalledWith(scope, 0);
+    expect(services.finopsSummary).toHaveBeenCalledTimes(1);
+    expect(services.finopsOpportunities).toHaveBeenCalledTimes(1);
+    expect(services.finopsWaste).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("FinOps currency normalization", () => {

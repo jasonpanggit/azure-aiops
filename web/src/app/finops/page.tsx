@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CountBarChart } from "@/components/ui/CountBarChart";
@@ -15,6 +16,7 @@ import { useApi } from "@/hooks/useApi";
 import { buildFinOpsCopilotContext } from "@/lib/copilot/page-adapters";
 import { titleize } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
+import { scopeToSearchParams } from "@/lib/scope";
 import { governanceApi } from "@/lib/services";
 import type { FinOpsVerifiedRemediation } from "@/lib/types";
 import { useColumnFilters } from "@/lib/table-column-filters";
@@ -147,6 +149,11 @@ export default function FinOpsPage() {
 
   const loading = summary.loading || opportunities.loading || waste.loading;
   const error = summary.error ?? opportunities.error ?? waste.error;
+  const primarySources = [
+    { label: "Cost summary", read: summary },
+    { label: "Savings opportunities", read: opportunities },
+    { label: "Waste inventory", read: waste },
+  ];
 
   const totals = summary.data?.data;
   const currency = totals?.currency ?? "";
@@ -477,6 +484,16 @@ export default function FinOpsPage() {
             "No governance response was returned. Sync a subscription connection first."
           }
           tone="error"
+          action={<div className="source-recovery-actions">
+            <p>The combined cost view waits for all three primary reads. Successful reads are kept; retrying a failed source does not refresh the others or change your filters and scenario selections.</p>
+            <ul className="source-recovery-list" aria-label="Cost source recovery">
+              {primarySources.map(({ label, read }) => <li key={label}>
+                <div><strong>{label}</strong><p>{read.loading ? "Reading source..." : read.error ? read.error.message : "Loaded for the current scope; not a guarantee of source freshness."}</p></div>
+                {read.error && <button className="button button-secondary" type="button" disabled={read.loading} onClick={read.refetch}>Retry {label.toLowerCase()}</button>}
+              </li>)}
+            </ul>
+            <Link href={`/connections${scopeToSearchParams(scope).size ? `?${scopeToSearchParams(scope)}` : ""}`}>Review scoped connections</Link>
+          </div>}
         />
       ) : loading ? (
         <StatePanel
@@ -858,6 +875,7 @@ export default function FinOpsPage() {
                     "Stored remediation evidence could not be confirmed."
                   }
                   tone="error"
+                  action={<button className="button button-secondary" type="button" onClick={verifiedRemediations.refetch}>Retry verified remediation evidence</button>}
                 />
               ) : verifiedRemediations.loading ? (
                 <StatePanel
