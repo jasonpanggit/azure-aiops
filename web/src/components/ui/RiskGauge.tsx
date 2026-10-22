@@ -5,10 +5,10 @@
  * and metric cards elsewhere. */
 function toneForScore(score: number, invert: boolean): { color: string; label: string } {
   const effective = invert ? 100 - score : score;
-  if (effective >= 75) return { color: "#b42318", label: invert ? "Excellent" : "Critical" };
-  if (effective >= 50) return { color: "#c26400", label: invert ? "Good" : "High" };
-  if (effective >= 25) return { color: "#8a6100", label: invert ? "Fair" : "Medium" };
-  return { color: "#107c10", label: invert ? "Needs attention" : "Low" };
+  if (effective >= 75) return { color: "#b42318", label: invert ? "Needs attention" : "Critical" };
+  if (effective >= 50) return { color: "#c26400", label: invert ? "Fair" : "High" };
+  if (effective >= 25) return { color: "#8a6100", label: invert ? "Good" : "Medium" };
+  return { color: "#107c10", label: invert ? "Excellent" : "Low" };
 }
 
 export interface RiskGaugeProps {

@@ -18,7 +18,6 @@ import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { CountBarChart } from "@/components/ui/CountBarChart";
 import { DonutChart } from "@/components/ui/DonutChart";
 import { PageHeader, type PageHeaderCompleteness } from "@/components/ui/PageHeader";
-import { RiskGauge } from "@/components/ui/RiskGauge";
 import { StatusBadge, statusTone, toneColor } from "@/components/ui/StatusBadge";
 import { TableColumnFilters } from "@/components/ui/TableColumnFilters";
 import { TablePagination } from "@/components/ui/TablePagination";
@@ -470,7 +469,6 @@ export default function PatchPrioritiesPage() {
       .map(([label, value]) => ({ id: label, label, value }));
   }, [rows]);
 
-  const coveragePercent = total > 0 ? Math.round((represented / total) * 100) : null;
 
   // Read-only contextual Copilot over the already-loaded patch-priority queue.
   // Governed remediation stays behind existing server endpoints (D-03, D-04, D-10).
@@ -719,15 +717,14 @@ export default function PatchPrioritiesPage() {
                 <h3 className="chart-card-title">Top targets (this page)</h3>
                 <CountBarChart data={targetBreakdown} unit="target" />
               </div>
-              {coveragePercent !== null && (
+              {total > 0 && (
                 <div className="chart-card">
                   <h3 className="chart-card-title">Queue coverage</h3>
-                  <RiskGauge
-                    score={coveragePercent}
-                    invert
-                    label="Represented of total"
-                    detail={`${represented.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} findings represented`}
-                  />
+                  <CountBarChart unit="query coverage" data={[
+                    { id: "represented", label: "Represented", value: represented },
+                    { id: "total", label: "Query total", value: total },
+                  ]} />
+                  <p className="table-secondary">Query coverage, not a health or remediation verdict.</p>
                 </div>
               )}
             </div>

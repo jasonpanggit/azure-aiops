@@ -13,7 +13,7 @@ describe("OperationsSignalChart", () => {
       />
     );
 
-    expect(screen.getByRole("img", { name: "Operational signal counts" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Operational signal counts: Priority situations 2, Network gaps 0" })).toBeInTheDocument();
     expect(screen.getByText("Priority situations")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
   });

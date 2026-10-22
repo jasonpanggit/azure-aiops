@@ -4084,6 +4084,41 @@ textarea:focus-visible {
   text-align: right;
 }
 
+.savings-currency-charts {
+  min-width: 0;
+}
+
+.savings-currency-charts figure {
+  margin: 20px 0;
+}
+
+.savings-currency-charts figcaption {
+  font-weight: 650;
+}
+
+.savings-currency-charts .count-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) fit-content(45%);
+}
+
+.savings-currency-charts .count-bar-label {
+  width: auto;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.savings-currency-charts .count-bar-value {
+  grid-column: 2;
+  grid-row: 1;
+  width: auto;
+  overflow-wrap: anywhere;
+}
+
+.savings-currency-charts .count-bar-track {
+  grid-column: 1 / -1;
+}
+
 .rank-badge {
   display: inline-flex;
   align-items: center;

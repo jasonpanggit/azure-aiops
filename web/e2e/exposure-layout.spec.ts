@@ -129,6 +129,12 @@ for (const width of [1440, 820, 768, 375, 320]) {
       await expect(nav.getByRole("link")).toHaveCount(route.links);
       await expect(page.locator(".state-loading")).toHaveCount(0);
       await expect(page.locator(".copilot-insights")).toHaveCount(1);
+      if (route.path === "/exposure/patch-priorities") {
+        const coverage = page.getByRole("list", { name: "Counts by query coverage", exact: true });
+        await expect(coverage).toHaveText("Represented1Query total1");
+        await expect(page.getByText("Query coverage, not a health or remediation verdict.")).toBeVisible();
+        await expect(page.getByRole("img", { name: /Represented of total/ })).toHaveCount(0);
+      }
       const insight = page.locator(".copilot-insights");
       for (const link of await nav.getByRole("link").all()) {
         const box = await link.boundingBox();
