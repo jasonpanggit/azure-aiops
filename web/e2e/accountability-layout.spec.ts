@@ -89,10 +89,18 @@ async function assertLayout(page: Page, width: number) {
     }
     if (await scroller.evaluate((element) => element.scrollWidth > element.clientWidth)) {
       await scroller.focus();
+      await scroller.evaluate(element => { element.scrollLeft = 0; });
+      await expect.poll(() => scroller.evaluate(element => element.scrollLeft)).toBe(0);
+      const forward = scroller.evaluate(element => new Promise<number>(resolve => {
+        element.addEventListener("scrollend", () => resolve(element.scrollLeft), { once: true });
+      }));
       await scroller.press("ArrowRight");
-      await expect.poll(() => scroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+      expect(await forward).toBeGreaterThan(0);
+      const backward = scroller.evaluate(element => new Promise<number>(resolve => {
+        element.addEventListener("scrollend", () => resolve(element.scrollLeft), { once: true });
+      }));
       await scroller.press("ArrowLeft");
-      await expect.poll(() => scroller.evaluate((element) => element.scrollLeft)).toBe(0);
+      expect(await backward).toBe(0);
     }
   }
   await expect(async () => {

@@ -588,7 +588,7 @@ export default function FinOpsPage() {
                 </div>
               </div>
               <div className="card-body">
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0} role="region" aria-label="Financial totals by currency">
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -754,7 +754,7 @@ export default function FinOpsPage() {
               </div>
             </div>
             <div className="card-body">
-              <div className="table-scroll">
+              <div className="table-scroll" tabIndex={0} role="region" aria-label="Cost review scenarios">
                 <table className="operations-table">
                   <thead>
                     <tr>

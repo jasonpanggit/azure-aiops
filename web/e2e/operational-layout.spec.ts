@@ -161,7 +161,7 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await mockOperations(page);
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/connections");
-    const registry = page.getByRole("region", { name: "Connection registry" });
+    const registry = page.getByRole("region", { name: "Connection registry", exact: true });
     await assertBeforeInsight(page, registry);
     await expect(registry.getByRole("button", { name: "Sync now" })).toBeVisible();
     await page.getByRole("button", { name: "Add subscription connection" }).click();
