@@ -233,7 +233,7 @@ def test_real_second_sink_write_denied_after_current_bytes_change(
 def test_full_manifest_recovery_has_linear_authorization_work(
     tmp_path, monkeypatch, authority
 ):
-    """Run the original troublesome real test, including all 707 products.
+    """Run the original troublesome real test, including all 708 products.
 
     Counts, not CPU timing, enforce the bound. A parent runner supplies the
     separate wall-clock deadline, so a regression cannot hang the test suite.
@@ -257,8 +257,8 @@ def test_full_manifest_recovery_has_linear_authorization_work(
     def counted_materialize(self, *args, **kwargs):
         before = len(per_sink)
         receipt = materialize(self, *args, **kwargs)
-        assert len(receipt["products"]) == 707  # no dropped empty typed tables
-        assert len(per_sink) - before == 708  # tables AND catalog are guarded
+        assert len(receipt["products"]) == 708  # no dropped empty typed tables
+        assert len(per_sink) - before == 709  # tables AND catalog are guarded
         completed.append(receipt["kind"])
         return receipt
 
@@ -266,10 +266,10 @@ def test_full_manifest_recovery_has_linear_authorization_work(
     monkeypatch.setattr(CandidateGenerationMaterializer, "_materialize", counted_materialize)
     recovery_case(tmp_path, monkeypatch, authority)
     assert completed == ["materialization", "materialization", "restoration"]
-    assert len(per_sink) == 2124
+    assert len(per_sink) == 2127
     assert verify.call_count <= 2 * len(per_sink) + 100
     print(
-        f"707 products x3; sink guards={len(per_sink)}; "
+        f"708 products x3; sink guards={len(per_sink)}; "
         f"fresh release verifications={verify.call_count}; "
         f"max verifications per sink={max(per_sink)}"
     )
