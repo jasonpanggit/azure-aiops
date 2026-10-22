@@ -99,6 +99,7 @@ def _container_source_snapshot(
     run_id: str,
     severity: str = "Critical",
     provider_event_time: bool = True,
+    extra_digest: str | None = None,
 ) -> None:
     payload = json.loads(FIXTURE.read_text())
     payload["resources"].append(
@@ -121,6 +122,28 @@ def _container_source_snapshot(
         image_assessment["properties"].pop("timeGenerated", None)
     image_assessment["tenantId"] = "tenant1"
     payload["defender_assessments"].append(image_assessment)
+    if extra_digest:
+        second_registry = REGISTRY.replace("acr1", "acr2")
+        payload["resources"].append(
+            {
+                "id": second_registry,
+                "name": "acr2",
+                "type": "Microsoft.ContainerRegistry/registries",
+                "location": "australiaeast",
+                "subscriptionId": "sub1",
+                "resourceGroup": "rg1",
+                "tenantId": "tenant1",
+            }
+        )
+        extra = json.loads(
+            json.dumps(
+                _granular_image_row(
+                    "openssl", [severity], ["CVE-2026-1001"], digest=extra_digest
+                )
+            ).replace("acr1", "acr2")
+        )
+        extra["tenantId"] = "tenant1"
+        payload["defender_assessments"].append(extra)
     graph = Normalizer({"connection_id": "connection-1"}).normalize(
         payload,
         observed_at,
@@ -3517,51 +3540,98 @@ def test_native_registry_mapping_config_parses_with_ontology_disabled(
 def test_native_registry_mapping_rolls_back_pair_table_and_retry_converges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from fabric.native_registry_mapping import TABLE
+    from fabric.native_registry_mapping import KEY_COLUMNS, TABLE
 
     service, lakehouse = _native_mapping_service(tmp_path, native=True)
     service.write_workers = 1
     assert service.sync().status == "completed"
     uri = lakehouse / f"Tables/{TABLE}"
     aggregate_uri = lakehouse / "Tables/ontology_relationships"
+    columns = ["subject_id", "object_id"]
+    pairs_before = sorted(service.delta.read(uri), key=lambda r: r["subject_id"])
+    aggregate_before = sorted(
+        service.delta.read(aggregate_uri), key=lambda r: r["resource_id"]
+    )
+    aggregate_schema_before = DeltaTable(str(aggregate_uri)).schema().to_arrow()
     version_before = DeltaTable(str(uri)).version()
-    pairs_before = service.delta.read(uri)
-    aggregate_version_before = DeltaTable(str(aggregate_uri)).version()
 
     _container_source_snapshot(
         tmp_path / "source",
         observed_at=datetime(2026, 9, 3, tzinfo=UTC),
         run_id="source-generation-2",
         provider_event_time=False,
+        extra_digest="sha256:" + "b" * 64,
     )
     original_write = service.delta.write
-    state = {"pair_written": False, "pair_digest": ""}
+    state: dict[str, Any] = {"pair_written": False}
+    checkpoints = service.publication_checkpoints
+    original_begin = checkpoints.begin_table_write
+
+    def capture_begin(checkpoint, plan, *, table_name, outcome_digest, **kwargs):
+        if table_name == TABLE:
+            state["pair_digest"] = outcome_digest
+            state["checkpoint_digest"] = checkpoint.manifest_digest
+        return original_begin(
+            checkpoint,
+            plan,
+            table_name=table_name,
+            outcome_digest=outcome_digest,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(checkpoints, "begin_table_write", capture_begin)
 
     def fail_after_pair_commit(table_uri, rows, **kwargs):
         name = Path(str(table_uri)).name
-        if state["pair_written"] and name != TABLE:
-            raise RuntimeError("injected failure after pair commit")
         result = original_write(table_uri, rows, **kwargs)
         if name == TABLE:
             state["pair_written"] = True
-            state["pair_digest"] = kwargs["transaction_digest"]
-            assert DeltaTable(str(uri)).version() > version_before
+            state["rows"] = [dict(r) for r in rows]
+            state["new_pairs"] = sorted(
+                service.delta.read(table_uri), key=lambda r: r["subject_id"]
+            )
+            assert [list(r) for r in rows[:1]] == [columns]
         return result
 
+    def fail_finalization(*_args, **_kwargs):
+        assert state["pair_written"]
+        raise RuntimeError("injected failure after pair commit")
+
     monkeypatch.setattr(service.delta, "write", fail_after_pair_commit)
+    monkeypatch.setattr(service, "_register_fabric_assets", fail_finalization)
     with pytest.raises(RuntimeError, match="injected failure after pair commit"):
         service.sync()
 
-    assert state["pair_written"] and state["pair_digest"]
-    assert DeltaTable(str(uri)).schema().to_arrow().names == ["subject_id", "object_id"]
-    assert service.delta.read(uri) == pairs_before
-    assert DeltaTable(str(aggregate_uri)).version() >= aggregate_version_before
+    assert state["pair_written"]
+    assert state["pair_digest"] == sync_module._table_write_outcome_digest(
+        TABLE,
+        state["rows"],
+        mode=service._write_mode_for_table(TABLE),
+        key_columns=KEY_COLUMNS,
+        partition_by=service.partitioning.columns_for(TABLE),
+        checkpoint_digest=state["checkpoint_digest"],
+    )
+    assert state["rows"] == [
+        {k: r[k] for k in columns} for r in state["new_pairs"]
+    ] or sorted(state["rows"], key=lambda r: r["subject_id"]) == state["new_pairs"]
+    assert len(state["new_pairs"]) > len(pairs_before)
+    assert state["new_pairs"] != pairs_before
+    assert DeltaTable(str(uri)).schema().to_arrow().names == columns
+    assert sorted(service.delta.read(uri), key=lambda r: r["subject_id"]) == pairs_before
+    assert DeltaTable(str(uri)).version() > version_before
+    assert (
+        sorted(service.delta.read(aggregate_uri), key=lambda r: r["resource_id"])
+        == aggregate_before
+    )
+    assert DeltaTable(str(aggregate_uri)).schema().to_arrow() == aggregate_schema_before
+
     monkeypatch.setattr(service.delta, "write", original_write)
+    monkeypatch.undo()
     assert service.sync().status == "completed"
-    assert DeltaTable(str(uri)).schema().to_arrow().names == ["subject_id", "object_id"]
-    rows = service.delta.read(uri)
-    assert rows == pairs_before
-    assert len({(r["subject_id"], r["object_id"]) for r in rows}) == len(rows)
+    assert DeltaTable(str(uri)).schema().to_arrow().names == columns
+    final = sorted(service.delta.read(uri), key=lambda r: r["subject_id"])
+    assert final == state["new_pairs"]
+    assert len({(r["subject_id"], r["object_id"]) for r in final}) == len(final)
 
 
 def test_native_registry_mapping_requires_all_typed_products_present(
