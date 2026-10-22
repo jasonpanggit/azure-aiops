@@ -46,6 +46,7 @@ from fabric.sql_endpoint import (
     FABRIC_SQL_ADAPTER_ID,
     REQUIRED_EXPOSURE_SCHEMA,
     REQUIRED_ODBC_DRIVER,
+    FabricSqlReader,
     probe_exposure_readiness,
     require_exposure_ready,
 )
@@ -754,6 +755,15 @@ def run_fabric_sql_benchmark(
     measurements: int,
 ) -> dict[str, Any]:
     """Run the qualifying canary against the real Fabric SQL query service."""
+    production = (
+        type(reader) is FabricSqlReader
+        and reader._connect is None
+    )
+    qualification_scope = (
+        expected_rows >= DEFAULT_ROWS
+        and warmups >= DEFAULT_WARMUPS
+        and measurements >= DEFAULT_MEASUREMENTS
+    )
     rss_before = _rss_bytes()
     instrumented = InstrumentedFabricSqlReader(reader)
     service = ExposureQueryService(instrumented)
@@ -834,18 +844,34 @@ def run_fabric_sql_benchmark(
     rss_after = _rss_bytes()
     rss_delta = max(0, rss_after - rss_before)
     memory_under_budget = rss_delta <= RSS_BUDGET_BYTES
+    passed = exact and under_budget and bounded and memory_under_budget
+    certified = production and qualification_scope and passed
+    if not production:
+        reason_code = "nonproduction_reader_is_not_production_slo_evidence"
+    elif not qualification_scope:
+        reason_code = "benchmark_size_or_sampling_below_qualification_minimum"
+    elif certified:
+        reason_code = "qualified"
+    else:
+        reason_code = "benchmark_contract_or_budget_failed"
     return {
         "schema_version": "1.0.0",
         "status": (
             "pass"
-            if exact and under_budget and bounded and memory_under_budget
+            if passed and (not production or qualification_scope)
             else "fail"
         ),
         "adapter": {
-            "adapter_id": FABRIC_SQL_ADAPTER_ID,
+            "adapter_id": (
+                FABRIC_SQL_ADAPTER_ID
+                if production
+                else "deterministic_fabric_sql_contract"
+                if isinstance(reader, DeterministicFabricSqlReader)
+                else "nonproduction_fabric_sql_contract"
+            ),
             "selected_production_adapter": FABRIC_SQL_ADAPTER_ID,
-            "production": True,
-            "production_slo_evidence": True,
+            "production": production,
+            "production_slo_evidence": production and qualification_scope,
             "delta_selected": False,
         },
         "dataset": {
@@ -900,12 +926,9 @@ def run_fabric_sql_benchmark(
         "slo": {
             "target_p95_ms": SLO_MILLISECONDS,
             "observed_under_target": under_budget,
-            "production_certified": (
-                exact
-                and under_budget
-                and bounded
-                and memory_under_budget
-            ),
+            "production_certified": certified,
+            "qualification_scope_satisfied": qualification_scope,
+            "reason_code": reason_code,
         },
     }
 

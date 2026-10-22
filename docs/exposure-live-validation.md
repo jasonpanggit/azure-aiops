@@ -154,6 +154,14 @@ Passing evidence requires:
 - p95 below 2,000 milliseconds;
 - release, configuration, and generation binding.
 
+Production qualification also requires at least five warmups and twenty
+measured requests per target-kind scenario, and at least 100,000 total rows.
+Smaller or lightly sampled production runs fail qualification. Deterministic
+readers and readers with an injected connection factory remain contract-only:
+their passing result never sets `production_certified` or
+`production_slo_evidence`. The standard command above uses the qualifying
+sample defaults; retain its adapter and qualification fields with the receipt.
+
 If Gold schema or live metadata is missing, the command exits non-zero with a
 sanitized reason. A local deterministic benchmark is useful regression
 evidence but is never production certification.
