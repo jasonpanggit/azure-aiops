@@ -247,7 +247,8 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await executive.click();
     const generate = page.getByRole("button", { name: "Generate conclusion", exact: true });
     await expect(generate).toHaveClass(/button-ai/);
-    await expect(generate).toHaveCSS("background-image", /linear-gradient/);
+    await expect(generate).toHaveCSS("background-image", "none");
+    await expect(generate).toHaveCSS("background-color", "rgb(15, 108, 189)");
     const request = page.waitForRequest((item) => item.url().includes("/copilot/investigations") && item.method() === "POST");
     await generate.click();
     expect((await request).postDataJSON().contract_version).toBe("1");

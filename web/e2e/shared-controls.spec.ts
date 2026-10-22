@@ -60,14 +60,19 @@ test.beforeEach(async ({ page }) => {
   await page.addStyleTag({ content: styles });
 });
 
-test("shares AI styling across launch, follow-up, and composer actions", async ({ page }) => {
+test("matches Copilot launch, follow-up and composer colors to ordinary primary actions", async ({ page }) => {
   const actions = page.locator(".button-ai");
   const backgrounds = await actions.evaluateAll((elements) =>
     elements.map((element) => getComputedStyle(element).backgroundImage));
 
   expect(backgrounds).toHaveLength(4);
   expect(new Set(backgrounds).size).toBe(1);
-  expect(backgrounds[0]).toContain("linear-gradient");
+  expect(backgrounds[0]).toBe("none");
+  for (const action of await actions.all()) {
+    await expect(action).toHaveCSS("background-color", "rgb(15, 108, 189)");
+    await expect(action).toHaveCSS("color", "rgb(255, 255, 255)");
+    await expect(action).toHaveCSS("box-shadow", "none");
+  }
   await expect(page.getByRole("button", { name: "Refresh insights" }))
     .toHaveCSS("background-image", "none");
   await expect(page.getByRole("button", { name: "Refresh insights" }))

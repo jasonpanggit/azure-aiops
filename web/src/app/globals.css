@@ -12,8 +12,6 @@
   --color-brand-hover: #115ea3;
   --color-brand-subtle: #eff6fc;
   --color-focus: #0f6cbd;
-  --color-ai-gradient: linear-gradient(135deg, var(--color-brand), #6d5bd0);
-  --shadow-ai: 0 6px 16px -8px rgb(76 60 200 / 55%);
   --control-height: 40px;
   --color-critical: #b42318;
   --color-critical-subtle: #fff1f0;
@@ -2052,26 +2050,16 @@ textarea:focus-visible {
   cursor: not-allowed;
 }
 
-.button-primary {
+.button-primary,
+.button-ai {
   color: #ffffff;
   background: var(--color-brand);
   border-color: var(--color-brand);
 }
 
-.button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
-  background: var(--color-brand-hover);
-}
-
-.button-ai {
-  color: var(--color-surface);
-  background: var(--color-ai-gradient);
-  border-color: transparent;
-  box-shadow: var(--shadow-ai);
-}
-
+.button-primary:hover:not(:disabled):not([aria-disabled="true"]),
 .button-ai:hover:not(:disabled):not([aria-disabled="true"]) {
-  background: var(--color-ai-gradient);
-  filter: brightness(1.05);
+  background: var(--color-brand-hover);
 }
 
 .button-danger {
@@ -7428,6 +7416,8 @@ body.topology-fullscreen-open {
   width: 24px;
   height: 24px;
   font-size: 15px;
+  color: inherit;
+  background: transparent;
   border-radius: 7px;
 }
 

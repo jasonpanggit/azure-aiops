@@ -106,8 +106,10 @@ for (const width of [1440, 820, 768, 375, 320]) {
     const form = page.getByRole("form", { name: "Ask Operations Copilot" });
     const ask = form.getByRole("button", { name: "Ask Copilot", exact: true });
     const prompt = page.locator(".copilot-prompts button").first();
-    await expect(prompt).toHaveCSS("background-image", /linear-gradient/);
-    await expect(ask).toHaveCSS("background-image", /linear-gradient/);
+    await expect(prompt).toHaveCSS("background-image", "none");
+    await expect(prompt).toHaveCSS("background-color", "rgb(15, 108, 189)");
+    await expect(ask).toHaveCSS("background-image", "none");
+    await expect(ask).toHaveCSS("background-color", "rgb(15, 108, 189)");
     const input = form.getByRole("textbox", { name: "Copilot question", exact: true });
     expect((await input.boundingBox())!.width).toBeGreaterThanOrEqual(100);
     await input.fill("Review Payments");
@@ -182,7 +184,8 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/agents");
     const launch = page.getByRole("button", { name: "Run deterministic investigation", exact: true });
-    await expect(launch).toHaveCSS("background-image", /linear-gradient/);
+    await expect(launch).toHaveCSS("background-image", "none");
+    await expect(launch).toHaveCSS("background-color", "rgb(15, 108, 189)");
     await expect(page.getByLabel("Available specialized agents")).toContainText("Foundry available - inactive");
     await expect(page.getByLabel("Available specialized agents")).toContainText("Foundry unavailable");
     await launch.click();
