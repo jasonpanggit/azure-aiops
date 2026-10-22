@@ -1741,6 +1741,48 @@ textarea:focus-visible {
   margin-top: 14px;
 }
 
+.source-recovery-actions {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  max-width: 720px;
+  text-align: left;
+}
+
+.source-recovery-actions p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-recovery-list {
+  display: grid;
+  gap: 16px;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.source-recovery-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.source-recovery-list li > div {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.source-recovery-actions .button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .source-section-state {
   display: grid;
   gap: 12px;

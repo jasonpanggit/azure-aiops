@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
+import { useApi } from "@/hooks/useApi";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { StructuredData } from "@/components/ui/StructuredData";
 import { useScope } from "@/lib/scope-context";
@@ -101,26 +102,15 @@ function SearchPageContent() {
   const [envelope, setEnvelope] = useState<Envelope<SearchResult> | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [capabilities, setCapabilities] = useState<SearchCapabilities | null>(null);
-  const [capabilityError, setCapabilityError] = useState("");
+  const readiness = useApi(() => contextApi.searchCapabilities(scope), [scope]);
+  const capabilities: SearchCapabilities | null = readiness.data?.data ?? null;
+  const capabilityError = readiness.error?.message ?? "";
   const requestId = useRef(0);
   const initialQuery = (params.get("q") || "").slice(0, 512);
   const entityType = (params.get("entity_type") || "").slice(0, 128);
   const sourceFilter = (params.get("source") || "").slice(0, 256);
   const requestedOffset = Number(params.get("offset") ?? 0);
   const offset = Number.isSafeInteger(requestedOffset) && requestedOffset >= 0 && requestedOffset <= 100000 ? requestedOffset : 0;
-
-  useEffect(() => {
-    let active = true;
-    setCapabilities(null);
-    setCapabilityError("");
-    contextApi.searchCapabilities(scope)
-      .then(result => { if (active) setCapabilities(result.data); })
-      .catch((reason: unknown) => {
-        if (active) setCapabilityError(reason instanceof Error ? reason.message : "Search readiness is unavailable");
-      });
-    return () => { active = false; };
-  }, [scope]);
 
   function navigateSearch(value: string, patch: { entityType?: string; source?: string; offset?: number } = {}) {
     const trimmed = value.trim();
@@ -139,10 +129,10 @@ function SearchPageContent() {
     router.push(`/search?${next.toString()}`, { scroll: false });
   }
 
-  const runSearch = useCallback(async (value: string) => {
+  const runSearch = useCallback(async (value: string, preserveDraft = false) => {
     if (!value.trim()) return;
     const id = ++requestId.current;
-    setQuery(value);
+    if (!preserveDraft) setQuery(value);
     setLoading(true);
     setError("");
     setEnvelope(null);
@@ -200,7 +190,11 @@ function SearchPageContent() {
           </button>
         </form>
         <p>Bookmark or share the submitted URL. Results are fetched again using the current authorized scope; the URL never grants access.</p>
-        {capabilityError ? <StatePanel title="Search readiness is unavailable" message={capabilityError} tone="error" /> : !capabilities
+        {capabilityError ? <StatePanel title="Search readiness is unavailable" message={capabilityError} tone="error"
+          action={<div className="source-recovery-actions">
+            <p>Readiness could not be confirmed. You can still submit a known intent; its result is checked separately in the current scope.</p>
+            <button className="button button-secondary" type="button" onClick={readiness.refetch}>Retry search readiness</button>
+          </div>} /> : readiness.loading || !capabilities
           ? <p role="status">Checking search prerequisites...</p>
           : <div>
             {(["live", "semantic"] as const).map(mode => <div key={mode} className="search-suggestions">
@@ -231,6 +225,13 @@ function SearchPageContent() {
           title={error.toLowerCase().includes("supported") ? "Unsupported search intent" : "Search is unavailable"}
           message={error.toLowerCase().includes("supported") ? "This request is not one of the supported operational intents. Choose a supported intent below." : error}
           tone="error"
+          action={<div className="source-recovery-actions">
+            {error.toLowerCase().includes("supported") ? <a href="#search-query">Review supported search intents</a> : <>
+              <p>Retry the submitted search with the same scope, filters and result page. An edited draft is only used when you submit the search form.</p>
+              <button className="button button-secondary" type="button" disabled={loading} onClick={() => void runSearch(initialQuery, true)}>Retry submitted search</button>
+              <Link href={`/connections${scopeToSearchParams(scope).size ? `?${scopeToSearchParams(scope)}` : ""}`}>Review scoped connections</Link>
+            </>}
+          </div>}
         />
       )}
       {!error && loading && <StatePanel title="Searching operational context" message="Applying the intent to the current scope." tone="loading" />}
