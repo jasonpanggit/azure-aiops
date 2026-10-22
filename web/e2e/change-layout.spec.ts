@@ -150,6 +150,25 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await expect(history.locator("tbody tr")).toHaveCount(20);
     await history.getByRole("button", { name: "Next page", exact: true }).click();
     await expect(history.locator("tbody tr")).toHaveCount(3);
+    for (const name of ["Risk factor records", "Simulated effect records", "Impacted resource records", "Recent assessment records"]) {
+      const records = page.getByRole("region", { name, exact: true });
+      await expect(records).toHaveAttribute("tabindex", "0");
+      for (const cell of await records.locator("td, th").all()) {
+        expect((await cell.boundingBox())!.width).toBeGreaterThanOrEqual(120);
+      }
+      await records.focus();
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Shift+Tab");
+      await expect(records).toBeFocused();
+      await expect(records).toHaveCSS("outline-width", "3px");
+      if (width <= 820) {
+        expect(await records.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+        await records.evaluate(element => { element.scrollLeft = 0; });
+        await expect.poll(() => records.evaluate(element => element.scrollLeft)).toBe(0);
+        await records.press("ArrowRight");
+        await expect.poll(() => records.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+      }
+    }
     expect(await history.evaluate((element) =>
       Boolean(element.compareDocumentPosition(document.querySelector(".copilot-insights")!) & Node.DOCUMENT_POSITION_FOLLOWING),
     )).toBe(true);

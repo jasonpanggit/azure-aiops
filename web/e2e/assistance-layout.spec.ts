@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { buildAgentCatalog, buildAgentLedger, buildCanonicalReply, buildSearchRecords } from "../src/test/assistance-fixtures";
+import { expectContentSized } from "./layout-density";
 
 const envelope = (data: unknown) => ({
   data, scope: {}, knowledge_version: "assistance-layout", evidence: [],
@@ -138,6 +139,7 @@ for (const width of [1440, 820, 768, 375, 320]) {
       (await page.locator(".copilot-turn").last().boundingBox())!.height).toBeLessThanOrEqual(composer.y);
     const trust = (await page.locator("#copilot-trust").boundingBox())!;
     expect(trust.y + trust.height).toBeLessThanOrEqual(composer.y);
+    await expectContentSized(page.locator("#copilot-trust"));
     await assertBounds(page, width);
     if (width === 375) {
       await page.screenshot({ path: testInfo.outputPath("ui-copilot-trust-375.png") });
@@ -201,6 +203,7 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await expect(page.getByRole("region", { name: "Deterministic synthesis", exact: true })).toContainText("Current vulnerability coverage remains unknown.");
     const sectionIds = await page.locator(".workspace-grid > section").evaluateAll((sections) => sections.map((section) => section.id));
     expect(sectionIds).toEqual(["agent-reconciliation", "agent-synthesis", "agent-decisions", "agent-activity", "agent-evaluation", "agent-ledger"]);
+    await expectContentSized(page.locator(".workspace-grid > section"));
     expect(await page.getByRole("navigation", { name: "Agent investigation sections" }).getByRole("link")
       .evaluateAll(links => links.map(link => link.getAttribute("href")))).toEqual([
       "#agent-objective", ...sectionIds.map(id => `#${id}`),

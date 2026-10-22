@@ -495,7 +495,7 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
                   resultCount={filteredEvidence.length}
                   totalCount={evidence.length}
                 />
-                <div className="table-scroll">
+                <div className="table-scroll" role="region" aria-label="Risk factor records" tabIndex={0}>
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -547,7 +547,7 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
                   resultCount={filteredEffects.length}
                   totalCount={effects.length}
                 />
-                <div className="table-scroll">
+                <div className="table-scroll" role="region" aria-label="Simulated effect records" tabIndex={0}>
                   <table className="operations-table">
                     <thead>
                       <tr>
@@ -610,7 +610,7 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
                     resultCount={filteredImpactedResources.length}
                     totalCount={impactedResources.length}
                   />
-                  <div className="table-scroll">
+                  <div className="table-scroll" role="region" aria-label="Impacted resource records" tabIndex={0}>
                     <table className="operations-table">
                       <thead>
                         <tr>
@@ -698,7 +698,7 @@ function PreDeploymentWorkspace({ bookmark }: { bookmark: NetworkReviewBookmark 
               resultCount={filteredHistoryRows.length}
               totalCount={historyRows.length}
             />
-            <div className="table-scroll">
+            <div className="table-scroll" role="region" aria-label="Recent assessment records" tabIndex={0}>
               <table className="operations-table">
                 <thead>
                   <tr>

@@ -2087,6 +2087,7 @@ textarea:focus-visible {
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 16px;
   margin-top: 22px;
 }
@@ -2925,6 +2926,7 @@ textarea:focus-visible {
 .workspace-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 16px;
   margin-bottom: 16px;
 }
@@ -5534,6 +5536,7 @@ body.topology-fullscreen-open {
 .compliance-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.85fr);
+  align-items: start;
   gap: 16px;
   min-width: 0;
 }
@@ -5746,6 +5749,16 @@ body.topology-fullscreen-open {
 .predeploy-workspace .card-body > ul {
   padding-left: 20px;
   margin-block: 10px;
+}
+
+.predeploy-workspace .operations-table {
+  min-width: 760px;
+  table-layout: auto;
+}
+
+.predeploy-workspace .operations-table td,
+.predeploy-workspace .operations-table th {
+  min-width: 120px;
 }
 
 .changes-timeline .timeline-event > div:last-child {
@@ -6468,6 +6481,109 @@ body.topology-fullscreen-open {
 .overview-history .button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.card-body > .state-panel {
+  min-height: 0;
+  padding: 16px;
+  justify-items: start;
+  text-align: left;
+}
+
+.overview-history-workspace > .card-header {
+  align-items: center;
+  min-height: 0;
+  gap: 12px 24px;
+}
+
+.overview-history-workspace > .card-header > div:first-child {
+  flex: 1 1 380px;
+  min-width: 0;
+}
+
+.overview-history-workspace > .card-header p {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.overview-history-workspace .overview-history-actions {
+  margin: 0;
+  gap: 8px;
+}
+
+.overview-history-workspace > .card-body {
+  display: grid;
+  gap: 12px;
+  padding-block: 12px;
+}
+
+.overview-history-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.65fr);
+  align-items: start;
+  gap: 12px 24px;
+}
+
+.overview-history-status {
+  display: grid;
+  gap: 8px;
+}
+
+.overview-history-workspace .card-body p {
+  margin: 0;
+}
+
+.overview-history-guidance > summary {
+  min-height: 40px;
+  display: list-item;
+  padding-block: 8px;
+}
+
+.overview-history-guidance[open] > p {
+  margin-top: 8px;
+}
+
+.overview-comparison-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 20px;
+}
+
+.overview-comparison-charts figure {
+  min-width: 0;
+  margin: 0;
+}
+
+.overview-comparison-charts figcaption {
+  margin-bottom: 8px;
+  font-weight: 650;
+}
+
+.overview-comparison-charts .count-bar-chart {
+  margin-block: 0;
+}
+
+.overview-comparison-charts .count-bar-row:first-child .count-bar-fill {
+  background: var(--color-text-secondary);
+}
+
+@media (max-width: 820px) {
+  .overview-history-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .overview-history-workspace .overview-history-actions {
+    width: 100%;
+  }
+
+  .overview-history-actions .button {
+    flex: 1 1 210px;
+  }
+
+  .overview-history-guidance > summary {
+    min-height: 44px;
+  }
 }
 
 .exposure-movement .overview-history-controls label {
@@ -7341,6 +7457,7 @@ body.topology-fullscreen-open {
 .copilot-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
+  align-items: start;
   gap: 16px;
 }
 

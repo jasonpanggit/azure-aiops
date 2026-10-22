@@ -35,10 +35,28 @@ describe("Retained Overview comparisons", () => {
     expect(row).toBeInTheDocument();
     expect(within(region).getByRole("row", { name: "Internet-exposed findings 3 2 -1" })).toBeInTheDocument();
     expect(screen.getByText(/A difference is not a new\/resolved-resource count/)).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Counts by Network gaps" })).toHaveTextContent("Earlier0Later0");
     expect(screen.getByText(/No automatic schedule, seven-day backfill/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Inspect both collection extents and source provenance"));
     expect(screen.getAllByText(/partial page; warnings 0/)).toHaveLength(2);
     expect(api.capture).not.toHaveBeenCalled();
+  });
+  it("does not plot an unexpected null API count as zero or invent a continuous trend", async () => {
+    api.history.mockResolvedValueOnce({
+      ...envelope(history),
+      data: {
+        ...history,
+        observations: [{ ...observation(0), network_gaps: null }, observation(1)],
+      },
+    });
+    render(<OverviewHistory scope={scope} />);
+    const charts = await screen.findByRole("group", { name: "Retained count comparison charts" });
+    expect(within(charts).getAllByRole("list")).toHaveLength(2);
+    expect(within(charts).getByRole("list", { name: "Counts by Loaded P1 situations" })).toHaveTextContent("Earlier0Later1");
+    expect(within(charts).getByRole("list", { name: "Counts by Internet-exposed findings" })).toHaveTextContent("Earlier3Later2");
+    expect(within(charts).getByText(/Comparison unavailable/)).toBeInTheDocument();
+    expect(screen.getByText(/not a continuous trend/)).toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument();
   });
   it("captures only after an explicit action with the reviewed revision and scope", async () => {
     render(<OverviewHistory scope={scope} />);
@@ -47,6 +65,9 @@ describe("Retained Overview comparisons", () => {
     await screen.findByText(/Server observation retained/);
     expect(api.capture).toHaveBeenCalledWith(scope, 2);
     expect(screen.getByRole("combobox", { name: "Later observation" })).toHaveValue(observation(2).observation_id);
+    expect(screen.getByRole("list", { name: "Counts by Loaded P1 situations" })).toHaveTextContent("Earlier1Later2");
+    fireEvent.change(screen.getByRole("combobox", { name: "Earlier observation" }), { target: { value: observation(0).observation_id } });
+    expect(screen.getByRole("list", { name: "Counts by Loaded P1 situations" })).toHaveTextContent("Earlier0Later2");
     expect(screen.getByText(/History revision 3/)).toBeInTheDocument();
   });
   it("does not invent a prior baseline and rejects reversed or identical selections", async () => {
@@ -54,14 +75,33 @@ describe("Retained Overview comparisons", () => {
     const { unmount } = render(<OverviewHistory scope={scope} />);
     await screen.findByText(/Two retained observations are needed/);
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Retained count comparison charts" })).not.toBeInTheDocument();
     unmount();
     render(<OverviewHistory scope={scope} />);
     await screen.findByText(/History revision 2/);
     fireEvent.change(screen.getByRole("combobox", { name: "Earlier observation" }), { target: { value: observation(1).observation_id } });
     expect(screen.getByText("Choose two different observations in chronological order.")).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Retained count comparison charts" })).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "Later observation" }), { target: { value: observation(0).observation_id } });
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Retained count comparison charts" })).not.toBeInTheDocument();
+  });
+  it("keeps empty history actions visible and discloses complete retention guidance on demand", async () => {
+    api.history.mockResolvedValueOnce(envelope(empty));
+    render(<OverviewHistory scope={scope} />);
+    await screen.findByText(/History revision 0/);
+    expect(screen.getByRole("button", { name: "Capture server observation" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Reload observations" })).toBeEnabled();
+    const summary = screen.getByText("Retention and source limitations");
+    const disclosure = summary.closest("details")!;
+    expect(disclosure).not.toHaveAttribute("open");
+    fireEvent.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+    expect(within(disclosure).getByText(/All source reads must succeed or no observation is saved/)).toBeVisible();
+    expect(api.capture).not.toHaveBeenCalled();
+    fireEvent.click(summary);
+    expect(disclosure).not.toHaveAttribute("open");
   });
   it("recovers history after a read error without fabricating a capture", async () => {
     api.history.mockRejectedValueOnce(new Error("Storage unavailable"));
