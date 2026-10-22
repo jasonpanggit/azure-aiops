@@ -97,6 +97,16 @@ Stable identities and semantic versions survive ingestion retries. Source
 generation does not itself update a native definition or refresh its graph;
 publication and supported materialization remain separately governed.
 
+The sync-to-publisher contract includes this typed table even when it has no
+active rows. The existing **legacy JSON** definition generator binds
+`subject_id` to the exposure's `resource_id` property and `object_id` to the
+registry's `resource_id` property in its relationship contextualization.
+This is not a serializer for the current native TMDL definition or a
+Configure Graph automation interface. The legacy publisher must continue
+rejecting native TMDL targets before any write; reproducing the supported
+native mapping-table rebind and Manage graph selection remains a separate,
+unqualified authoring step.
+
 ## Sources
 
 [1] Microsoft, “OneLake access APIs.” https://learn.microsoft.com/en-us/fabric/onelake/onelake-access-api
