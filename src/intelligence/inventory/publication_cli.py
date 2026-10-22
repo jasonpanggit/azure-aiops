@@ -9,7 +9,11 @@ from dataclasses import replace
 import httpx
 
 from api.inventory_orchestration import run_inventory_refresh_all_connections
-from fabric.graph_refresh import GraphRefresher, GraphRefreshError
+from fabric.graph_refresh import (
+    GraphRefreshAmbiguousError,
+    GraphRefresher,
+    GraphRefreshError,
+)
 from onboarding.config import ConnectorConfig
 from onboarding.runtime import build_onboarding_service
 from storage.locking import RunLock
@@ -90,7 +94,12 @@ def main() -> int:
                 graph_refresh = refresher.refresh(source_run_id=publication["sourceRunId"])
                 lock.assert_held()
             except GraphRefreshError as exc:
-                graph_refresh = {"status": "failed", "reason": str(exc)}
+                ambiguous = isinstance(exc, GraphRefreshAmbiguousError)
+                graph_refresh = {
+                    "status": "ambiguous" if ambiguous else "failed",
+                    "operator_review_required": ambiguous,
+                    "reason": str(exc),
+                }
     summary = {
         "status": result["status"],
         "connections": {
