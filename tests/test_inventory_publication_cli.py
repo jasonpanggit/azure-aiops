@@ -94,3 +94,80 @@ def test_inventory_job_never_publishes_missing_or_failed_discovery(monkeypatch, 
         publication_cli.main()
     with publication_cli.RunLock(tmp_path):
         pass
+
+
+def _chain_setup(monkeypatch, tmp_path, status, publication_status, source="activation-1"):
+    monkeypatch.setenv("AIOPS_CONFIG_PATH", "/app/config.yaml")
+    monkeypatch.setenv("AIOPS_FABRIC_CONFIG", "/app/fabric.yaml")
+    monkeypatch.setenv("AIOPS_CONNECTION_HOME", "abfss://workspace/root")
+    monkeypatch.setattr(
+        publication_cli.ConnectorConfig, "load",
+        lambda _path: publication_cli.ConnectorConfig(output_dir=tmp_path),
+    )
+    monkeypatch.setattr(
+        publication_cli,
+        "build_onboarding_service",
+        lambda _config: SimpleNamespace(
+            registry=SimpleNamespace(list=lambda **_k: [SimpleNamespace(connection_id="test")]),
+            sync=lambda *a, **k: {"status": "succeeded"},
+            sync_coordinator=SimpleNamespace(connection_output_dir=lambda _c: "x"),
+        ),
+    )
+    monkeypatch.setattr(
+        publication_cli,
+        "run_inventory_refresh_all_connections",
+        lambda *a, **k: {
+            "status": status,
+            "connections": {"test": {"status": status}},
+            "fabric_publication": {
+                "status": publication_status, "sourceRunId": source, "fabricTables": [],
+            },
+        },
+    )
+
+
+class _Refresher:
+    def __init__(self, outcome):
+        self.outcome, self.calls = outcome, []
+
+    def refresh(self, *, source_run_id):
+        self.calls.append(source_run_id)
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+@pytest.mark.parametrize(
+    ("status", "publication_status", "outcome", "code", "calls"),
+    [
+        ("completed", "completed", {"status": "Completed"}, 0, ["activation-1"]),
+        ("completed", "completed", RuntimeError("graph_refresh_failed"), 1, ["activation-1"]),
+        ("completed", "partial", {"status": "Completed"}, 1, []),
+        ("failed", "completed", {"status": "Completed"}, 1, []),
+    ],
+)
+def test_refresh_chained_only_after_verified_publication(
+    monkeypatch, capsys, tmp_path, status, publication_status, outcome, code, calls
+):
+    _chain_setup(monkeypatch, tmp_path, status, publication_status)
+    refresher = _Refresher(outcome)
+    monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root: refresher)
+    assert publication_cli.main() == code
+    assert refresher.calls == calls
+
+
+def test_refresh_requires_source_run_id(monkeypatch, tmp_path):
+    _chain_setup(monkeypatch, tmp_path, "completed", "completed", source=None)
+    refresher = _Refresher({"status": "Completed"})
+    monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root: refresher)
+    assert publication_cli.main() == 1
+    assert refresher.calls == []
+
+
+def test_graph_refresher_env_is_all_or_nothing(monkeypatch):
+    monkeypatch.delenv("AIOPS_GRAPH_REFRESH_WORKSPACE_ID", raising=False)
+    monkeypatch.delenv("AIOPS_GRAPH_REFRESH_GRAPH_MODEL_ID", raising=False)
+    assert publication_cli._graph_refresher("abfss://w/r") is None
+    monkeypatch.setenv("AIOPS_GRAPH_REFRESH_WORKSPACE_ID", "2c1fea36-104d-4c26-86db-12e09e432b41")
+    with pytest.raises(ValueError):
+        publication_cli._graph_refresher("abfss://w/r")
