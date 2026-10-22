@@ -89,7 +89,7 @@ function AssetExplorer({ scope, filters, page, resourceId }: {
       {!result.loading && !result.error && data && response && <>
         <p className="muted">{result.data?.pagination?.total ?? 0} matching observations · {data.represented_count ?? "Unreported"} authorized observations before filters. Facets cover the authorized projection, not just this page.</p>
         {data.resources.length === 0 ? <StatePanel title="No matching published assets" message="Adjust the filters or verify publication coverage. An empty result does not prove an empty estate." /> :
-          <section className="data-table-wrap" aria-label="Published assets"><div className="table-scroll"><table className="data-table"><thead><tr><th>Asset</th><th>Family / type</th><th>Subscription / resource group</th></tr></thead>
+          <section className="data-table-wrap" aria-label="Published assets"><div className="table-scroll" tabIndex={0} role="region" aria-label="Published asset records"><table className="data-table"><thead><tr><th>Asset</th><th>Family / type</th><th>Subscription / resource group</th></tr></thead>
             <tbody>{data.resources.map((row) => <tr key={`${row.family}:${row.resource_id}`} aria-selected={resourceId.toLowerCase() === row.resource_id.toLowerCase()}>
               <td><Link className="table-primary-link" href={href(filters, page, row.resource_id)}>{row.resource_name || row.resource_id}</Link><span className="table-subtitle resource-id-cell">{row.resource_id}</span></td>
               <td>{row.family}<span className="table-subtitle">{row.resource_type}</span></td><td>{row.subscription_id}<span className="table-subtitle">{row.resource_group || "Not reported"}</span></td>

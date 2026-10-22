@@ -8932,7 +8932,7 @@ body.topology-fullscreen-open {
   font-size: 12px;
 }
 
-.inventory-page .table-scroll:focus-visible,
+.table-scroll:focus-visible,
 .tab-list [role="tab"]:focus-visible {
   outline: 3px solid var(--color-focus);
   outline-offset: 2px;
