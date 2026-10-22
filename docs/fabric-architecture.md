@@ -107,7 +107,7 @@ rejecting native TMDL targets before any write; reproducing the supported
 native mapping-table rebind and Manage graph selection remains a separate,
 unqualified authoring step.
 
-`fabric.native_registry_mapping` provides a separate, pure publication-boundary
+`fabric.ontology.native_registry_mapping` provides a separate, pure publication-boundary
 projection for this fixed table's native two-column contract. Given complete
 active typed relationships, exposures and registries, it requires exact parity
 with explicit `registry_resource_id` bindings and same-tenant endpoints, rejects
