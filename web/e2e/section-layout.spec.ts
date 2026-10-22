@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { expectContentSized } from "./layout-density";
 
 const envelope = (data: unknown) => ({
   data,
@@ -77,6 +78,7 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await expect(violations.getByText("Showing 1–20 of 45 violations")).toBeVisible();
     await expect(page.locator(".copilot-insights")).toHaveCount(1);
     await expect(violations.locator(".compliance-row")).toHaveCount(20);
+    await expectContentSized(page.locator(".compliance-workspace section.card"));
 
     const navigation = page.getByRole("navigation", { name: "Compliance sections" });
     const links = navigation.getByRole("link");
@@ -137,16 +139,24 @@ test("places the real Home queue before supporting metrics and Copilot insights"
   }
 });
 
-test("renders a single real Remediation empty state without an unused detail column", async ({ page }) => {
-  await page.setViewportSize({ width: 375, height: 900 });
-  await page.goto("/remediation");
-  await expect(page.getByText("No fixes generated", { exact: true })).toBeVisible();
-  await expect(page.locator(".remediation-workflow-main")).toHaveCount(0);
-  const layout = await page.locator(".remediation-workflow-empty").boundingBox();
-  const selection = await page.locator(".remediation-workflow-selection").boundingBox();
-  expect(selection!.width).toBeCloseTo(layout!.width, 0);
-  await expect(page.getByRole("navigation", { name: "Remediation workflow" })).toBeVisible();
-  await expect(page.locator(".copilot-insights")).toHaveCount(1);
-  expect(await page.locator(".remediation-workflow-empty").evaluate((element) =>
-    Boolean(element.compareDocumentPosition(document.querySelector(".copilot-insights")!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+for (const width of [1440, 375]) {
+  test(`renders a single real Remediation empty state without an unused detail column at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/remediation");
+    await expect(page.getByText("No fixes generated", { exact: true })).toBeVisible();
+    await expect(page.locator(".remediation-workflow-main")).toHaveCount(0);
+    const layout = await page.locator(".remediation-workflow-empty").boundingBox();
+    const selection = await page.locator(".remediation-workflow-selection").boundingBox();
+    expect(selection!.width).toBeCloseTo(layout!.width, 0);
+    await expect(page.getByRole("navigation", { name: "Remediation workflow" })).toBeVisible();
+    await expect(page.locator(".copilot-insights")).toHaveCount(1);
+    expect(await page.locator(".remediation-workflow-empty").evaluate((element) =>
+      Boolean(element.compareDocumentPosition(document.querySelector(".copilot-insights")!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  });
+}
+
+test("legacy vulnerabilities destination opens Exposure rather than a duplicate workspace", async ({ page }) => {
+  await page.goto("/vulnerabilities");
+  await expect(page).toHaveURL(/\/exposure\/patch-priorities$/);
+  await expect(page.getByRole("heading", { name: "Patch priorities", exact: true })).toBeVisible();
 });
