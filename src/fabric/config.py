@@ -27,6 +27,7 @@ class OntologyRuntimeConfig:
     enabled: bool = True
     ontology_id: str = ""
     ontology_name: str = "Operational_Context_Graph"
+    native_registry_mapping: bool = False
 
 
 @dataclass(frozen=True)
@@ -402,6 +403,9 @@ class FabricRuntimeConfig:
             for item in (fabric.get("shortcuts") or [])
         )
         ontology_payload = fabric.get("ontology") or {}
+        native_registry_mapping = ontology_payload.get("native_registry_mapping", False)
+        if not isinstance(native_registry_mapping, bool):
+            raise TypeError("fabric.ontology.native_registry_mapping must be boolean")
         raw_topology_payload = fabric.get("topology_pipeline", {})
         if raw_topology_payload is False:
             topology_payload = {"enabled": False}
@@ -622,6 +626,7 @@ class FabricRuntimeConfig:
                 ontology_name=str(
                     ontology_payload.get("ontology_name") or "Operational_Context_Graph"
                 ),
+                native_registry_mapping=native_registry_mapping,
             ),
             topology_pipeline=PipelineToggleRuntimeConfig(enabled=topology_enabled),
             ontology_pipeline=PipelineToggleRuntimeConfig(

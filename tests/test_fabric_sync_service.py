@@ -3408,3 +3408,101 @@ def test_wholesale_wipe_guard_fails_a_collapsed_publication(tmp_path: Path) -> N
         )
 
     assert "collapsed source projection" in str(excinfo.value).lower()
+
+
+def _native_mapping_service(
+    tmp_path: Path, *, native: bool
+) -> tuple[FabricSyncService, Path]:
+    source = tmp_path / "source"
+    lakehouse = tmp_path / "lakehouse"
+    _container_source_snapshot(
+        source,
+        observed_at=datetime(2026, 9, 2, tzinfo=UTC),
+        run_id="source-generation-1",
+        provider_event_time=False,
+    )
+    service = FabricSyncService(
+        source_root=source,
+        onelake=OneLakeWriter("workspace", "lakehouse", local_root=lakehouse),
+        delta_writer=DeltaWriter(),
+        validator=DataQualityValidator(),
+        native_registry_mapping=native,
+    )
+    return service, lakehouse
+
+
+def test_native_registry_mapping_publishes_two_column_pairs_only(
+    tmp_path: Path,
+) -> None:
+    from fabric.native_registry_mapping import TABLE
+
+    service, lakehouse = _native_mapping_service(tmp_path, native=True)
+    result = service.sync()
+    assert result.status == "completed"
+
+    uri = lakehouse / f"Tables/{TABLE}"
+    assert DeltaTable(str(uri)).schema().to_arrow().names == [
+        "subject_id",
+        "object_id",
+    ]
+    rows = service.delta.read(uri)
+    assert rows
+    assert all(set(row) == {"subject_id", "object_id"} for row in rows)
+    assert {row["object_id"] for row in rows} == {REGISTRY.casefold()}
+    aggregate = service.delta.read(lakehouse / "Tables/ontology_relationships")
+    assert any(row["predicate"] == "exposes" for row in aggregate)
+    assert "resource_id" in aggregate[0]
+
+    again = service.sync()
+    assert again.status == "completed"
+    assert service.delta.read(uri) == rows
+    assert DeltaTable(str(uri)).schema().to_arrow().names == [
+        "subject_id",
+        "object_id",
+    ]
+
+
+def test_native_registry_mapping_default_off_keeps_generic_schema(
+    tmp_path: Path,
+) -> None:
+    from fabric.native_registry_mapping import TABLE
+
+    service, lakehouse = _native_mapping_service(tmp_path, native=False)
+    assert service.sync().status == "completed"
+    names = DeltaTable(str(lakehouse / f"Tables/{TABLE}")).schema().to_arrow().names
+    assert "resource_id" in names and len(names) > 2
+
+
+def test_native_registry_mapping_malformed_source_stops_before_any_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, lakehouse = _native_mapping_service(tmp_path, native=True)
+
+    def broken(*_args: Any, **_kwargs: Any) -> list[dict[str, str]]:
+        raise ValueError("Native registry mapping relationships are incomplete")
+
+    monkeypatch.setattr(sync_module, "project_native_registry_mapping", broken)
+    with pytest.raises(ValueError, match="incomplete"):
+        service.sync()
+    assert not (lakehouse / "Tables").exists() or not any(
+        (lakehouse / "Tables").glob("ontology_rel_*")
+    )
+
+
+def _write_config(tmp_path: Path, fabric: dict[str, Any]) -> Path:
+    path = tmp_path / "fabric.json"
+    path.write_text(json.dumps({"fabric": fabric}))
+    return path
+
+
+def test_native_registry_mapping_config_parses_with_ontology_disabled(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "workspace_id": "ws",
+        "lakehouse_id": "lh",
+        "ontology": {"enabled": False, "native_registry_mapping": True},
+    }
+    config = FabricRuntimeConfig.load(_write_config(tmp_path, payload))
+    assert config.ontology.enabled is False
+    assert config.ontology.native_registry_mapping is True
