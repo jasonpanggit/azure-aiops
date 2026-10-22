@@ -381,6 +381,22 @@ class RelationshipBuilder:
             connect(finding, "impacts", target, "defender")
             connect(target, "hasVulnerability", finding, "defender")
             connect(finding, "derivedFrom", assessment, "defender")
+        for exposure in by_type["ContainerImageExposure"]:
+            payload = _payload(exposure)
+            registry_id = str(
+                payload.get("registryResourceId")
+                or payload.get("registry_resource_id")
+                or ""
+            ).strip().casefold()
+            registry = by_id.get(registry_id)
+            if registry and registry["entity_type"] == "ContainerRegistry":
+                connect(
+                    exposure,
+                    "exposes",
+                    registry,
+                    "exposure:defender",
+                    {"registry_resource_id": registry_id},
+                )
         for observation in by_type["VulnerabilityObservation"]:
             payload = _payload(observation)
             target = by_id.get(

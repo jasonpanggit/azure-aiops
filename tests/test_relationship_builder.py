@@ -2,10 +2,82 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from test_entity_builder import resource
 
 from ontology.entity_builder import EntityBuilder
 from ontology.relationship_builder import RelationshipBuilder
+
+
+@pytest.mark.parametrize("field", ["registryResourceId", "registry_resource_id"])
+def test_exposure_registry_relationship_uses_explicit_bound_registry(field):
+    registry_id = "/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.containerregistry/registries/acr"
+    exposure_id = f"{registry_id}/images/sha256:abc"
+    sources = [
+        resource(
+            resource_id=registry_id,
+            entity_type="ContainerRegistry",
+            resource_type="microsoft.containerregistry/registries",
+            payload_json="{}",
+        ),
+        resource(
+            resource_id=exposure_id,
+            entity_type="ContainerImageExposure",
+            resource_type="microsoft.containerregistry/registries/images",
+            payload_json=json.dumps({field: registry_id.upper()}),
+        ),
+    ]
+    entities = EntityBuilder().build(sources, "run-1")
+    relationships = RelationshipBuilder().build(entities, "run-1")
+    edges = [row for row in relationships if row["predicate"] == "exposes"]
+    assert len(edges) == 1
+    edge = edges[0]
+    assert (edge["subject_id"], edge["subject_type"]) == (
+        exposure_id, "ContainerImageExposure",
+    )
+    assert (edge["object_id"], edge["object_type"]) == (
+        registry_id, "ContainerRegistry",
+    )
+    repeated = RelationshipBuilder().build(list(reversed(entities)), "run-2")
+    replay = next(row for row in repeated if row["predicate"] == "exposes")
+    assert replay["resource_id"] == edge["resource_id"]
+    assert replay["change_version"] == edge["change_version"]
+
+
+@pytest.mark.parametrize("binding,registry_type,include_registry", [
+    ("", "ContainerRegistry", True),
+    (None, "ContainerRegistry", True),
+    ("/missing", "ContainerRegistry", True),
+    ("bound", "Resource", True),
+    ("bound", "ContainerRegistry", False),
+])
+def test_exposure_registry_relationship_never_infers_missing_binding(
+    binding, registry_type, include_registry,
+):
+    registry_id = "/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.containerregistry/registries/acr"
+    payload = {
+        "targetResourceId": registry_id,
+        "registryHost": "acr.azurecr.io",
+        "registryResourceId": registry_id if binding == "bound" else binding,
+    }
+    sources = [
+        resource(
+            resource_id=f"{registry_id}/images/sha256:abc",
+            entity_type="ContainerImageExposure",
+            resource_type="microsoft.containerregistry/registries/images",
+            payload_json=json.dumps(payload),
+        ),
+    ]
+    if include_registry:
+        sources.append(resource(
+            resource_id=registry_id, entity_type=registry_type,
+            resource_type="unknown", payload_json="{}",
+        ))
+    entities = EntityBuilder().build(sources, "run-1")
+    assert not [
+        row for row in RelationshipBuilder().build(entities, "run-1")
+        if row["predicate"] == "exposes"
+    ]
 
 
 def test_relationship_builder_discovers_structural_and_tag_relationships():
