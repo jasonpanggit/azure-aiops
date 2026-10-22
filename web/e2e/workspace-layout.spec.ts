@@ -298,6 +298,14 @@ for (const width of [1440, 820, 768, 375, 320]) {
     expect((await request).postDataJSON()).toEqual({ scenario: "cve_exploitation", target: resourceId });
     await expect(page.getByRole("region", { name: "Raw twin export", exact: true })).toBeHidden();
     const disclosure = page.getByText("Inspect full twin export", { exact: true });
+    await expect(page.locator(".twin-export-data")).toHaveCount(0);
+    const suggestedQuestions = page.getByText("View suggested questions", { exact: true });
+    const question = page.getByText("What changed since the previous twin revision?", { exact: true });
+    await expect(question).toBeHidden();
+    await suggestedQuestions.click();
+    await expect(question).toBeVisible();
+    await suggestedQuestions.click();
+    await expect(question).toBeHidden();
     await disclosure.focus();
     await disclosure.press("Enter");
     const data = page.getByRole("region", { name: "Raw twin export", exact: true });
@@ -313,7 +321,11 @@ for (const width of [1440, 820, 768, 375, 320]) {
       await scenario.screenshot({ path: testInfo.outputPath(`twin-scenario-${width}.png`) });
     }
     await disclosure.click();
-    await expect(data).toBeHidden();
+    await expect(data).toHaveCount(0);
+    await disclosure.click();
+    await expect(data).toContainText("operational-twin-export");
+    await disclosure.click();
+    await expect(data).toHaveCount(0);
     await page.getByRole("button", { name: "Ask Copilot about the twin", exact: true }).click();
     await expect(page.getByRole("dialog", { name: "Operations Copilot", exact: true })).toBeVisible();
     await page.keyboard.press("Escape");

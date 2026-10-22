@@ -115,7 +115,12 @@ describe("Operational Digital Twin workspace", () => {
     expect(screen.getByText(/Partial projection: traversal or display bounds reached/)).toHaveTextContent("Showing 4 of 30");
     expect(screen.getByText("Not established by mapped links")).toBeInTheDocument();
     expect(screen.getByText("Operator validation required")).toBeInTheDocument();
-    expect(screen.getByText("operational-twin-export")).toBeInTheDocument();
+    const disclosure = screen.getByText("Inspect full twin export");
+    expect(screen.queryByText("operational-twin-export")).not.toBeInTheDocument();
+    fireEvent.click(disclosure);
+    expect(await screen.findByText("operational-twin-export")).toBeInTheDocument();
+    fireEvent.click(disclosure);
+    await waitFor(() => expect(screen.queryByText("operational-twin-export")).not.toBeInTheDocument());
 
     fireEvent.change(screen.getByLabelText("Scenario"), { target: { value: "cve_exploitation" } });
     await waitFor(() => expect(scenario).toHaveBeenLastCalledWith("cve_exploitation", "vm-payroll-1", {}));
@@ -149,6 +154,8 @@ describe("Operational Digital Twin workspace", () => {
 
   it("reports failed refreshes without retaining the prior snapshot or export", async () => {
     renderPage();
+    await screen.findByRole("heading", { name: "Twin model" });
+    fireEvent.click(screen.getByText("Inspect full twin export"));
     expect(await screen.findByText("operational-twin-export")).toBeInTheDocument();
     graph.mockRejectedValueOnce(new Error("Twin refresh unavailable"));
     fireEvent.click(screen.getByRole("button", { name: "Refresh current state" }));
