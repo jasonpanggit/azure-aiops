@@ -3428,6 +3428,12 @@ def _native_mapping_service(
         validator=DataQualityValidator(),
         native_registry_mapping=native,
     )
+    write_mode_for_table = service._write_mode_for_table
+    service._write_mode_for_table = lambda name: (  # type: ignore[method-assign]
+        DeltaWriteMode.OVERWRITE
+        if name == "metadata_audit_events"
+        else write_mode_for_table(name)
+    )
     return service, lakehouse
 
 
@@ -3506,3 +3512,72 @@ def test_native_registry_mapping_config_parses_with_ontology_disabled(
     config = FabricRuntimeConfig.load(_write_config(tmp_path, payload))
     assert config.ontology.enabled is False
     assert config.ontology.native_registry_mapping is True
+
+
+def test_native_registry_mapping_rolls_back_pair_table_and_retry_converges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fabric.native_registry_mapping import TABLE
+
+    service, lakehouse = _native_mapping_service(tmp_path, native=True)
+    service.write_workers = 1
+    assert service.sync().status == "completed"
+    uri = lakehouse / f"Tables/{TABLE}"
+    aggregate_uri = lakehouse / "Tables/ontology_relationships"
+    version_before = DeltaTable(str(uri)).version()
+    pairs_before = service.delta.read(uri)
+    aggregate_version_before = DeltaTable(str(aggregate_uri)).version()
+
+    _container_source_snapshot(
+        tmp_path / "source",
+        observed_at=datetime(2026, 9, 3, tzinfo=UTC),
+        run_id="source-generation-2",
+        provider_event_time=False,
+    )
+    original_write = service.delta.write
+    state = {"pair_written": False, "pair_digest": ""}
+
+    def fail_after_pair_commit(table_uri, rows, **kwargs):
+        name = Path(str(table_uri)).name
+        if state["pair_written"] and name != TABLE:
+            raise RuntimeError("injected failure after pair commit")
+        result = original_write(table_uri, rows, **kwargs)
+        if name == TABLE:
+            state["pair_written"] = True
+            state["pair_digest"] = kwargs["transaction_digest"]
+            assert DeltaTable(str(uri)).version() > version_before
+        return result
+
+    monkeypatch.setattr(service.delta, "write", fail_after_pair_commit)
+    with pytest.raises(RuntimeError, match="injected failure after pair commit"):
+        service.sync()
+
+    assert state["pair_written"] and state["pair_digest"]
+    assert DeltaTable(str(uri)).schema().to_arrow().names == ["subject_id", "object_id"]
+    assert service.delta.read(uri) == pairs_before
+    assert DeltaTable(str(aggregate_uri)).version() >= aggregate_version_before
+    monkeypatch.setattr(service.delta, "write", original_write)
+    assert service.sync().status == "completed"
+    assert DeltaTable(str(uri)).schema().to_arrow().names == ["subject_id", "object_id"]
+    rows = service.delta.read(uri)
+    assert rows == pairs_before
+    assert len({(r["subject_id"], r["object_id"]) for r in rows}) == len(rows)
+
+
+def test_native_registry_mapping_requires_all_typed_products_present(
+    tmp_path: Path,
+) -> None:
+    from fabric.native_registry_mapping import TABLE
+
+    service, _lakehouse = _native_mapping_service(tmp_path, native=True)
+    exposure = sync_module.ontology_entity_table("ContainerImageExposure")
+    registry = sync_module.ontology_entity_table("ContainerRegistry")
+    items = [(TABLE, [])]
+    for missing in (TABLE, exposure, registry):
+        datasets = {TABLE: [], exposure: [], registry: []}
+        del datasets[missing]
+        with pytest.raises(ValueError, match="missing typed product"):
+            service._native_mapping_publish_items(items, datasets)
+    assert service._native_mapping_publish_items(
+        items, {TABLE: [], exposure: [], registry: []}
+    ) == [(TABLE, [])]

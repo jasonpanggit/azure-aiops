@@ -4004,11 +4004,14 @@ class FabricSyncService:
         """
         if not self.native_registry_mapping:
             return publish_items
-        pairs = project_native_registry_mapping(
-            datasets.get(NATIVE_MAPPING_TABLE, []),
-            datasets.get(ontology_entity_table("ContainerImageExposure"), []),
-            datasets.get(ontology_entity_table("ContainerRegistry"), []),
+        products = (
+            NATIVE_MAPPING_TABLE,
+            ontology_entity_table("ContainerImageExposure"),
+            ontology_entity_table("ContainerRegistry"),
         )
+        if any(name not in datasets for name in products):
+            raise ValueError("Native registry mapping missing typed product")
+        pairs = project_native_registry_mapping(*(datasets[name] for name in products))
         return [
             (name, pairs if name == NATIVE_MAPPING_TABLE else rows)
             for name, rows in publish_items
