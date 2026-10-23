@@ -795,6 +795,8 @@ textarea:focus-visible {
 
 .page-header-signal {
   display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   align-items: center;
   gap: 7px;
   margin-bottom: 12px;
@@ -803,6 +805,11 @@ textarea:focus-visible {
   font-weight: 700;
   letter-spacing: .1em;
   text-transform: uppercase;
+}
+
+.page-header-signal > span:not(.page-header-signal-dot) {
+  flex: 0 1 auto;
+  overflow-wrap: normal;
 }
 
 .page-header-signal-dot {
@@ -2414,7 +2421,7 @@ textarea:focus-visible {
 .search-field input,
 .form-control {
   width: 100%;
-  min-height: 36px;
+  min-height: var(--control-height);
   padding: 7px 10px;
   color: var(--color-text);
   background: var(--color-surface);
@@ -2477,7 +2484,7 @@ textarea:focus-visible {
   flex-wrap: wrap;
   gap: 8px;
   padding: 8px 14px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-text-muted);
   background: var(--color-surface-subtle);
   border-top: 1px solid var(--color-border);
@@ -2507,9 +2514,9 @@ textarea:focus-visible {
 }
 
 .table-footer-size {
-  height: 26px;
-  padding: 0 6px;
-  font-size: 11px;
+  min-height: var(--control-height);
+  padding: 6px 10px;
+  font-size: 14px;
   color: var(--color-text);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -2525,14 +2532,14 @@ textarea:focus-visible {
 }
 
 .table-footer .button {
-  min-height: 26px;
+  min-height: var(--control-height);
   padding: 0 9px;
-  font-size: 11px;
+  font-size: 14px;
   white-space: nowrap;
 }
 
 .table-footer-page {
-  min-width: 26px;
+  min-width: var(--control-height);
   padding: 0 5px;
   justify-content: center;
 }
@@ -2732,6 +2739,17 @@ textarea:focus-visible {
   min-width: 0;
   flex-direction: column;
   gap: 10px;
+}
+
+.twin-entity-empty {
+  display: grid;
+  align-content: center;
+  gap: 12px;
+  min-height: 240px;
+  padding: 24px;
+  background: var(--color-surface-subtle);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
 }
 
 .twin-entity-search input,
@@ -4649,7 +4667,7 @@ textarea:focus-visible {
 
 @media (max-width: 560px) {
   .exposure-detail-page .page-header-actions,
-  .exposure-detail-page .page-header-actions .button {
+  .exposure-detail-page .page-header-actions .button:not(.copilot-drawer-trigger) {
     width: 100%;
   }
 
@@ -6957,6 +6975,16 @@ body.topology-fullscreen-open {
   overflow-wrap: anywhere;
 }
 
+.patch-review-form > summary {
+  min-height: var(--control-height);
+  align-content: center;
+  color: var(--color-brand);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.patch-review-form[open] > summary { margin-bottom: 12px; }
+
 .exposure-recovery .patch-review-selection input {
   width: 20px;
   min-height: 20px;
@@ -7239,6 +7267,21 @@ body.topology-fullscreen-open {
   border-top: 1px solid var(--color-border);
   overflow-wrap: anywhere;
 }
+
+.observation-metadata {
+  display: grid;
+  gap: 8px;
+  margin-block: 12px;
+}
+
+.observation-metadata > div {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.observation-metadata dt { color: var(--color-text-secondary); }
+.observation-metadata dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 
 .change-observations summary {
   padding-block: 12px;
@@ -8813,6 +8856,10 @@ body.topology-fullscreen-open {
 
 .tab-list {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scroll-padding-inline: 4px;
   gap: 4px;
   padding: 4px;
   background: var(--color-surface-muted);

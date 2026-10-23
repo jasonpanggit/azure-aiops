@@ -168,6 +168,15 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await expect(page.getByLabel("Client secret *", { exact: true })).toBeVisible();
     await assertBounds(page, width);
     await page.getByRole("button", { name: "Close onboarding form" }).click();
+    const firstTab = page.getByRole("tab", { name: "Subscriptions", exact: true });
+    await firstTab.focus();
+    await firstTab.press("End");
+    const lastTab = page.getByRole("tab", { name: "Ontology automation", exact: true });
+    await expect(lastTab).toBeFocused();
+    await expect.poll(async () => {
+      const box = await lastTab.boundingBox();
+      return box !== null && box.x >= 0 && box.x + box.width <= width;
+    }).toBe(true);
     await page.getByRole("tab", { name: "Fabric Medallion", exact: true }).click();
     const selector = page.getByRole("combobox", { name: "Subscription connection", exact: true });
     await expect(selector).toHaveValue(connection.connection_id);

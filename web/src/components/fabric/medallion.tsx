@@ -488,6 +488,7 @@ function unverifiedObservationCopy(
 
 function FabricIngestionPanel({ ingestionHistory }: { ingestionHistory: { data: Envelope<{ runs: FabricIngestionRun[] }> | null; error: Error | null; loading: boolean } }) {
   const runs = ingestionHistory.data?.data.runs ?? [];
+  const paging = useTablePagination(runs);
   return (
     <section id="fabric-ingestion" className="card" aria-labelledby="fabric-ingestion-heading">
       <div className="card-header"><div><h2 id="fabric-ingestion-heading">Ingestion history / failed runs</h2><p>Review recent source and publication attempts, failures, and retry guidance.</p></div></div>
@@ -499,8 +500,10 @@ function FabricIngestionPanel({ ingestionHistory }: { ingestionHistory: { data: 
         ) : runs.length === 0 ? (
           <StatePanel title="No ingestion attempts reported" message="An empty history does not establish successful ingestion or publication for this scope." />
         ) : (
+          <>
+          <p>{runs.length} returned attempts; {runs.filter(run => run.status === "failed").length} failed. Counts describe this returned history, not all ingestion activity.</p>
           <div className="compliance-list">
-            {runs.map((run) => (
+            {paging.pageRows.map((run) => (
               <div key={`${run.source}:${run.projection_name}:${run.attempted_at}:${run.status}`} className="compliance-row">
                 <div>
                   <strong>{run.projection_name}</strong>
@@ -510,6 +513,10 @@ function FabricIngestionPanel({ ingestionHistory }: { ingestionHistory: { data: 
               </div>
             ))}
           </div>
+          <TablePagination pageRows={paging.pageRows.length} page={paging.page}
+            onPageChange={paging.setPage} pageSize={paging.pageSize}
+            onPageSizeChange={paging.setPageSize} total={paging.total} label="returned ingestion attempts" />
+          </>
         )}
       </div>
     </section>

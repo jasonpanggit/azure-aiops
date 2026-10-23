@@ -306,11 +306,10 @@ export default function FinOpsPage() {
     const totalsByType = new Map<string, number>();
     for (const item of filteredWasteRows) {
       const key = titleize(item.resource_type || "Resource");
-      totalsByType.set(key, (totalsByType.get(key) ?? 0) + (item.annual_savings ?? 0));
+      totalsByType.set(key, (totalsByType.get(key) ?? 0) + 1);
     }
     return Array.from(totalsByType.entries())
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
       .map(([label, value], index) => ({ id: `waste-${index}`, label, value }));
   }, [filteredWasteRows]);
 
@@ -570,7 +569,8 @@ export default function FinOpsPage() {
               {wasteByType.length > 0 && (
                 <div className="chart-card">
                   <h3 className="chart-card-title">Waste by resource type</h3>
-                  <CountBarChart data={wasteByType} unit="resource type" />
+                  <p>Counts of filtered returned waste records, not savings amounts. Unquantified savings remain unknown in the records below.</p>
+                  <CountBarChart data={wasteByType} unit="waste records" />
                 </div>
               )}
             </div>

@@ -507,6 +507,29 @@ describe("Per-subscription Fabric medallion page", () => {
     }));
   });
 
+  it("paginates all returned ingestion attempts without hiding failure totals", async () => {
+    fabricIngestionHistory.mockResolvedValue(envelope({
+      runs: Array.from({ length: 25 }, (_, index) => ({
+        source: "publication",
+        projection_name: `attempt-${index + 1}`,
+        attempted_at: "2026-01-01T00:00:00Z",
+        status: index === 24 ? "failed" : "succeeded",
+        retry_eligible: index === 24,
+      })),
+    }));
+    renderPage();
+    const history = await screen.findByRole("region", { name: "Ingestion history / failed runs" });
+    await waitFor(() => expect(within(history).getByText(/25 returned attempts; 1 failed/)).toBeInTheDocument());
+    expect(within(history).getByText("attempt-20")).toBeInTheDocument();
+    expect(within(history).queryByText("attempt-25")).not.toBeInTheDocument();
+    fireEvent.click(within(history).getByRole("button", { name: "Next page" }));
+    expect(within(history).getByText("attempt-25")).toBeInTheDocument();
+    expect(within(history).getByText("Retry via subscription sync")).toBeInTheDocument();
+    expect(within(history).queryByText("attempt-1")).not.toBeInTheDocument();
+    fireEvent.click(within(history).getByRole("button", { name: "Previous page" }));
+    expect(within(history).getByText("attempt-1")).toBeInTheDocument();
+  });
+
   it("does not infer semantic validation from a blocked deployment or an empty history", async () => {
     fabricCapabilities.mockResolvedValue(envelope({
       ...capabilitySnapshot,

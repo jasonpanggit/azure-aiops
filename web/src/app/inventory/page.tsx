@@ -603,6 +603,8 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
   const softwarePartialWithRows = softwarePartialSource?.state === "partial"
     && softwarePartialSource.row_count > 0
     && softwareGroups.length > 0;
+  const softwareUnavailable = Boolean(softwarePartialSource && !softwarePartialWithRows);
+  const softwareSummaryAvailable = Boolean(softwareInventory.data && !softwareUnavailable);
   const mappingItems: SoftwareMapping[] = mappings.data?.data.mappings ?? [];
   const activeCopilotState = tab === "software"
     ? softwareInventory
@@ -1167,14 +1169,25 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
 
       {tab === "software" ? (
         <section id="installed-software-panel" role="tabpanel" aria-labelledby="installed-software-tab" tabIndex={0}>
+          {softwarePartialSource && (
+            <StatePanel
+              title={softwarePartialWithRows
+                ? "Installed software source is partial"
+                : "Installed software source is unavailable"}
+              message={softwarePartialWithRows
+                ? "Log Analytics source is partial; successful rows are shown, but coverage may be incomplete."
+                : `Log Analytics source is ${softwarePartialSource.state}; rows are not presented as a successful empty result.`}
+              tone={softwarePartialWithRows ? "partial" : "error"}
+            />
+          )}
           <section id="inventory-summary" aria-label="Installed software summary" className="metric-grid">
-            <MetricCard label="Software groups" value={softwareInventory.data ? softwareInventory.data.pagination?.total ?? filteredSoftwareGroups.length : "—"} detail="Matching canonical name/version groups" />
-            <MetricCard label="Installations" value={softwareInventory.data ? softwareTotal : "—"} detail={softwareInventory.data?.data.summary ? "All matching authorized installations" : "Visible page only"} />
+            <MetricCard label="Software groups" value={softwareSummaryAvailable ? softwareInventory.data?.pagination?.total ?? filteredSoftwareGroups.length : "—"} detail={softwareUnavailable ? "Source unavailable; count unknown" : "Matching canonical name/version groups"} />
+            <MetricCard label="Installations" value={softwareSummaryAvailable ? softwareTotal : "—"} detail={softwareUnavailable ? "Source unavailable; count unknown" : softwareInventory.data?.data.summary ? "All matching authorized installations" : "Visible page only"} />
             <MetricCard
               label="Unlinked rows"
-              value={softwareInventory.data ? unlinkedSoftware : "—"}
+              value={softwareSummaryAvailable ? unlinkedSoftware : "—"}
               detail="Exact resource join required"
-              tone={unlinkedSoftware > 0 ? "warning" : "success"}
+              tone={!softwareSummaryAvailable ? "default" : unlinkedSoftware > 0 ? "warning" : "success"}
             />
           </section>
           <div id="inventory-records" className="inventory-filters" aria-label="Installed software filters">
@@ -1251,22 +1264,11 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
           {softwareInventory.error && (
             <StatePanel title="Installed software unavailable" message={inventoryUnavailableMessage(softwareInventory.error)} tone="error" />
           )}
-          {!softwareInventory.loading && !softwareInventory.error && softwareGroups.length === 0 && !softwareInventory.data?.data.represented_group_count && (
+          {!softwareInventory.loading && !softwareInventory.error && !softwarePartialSource && softwareGroups.length === 0 && !softwareInventory.data?.data.represented_group_count && (
             <StatePanel title="No installed software observations" message="The authorized scope has no successful ConfigurationData rows." />
           )}
-          {!softwareInventory.loading && !softwareInventory.error && (softwareInventory.data?.data.represented_group_count ?? 0) > 0 && (softwareInventory.data?.pagination?.total ?? 0) === 0 && (
+          {!softwareInventory.loading && !softwareInventory.error && !softwareUnavailable && (softwareInventory.data?.data.represented_group_count ?? 0) > 0 && (softwareInventory.data?.pagination?.total ?? 0) === 0 && (
             <StatePanel title="No matching installed software" message="Adjust the search, source, or subscription filters." />
-          )}
-          {softwarePartialSource && (
-            <StatePanel
-              title={softwarePartialWithRows
-                ? "Installed software source is partial"
-                : "Installed software source is unavailable"}
-              message={softwarePartialWithRows
-                ? "Log Analytics source is partial; successful rows are shown, but coverage may be incomplete."
-                : `Log Analytics source is ${softwarePartialSource.state}; rows are not presented as a successful empty result.`}
-              tone={softwarePartialWithRows ? "partial" : "error"}
-            />
           )}
           {filteredSoftwareGroups.length > 0 && (
             <section aria-label="Installed software groups" className="inventory-groups">

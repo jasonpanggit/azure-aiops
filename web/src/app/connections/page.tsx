@@ -638,8 +638,8 @@ function ConnectionsPageContent() {
       </div>
 
       {tab === "subscriptions" && readinessConnection ? <>
-        <label>Connection readiness scope
-          <select value={readinessConnection.connection_id} onChange={event => continueWorkflow(tab, event.target.value)}>
+        <label className="form-field connection-scope-control">Connection readiness scope
+          <select className="form-control" value={readinessConnection.connection_id} onChange={event => continueWorkflow(tab, event.target.value)}>
             {activeConnections.map(connection => <option key={connection.connection_id} value={connection.connection_id}>{connection.name} - {connection.subscription_id}</option>)}
           </select>
         </label>
@@ -648,8 +648,8 @@ function ConnectionsPageContent() {
 
       {hasRequestedConnection && !connections.loading && !connections.error && !activeConnections.some(connection => connection.connection_id === requestedConnectionId)
         ? <StatePanel title="Bookmarked connection is unavailable in this scope" message="Select another authorized connection. This bookmark will not silently target a different subscription." /> : null}
-      {tab === "subscriptions" && !readinessConnection && activeConnections.length > 0 ? <label>Connection readiness scope
-        <select value="" onChange={event => continueWorkflow(tab, event.target.value)}>
+      {tab === "subscriptions" && !readinessConnection && activeConnections.length > 0 ? <label className="form-field connection-scope-control">Connection readiness scope
+        <select className="form-control" value="" onChange={event => continueWorkflow(tab, event.target.value)}>
           <option value="">Select an authorized connection</option>
           {activeConnections.map(connection => <option key={connection.connection_id} value={connection.connection_id}>{connection.name} - {connection.subscription_id}</option>)}
         </select>

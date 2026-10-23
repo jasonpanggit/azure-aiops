@@ -118,7 +118,11 @@ export function EntityGraph({ snapshot, onSelectResource }: {
         {query || kind ? <button className="button" type="button" onClick={() => { setQuery(""); setKind(""); }}>Clear entity filters</button> : null}
       </div>
       <div className="twin-entity-detail">
-        {!selected ? <p className="muted">Select an entity to draw its linked neighborhood. Nothing is selected automatically.</p> : <>
+        {!selected ? <div className="twin-entity-empty">
+          <h3>Choose an entity to explore</h3>
+          <p className="muted">Select an entity to draw its linked neighborhood. Nothing is selected automatically.</p>
+          <p>Use the name or type filters to narrow the list, then select a result to review its observed relationships.</p>
+        </div> : <>
           <div className="twin-entity-focus" aria-label="Focused entity">
             <h3>{selected.name}</h3>
             <p>{selected.id}</p>

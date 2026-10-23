@@ -41,6 +41,18 @@ describe("Review-only patch batch", () => {
     expect(screen.getByText(/source observed: unreported/)).toBeVisible();
     expect(screen.getByText("Review missing updates")).toBeVisible();
   });
+  it("discloses a large duplicate selection list without hiding readiness or read errors", async () => {
+    render(<PatchReview query={query} rows={Array.from({ length: 6 }, (_, index) => ({
+      ...row, exposure_id: `finding-${index}`, target_id: `vm-${index}`,
+    }))} ready />);
+    await screen.findByText(/Patch review revision 0/);
+    expect(screen.getByRole("checkbox", { name: "KB600001 — vm-0" })).not.toBeVisible();
+    fireEvent.click(screen.getByText("Select findings and prepare a review (0 selected; 6 available)"));
+    expect(screen.getAllByRole("checkbox")).toHaveLength(6);
+    fireEvent.click(screen.getByRole("checkbox", { name: "KB600001 — vm-0" }));
+    expect(screen.getByText("Select findings and prepare a review (1 selected; 6 available)")).toBeVisible();
+    expect(api.createPatchReview).not.toHaveBeenCalled();
+  });
   it("recovers ambiguous reply by explicit read without automatic POST retry", async () => {
     api.createPatchReview.mockRejectedValueOnce(new Error("Reply lost"));
     render(<PatchReview query={query} rows={[row]} ready />);

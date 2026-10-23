@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ScopeSelection } from "@/lib/scope";
+import { RESOURCE_HEALTH_INSIGHT_QUESTION } from "@/lib/copilot/page-adapters";
 import type {
   Envelope,
   FlatInventoryResource,
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   resourceHealth: vi.fn(),
   retainedHealth: vi.fn(),
   captureRetainedHealth: vi.fn(),
+  copilotInsights: vi.fn(() => null),
   scope: { current: { subscription: ["sub-a"] } as ScopeSelection },
 }));
 
@@ -39,7 +41,12 @@ vi.mock("@/components/ui/CopilotDrawerButton", () => ({
   CopilotDrawerButton: () => null,
 }));
 
-vi.mock("@/lib/copilot/page-adapters", () => ({
+vi.mock("@/components/ui/CopilotInsights", () => ({
+  CopilotInsights: mocks.copilotInsights,
+}));
+
+vi.mock("@/lib/copilot/page-adapters", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/copilot/page-adapters")>(),
   buildResourceHealthCopilotContext: () => ({
     requestedScope: {},
     snapshot: {},
@@ -212,11 +219,43 @@ function installDeferredHealthMock() {
 
 describe("ResourceHealthPage inventory-first hydration", () => {
   beforeEach(() => {
+    mocks.copilotInsights.mockClear();
     mocks.inventoryResources.mockReset();
     mocks.resourceHealth.mockReset();
     mocks.retainedHealth.mockReset();
     mocks.captureRetainedHealth.mockReset();
     mocks.scope.current = { subscription: ["sub-a"] };
+  });
+
+  it("binds automatic insights to the Health page-only evidence intent", () => {
+    mocks.inventoryResources.mockResolvedValue(inventoryEnvelope([]));
+    render(<ResourceHealthPage />);
+    expect(mocks.copilotInsights).toHaveBeenCalledWith(
+      expect.objectContaining({ question: RESOURCE_HEALTH_INSIGHT_QUESTION }),
+      expect.anything(),
+    );
+  });
+
+  it("distinguishes health responses from quantified CPU samples and preserves unknowns", async () => {
+    const rows = [inventoryResource(1), inventoryResource(2)];
+    mocks.inventoryResources.mockResolvedValue(inventoryEnvelope(rows));
+    const harness = installDeferredHealthMock();
+    render(<ResourceHealthPage />);
+    await waitFor(() => expect(harness.calls).toHaveLength(2));
+    const unknown = healthEnvelope(rows[0]);
+    unknown.data.resources[0].cpu_percent = null;
+    unknown.data.resources[0].status = "unknown";
+    unknown.data.resources[0].unavailable_metrics = ["cpu_percent", "memory_percent", "disk_free_percent"];
+    const populated = healthEnvelope(rows[1]);
+    populated.data.resources[0].cpu_percent = 0;
+    await act(async () => {
+      harness.settle(harness.calls[0], { value: unknown });
+      harness.settle(harness.calls[1], { value: populated });
+    });
+    expect(screen.getByText("2 health responses")).toBeInTheDocument();
+    expect(screen.getByText("1 with CPU samples")).toBeInTheDocument();
+    expect(screen.queryByText(/returned metrics/)).not.toBeInTheDocument();
+    expect(screen.getByText(/1 unknown/)).toBeInTheDocument();
   });
 
   it("opens history independently of live hydration and restores the invoking card focus", async () => {
@@ -318,7 +357,7 @@ describe("ResourceHealthPage inventory-first hydration", () => {
     expect(screen.getByText("vm-8")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Resource utilization" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "vm-1", level: 3 })).toBeVisible();
-    expect(screen.getByText("0 of 8 resources returned metrics")).toBeVisible();
+    expect(screen.getByText("0 of 8 health responses · 0 resources with CPU samples")).toBeVisible();
     expect(screen.getByRole("status", { name: "Loading health for vm-1" })).toBeInTheDocument();
     expect(tracker.calls).toHaveLength(6);
     expect(tracker.peak).toBe(6);
@@ -363,7 +402,7 @@ describe("ResourceHealthPage inventory-first hydration", () => {
       await screen.findByRole("alert", { name: "Health error for vm-1" }),
     ).toHaveTextContent("Metrics unavailable");
     expect(screen.getByText("42.0%")).toBeInTheDocument();
-    expect(screen.getByText("1 of 3 resources returned metrics")).toBeVisible();
+    expect(screen.getByText("1 of 3 health responses · 1 resources with CPU samples")).toBeVisible();
     const resourcesRegion = screen.getByRole("region", { name: "Resource utilization" });
     const comparison = screen.getByRole("region", { name: "CPU comparison" });
     expect(resourcesRegion.compareDocumentPosition(comparison) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

@@ -3173,6 +3173,9 @@ const FINOPS_STARTERS: CoreCopilotStarterQuestion[] = [
 ];
 
 // Resource-health hints stay within the resource_health_observability specialist.
+/** Page-only insight intent; unlike an investigation it cannot widen to incident tools. */
+export const RESOURCE_HEALTH_INSIGHT_QUESTION = "Summarize the visible Resource Health utilization evidence.";
+
 const RESOURCE_HEALTH_STARTERS: CoreCopilotStarterQuestion[] = [
   {
     label: "What incidents relate to these resources?",

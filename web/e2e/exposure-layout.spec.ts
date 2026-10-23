@@ -119,7 +119,7 @@ const routes = [
 
 for (const width of [1440, 820, 768, 375, 320]) {
   for (const route of routes) {
-    test(`${route.path} has task-first sections and one insight at ${width}px`, async ({ page }) => {
+    test(`${route.path} has task-first sections and one insight at ${width}px`, async ({ page }, testInfo) => {
       const pageErrors: string[] = [];
       page.on("pageerror", (error) => pageErrors.push(error.message));
       await page.setViewportSize({ width, height: 900 });
@@ -157,9 +157,35 @@ for (const width of [1440, 820, 768, 375, 320]) {
         await expect(freshness.locator(".source-section-freshness")).toBeVisible();
       }
       if (route.path.includes("/cves/") || route.path.includes("/kbs/")) {
+        const trigger = page.locator(".page-header-actions .copilot-drawer-trigger");
+        const buttonBox = await trigger.boundingBox();
+        if (width <= 640) {
+          expect(buttonBox!.width).toBe(44);
+          expect(buttonBox!.height).toBe(44);
+        }
         await expect(page.getByText(route.path.includes("/cves/")
           ? /Approval and execution remain in the governed remediation workflow/
           : /Exposure does not install updates/)).toBeVisible();
+      }
+      const signal = page.locator(".page-header-signal");
+      if (width === 1440 || width === 375) {
+        await page.locator(".page-header").screenshot({ path: testInfo.outputPath(`exposure-header-${width}.png`) });
+      }
+      if (width <= 560 && await signal.count()) {
+        for (const item of await signal.locator(":scope > span").all()) {
+          const brokenWord = await item.evaluate(element => {
+            const text = element.firstChild;
+            if (!text || text.nodeType !== Node.TEXT_NODE) return false;
+            const value = text.textContent ?? "";
+            return Array.from(value.matchAll(/\S+/g)).some(match => {
+              const range = document.createRange();
+              range.setStart(text, match.index!);
+              range.setEnd(text, match.index! + match[0].length);
+              return range.getClientRects().length > 1;
+            });
+          });
+          expect(brokenWord).toBe(false);
+        }
       }
       expect(pageErrors).toEqual([]);
     });

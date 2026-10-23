@@ -17,7 +17,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatePanel } from "@/components/ui/StatePanel";
 import { StatusBadge, statusTone } from "@/components/ui/StatusBadge";
 import { UtilizationBarChart } from "@/components/ui/UtilizationBarChart";
-import { buildResourceHealthCopilotContext } from "@/lib/copilot/page-adapters";
+import { buildResourceHealthCopilotContext, RESOURCE_HEALTH_INSIGHT_QUESTION } from "@/lib/copilot/page-adapters";
 import type { ScopeSelection } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import { inventoryApi, resourceHealthApi } from "@/lib/services";
@@ -476,6 +476,9 @@ export default function ResourceHealthPage() {
       successfulSnapshots.flatMap((snapshot) => snapshot.resources.slice(0, 1)),
     [successfulSnapshots],
   );
+  const resourcesWithCpu = details.filter(
+    (resource) => resource.cpu_percent != null && Number.isFinite(resource.cpu_percent),
+  ).length;
   const summary = useMemo(
     () => ({
       total: resources.length,
@@ -551,7 +554,8 @@ export default function ResourceHealthPage() {
         metadata={
           <>
             <span>{summary.total} in scope</span>
-            <span>{details.length} returned metrics</span>
+            <span>{details.length} health responses</span>
+            <span>{resourcesWithCpu} with CPU samples</span>
             <span>{summary.critical} critical</span>
             <span>{summary.warning} warning</span>
             {latestSnapshot ? (
@@ -599,9 +603,9 @@ export default function ResourceHealthPage() {
         <div className="section-header">
           <div>
             <h2 id="health-resources-heading">Resource utilization</h2>
-            <p>Review returned metrics and retry individual failures. Resources without metrics remain unassessed.</p>
+            <p>Review available measurements and retry individual failures. A returned health response may contain no metric samples; those resources remain unassessed.</p>
           </div>
-          <span>{details.length} of {resources.length} resources returned metrics</span>
+          <span>{details.length} of {resources.length} health responses · {resourcesWithCpu} resources with CPU samples</span>
         </div>
 
       {inventoryLoading ? (
@@ -733,6 +737,7 @@ export default function ResourceHealthPage() {
 
       <CopilotInsights
         snapshot={resourceHealthCopilot.snapshot}
+        question={RESOURCE_HEALTH_INSIGHT_QUESTION}
         ready={!inventoryLoading}
         requestedScope={resourceHealthCopilot.requestedScope}
         contextLabel="Resource health"

@@ -213,6 +213,7 @@ for (const width of [1440, 820, 768, 375, 320]) {
 }
 
 test("Inventory tab arrows wrap and retain one active, reachable panel", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 900 });
   await mockSources(page);
   await page.setViewportSize({ width: 375, height: 900 });
   await page.goto("/inventory");
@@ -222,6 +223,12 @@ test("Inventory tab arrows wrap and retain one active, reachable panel", async (
   await expect(tabs.getByRole("tab", { name: "Installed Software", exact: true })).toBeFocused();
   await expect(page.getByRole("tabpanel", { name: "Installed Software", exact: true })).toBeVisible();
   await page.keyboard.press("End");
+  const selected = page.getByRole("tab", { name: "Azure Inventory" });
+  await expect(selected).toBeFocused();
+  await expect.poll(async () => {
+    const box = await selected.boundingBox();
+    return box !== null && box.x >= 0 && box.x + box.width <= 375;
+  }).toBe(true);
   await expect(page.getByRole("tabpanel", { name: "Azure Inventory", exact: true })).toBeVisible();
   await page.keyboard.press("ArrowRight");
   await expect(tabs.getByRole("tab", { name: "OS Inventory", exact: true })).toBeFocused();

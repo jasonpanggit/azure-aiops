@@ -518,7 +518,12 @@ def _fabric_starter_kind(question: str) -> str | None:
     return None
 
 
+RESOURCE_HEALTH_INSIGHT_QUESTION = "Summarize the visible Resource Health utilization evidence."
+
+
 def _resource_health_starter_kind(question: str) -> str | None:
+    if question == RESOURCE_HEALTH_INSIGHT_QUESTION:
+        return "insight"
     if question == "What incidents relate to these resources?":
         return "incidents"
     if question == "Which services are impacted by resource pressure?":
@@ -526,6 +531,50 @@ def _resource_health_starter_kind(question: str) -> str | None:
     if question == "Search resource utilization anomalies.":
         return "anomalies"
     return None
+
+
+def valid_resource_health_page_snapshot(
+    snapshot: EvidenceSnapshotV2,
+    canonical_snapshot: CanonicalEvidenceSnapshot | None,
+) -> bool:
+    """Admit only identity-validated, exact bounded Health observations."""
+
+    resources = [
+        item for item in snapshot.evidence
+        if item.claim_type == "resource_utilization"
+    ]
+    coverage = [
+        item for item in snapshot.evidence
+        if item.claim_type == "resource_metric_coverage"
+    ]
+    return (
+        snapshot.page_kind == "resource_health"
+        and snapshot.page_id == "resource-health"
+        and len(resources) == snapshot.coverage.visible_count
+        and len(coverage) == 1
+        and len({item.resource_id for item in resources}) == len(resources)
+        and len({
+            str(item.data.get("resource_name") or "").casefold()
+            for item in resources
+        }) == len(resources)
+        and all(_valid_resource_health_observation(item) for item in resources)
+        and all(
+            item.status in {"ok", "partial"}
+            and item.source == "resource-health/metrics"
+            and isinstance(item.entity, ObservationRef)
+            and item.entity.source == "resource-health/metrics"
+            and item.entity.source_key == item.source_key == "metric-coverage"
+            and isinstance(item.data.get("unavailable_metrics"), list)
+            and isinstance(item.data.get("warnings"), list)
+            and isinstance(item.data.get("cached"), bool)
+            for item in coverage
+        )
+        and canonical_snapshot is not None
+        and canonical_snapshot.classification in {"ready", "empty"}
+        and canonical_snapshot.coverage.visible_count == snapshot.coverage.visible_count
+        and canonical_snapshot.coverage.total_count == snapshot.coverage.total_count
+        and canonical_snapshot.coverage.complete == snapshot.coverage.complete
+    )
 
 
 def _valid_resource_health_observation(item: SnapshotEvidence) -> bool:
@@ -1777,54 +1826,8 @@ class OrchestrationService:
             and canonical_selection_snapshot.coverage.complete
             == page_snapshot.coverage.complete
         )
-        resource_health_rows = [
-            item
-            for item in page_snapshot.evidence
-            if item.claim_type == "resource_utilization"
-        ]
-        resource_metric_coverage_rows = [
-            item
-            for item in page_snapshot.evidence
-            if item.claim_type == "resource_metric_coverage"
-        ]
-        exact_resource_health_contract = (
-            page_snapshot.page_kind == "resource_health"
-            and page_snapshot.page_id == "resource-health"
-            and len(resource_health_rows) == page_snapshot.coverage.visible_count
-            and len(resource_metric_coverage_rows) == 1
-            and len({item.resource_id for item in resource_health_rows})
-            == len(resource_health_rows)
-            and len({
-                str(item.data.get("resource_name") or "").casefold()
-                for item in resource_health_rows
-            })
-            == len(resource_health_rows)
-            and all(
-                _valid_resource_health_observation(item)
-                for item in resource_health_rows
-            )
-            and all(
-                item.status in {"ok", "partial"}
-                and item.source == "resource-health/metrics"
-                and isinstance(item.entity, ObservationRef)
-                and item.entity.source == "resource-health/metrics"
-                and item.entity.source_key == item.source_key == "metric-coverage"
-                and isinstance(item.data.get("unavailable_metrics"), list)
-                and isinstance(item.data.get("warnings"), list)
-                and isinstance(item.data.get("cached"), bool)
-                for item in resource_metric_coverage_rows
-            )
-        )
-        accepted_resource_health_observations = (
-            exact_resource_health_contract
-            and canonical_selection_snapshot is not None
-            and canonical_selection_snapshot.classification in {"ready", "empty"}
-            and canonical_selection_snapshot.coverage.visible_count
-            == page_snapshot.coverage.visible_count
-            and canonical_selection_snapshot.coverage.total_count
-            == page_snapshot.coverage.total_count
-            and canonical_selection_snapshot.coverage.complete
-            == page_snapshot.coverage.complete
+        accepted_resource_health_observations = valid_resource_health_page_snapshot(
+            page_snapshot, canonical_selection_snapshot,
         )
         inventory_authority = (
             _inventory_page_authority(
@@ -3596,7 +3599,7 @@ class OrchestrationService:
         snapshot: EvidenceSnapshotV2 | None,
         retained_evidence: Sequence[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Answer the three Resource Health starters from exact page facts."""
+        """Answer Resource Health starters and page insight from exact facts."""
 
         if (
             snapshot is None
@@ -3690,6 +3693,12 @@ class OrchestrationService:
             )
             for metric in unavailable_metrics
         ]
+        metric_uncertainty.extend(
+            f"{item['data']['resource_name']}: {metric} is unavailable; absence is not zero."
+            for item in resource_rows
+            for metric in item["data"].get("unavailable_metrics") or []
+            if str(metric) not in unavailable_metrics
+        )
         counts = (
             f"{len(resource_rows)} utilization observations: "
             f"{statuses['healthy']} healthy, {statuses['warning']} warning, "
@@ -3807,7 +3816,15 @@ class OrchestrationService:
             "finding_id": "resource-health:utilization-anomalies",
             "summary": (
                 f"The retained Resource Health page reports {counts}. "
-                f"{anomaly_detail}{unknown_detail}"
+                + (
+                    "Visible resources: "
+                    + ", ".join(sorted(
+                        str(item["data"]["resource_name"]) for item in resource_rows
+                    ))
+                    + ". "
+                    if starter_kind == "insight" and resource_rows else ""
+                )
+                + f"{anomaly_detail}{unknown_detail}"
             ),
             "evidence_refs": [*evidence_refs, coverage_ref],
             "uncertainty": metric_uncertainty,
