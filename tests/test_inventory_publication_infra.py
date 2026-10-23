@@ -75,7 +75,7 @@ def test_dev_overlay_preserves_reviewed_live_release_not_generic_defaults():
     assert '"F8"' in profile
     assert '"30 14 * * *"' in profile
     assert "inventory_publication_native_registry_mapping" in profile
-    assert "sha256:96bec07ef6ad159e4511110b8a6a81b740d74430e5d027f9111a616aeeac2d60" in profile
+    assert "sha256:fbb773f73cfe115c2720b9c49a3353fe95b0a7ac24cbaa4621d04aa58d8762f9" in profile
     assert 'workspace_id   = "2c1fea36-104d-4c26-86db-12e09e432b41"' in profile
     assert 'graph_model_id = "e4aa8669-82d3-4ef4-9241-47252fca23fd"' in profile
     assert "enable_fabric_ontology_item" not in profile
