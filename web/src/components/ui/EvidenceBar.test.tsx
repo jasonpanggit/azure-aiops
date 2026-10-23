@@ -25,7 +25,7 @@ describe("EvidenceBar graph freshness", () => {
     expect(screen.queryByText(/years ago/)).not.toBeInTheDocument();
   });
 
-  it("uses relative time for a valid stamp and preserves the server confidence tone", () => {
+  it("uses relative time and preserves confidence without treating high confidence as high severity", () => {
     render(
       <EvidenceBar
         graphFreshness="2025-12-31T23:00:00Z"
@@ -42,7 +42,8 @@ describe("EvidenceBar graph freshness", () => {
     );
 
     expect(screen.getByText("Graph").parentElement).toHaveTextContent("Graph 1 hour ago");
-    expect(screen.getByLabelText("Data trust and provenance")).toHaveClass("evidence-bar-high");
+    expect(screen.getByLabelText("Data trust and provenance")).toHaveClass("evidence-bar-info");
+    expect(screen.getByText("Cited evidence · high confidence")).toHaveClass("status-info");
   });
 
   it("qualifies confidence and graph observation labels when a surface supplies subjects", () => {
@@ -93,5 +94,55 @@ describe("EvidenceBar graph freshness", () => {
     expect(disclosure?.querySelectorAll("li")).toHaveLength(2);
     expect(disclosure).toHaveTextContent("Third source is unconfigured");
     expect(disclosure).toHaveTextContent("Fourth source is degraded");
+  });
+
+  it.each([
+    [{ logs: "unavailable" }, "Source coverage unavailable", "critical"],
+    [{ logs: "unavailable", azure_vm: "ready" }, "Source coverage incomplete", "warning"],
+    [{ logs: "partial" }, "Source coverage incomplete", "warning"],
+    [{ logs: "degraded" }, "Source coverage incomplete", "warning"],
+    [{ logs: "stale" }, "Source coverage incomplete", "warning"],
+    [{ logs: " READY ", arc: "Partial" }, "Source coverage incomplete", "warning"],
+    [{ logs: "unknown" }, "Source coverage unknown", "unknown"],
+    [{ logs: "" }, "Source coverage unknown", "unknown"],
+    [{ logs: "ready · 3 loaded" }, "Source coverage unknown", "unknown"],
+    [{ logs: "ready" }, "Sources reporting ready", "info"],
+  ] as const)("separates source coverage from high evidence confidence for %j", (sourceStatus, label, tone) => {
+    render(<EvidenceBar
+      evidence={[{ source_engine: "InventoryService", source_table: "inventory", timestamp: "", confidence: "high", freshness: "fresh" }]}
+      sourceStatus={sourceStatus}
+    />);
+    expect(screen.getByText(label)).toHaveClass(`status-${tone}`);
+    expect(screen.getByLabelText("Data trust and provenance")).toHaveClass(`evidence-bar-${tone}`);
+    expect(screen.getByText("Cited evidence · high confidence")).toHaveClass("status-info");
+    expect(screen.getByText("Confidence describes cited evidence, not source completeness.")).toBeInTheDocument();
+    expect(screen.queryByText(/complete evidence/i)).not.toBeInTheDocument();
+  });
+
+  it.each(["low", "medium"] as const)("does not render %s confidence as a healthy-success signal", confidence => {
+    render(<EvidenceBar evidence={[{ source_engine: "Test", source_table: "rows", timestamp: "", confidence, freshness: "fresh" }]} />);
+    expect(screen.getByText(`Cited evidence · ${confidence} confidence`)).toHaveClass("status-warning");
+  });
+
+  it("does not infer source availability from warnings or timestamps", () => {
+    render(<EvidenceBar warnings={["A source may be unavailable"]} fallbackTimestamp="2025-12-31T23:00:00Z" />);
+    expect(screen.queryByText(/Source coverage/)).not.toBeInTheDocument();
+    expect(screen.getByText("Cited evidence · unknown confidence")).toBeInTheDocument();
+  });
+
+  it("preserves domain aggregate evidence state over source-ready signals", () => {
+    render(<EvidenceBar aggregateState={{ state: "partial", freshness: "stale" }} sourceStatus={{ logs: "ready" }} />);
+    expect(screen.getByText("Partial evidence")).toHaveClass("status-warning");
+    expect(screen.queryByText("Sources reporting ready")).not.toBeInTheDocument();
+  });
+
+  it("does not override explicit complete-and-current domain coverage with a derived source summary", () => {
+    render(<EvidenceBar
+      aggregateState={{ state: "complete", freshness: "current" }}
+      sourceStatus={{ logs: "ready" }}
+      evidence={[{ source_engine: "Test", source_table: "rows", timestamp: "", confidence: "high", freshness: "fresh" }]}
+    />);
+    expect(screen.queryByText(/Source coverage|Sources reporting ready/)).not.toBeInTheDocument();
+    expect(screen.getByText("Cited evidence · high confidence")).toHaveClass("status-info");
   });
 });

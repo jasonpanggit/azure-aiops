@@ -64,6 +64,10 @@ async function mockSources(page: Page, unavailable: string[] = [], empty = false
       const limit = Math.min(Number(url.searchParams.get("limit") ?? 20), maximum);
       return route.fulfill({ json: {
         ...envelope({ ...data, [key]: rows.slice(offset, offset + limit) }),
+        ...(softwareUnavailable ? { evidence: [{
+          source_engine: "InventoryService", source_table: "inventory", timestamp: "2026-09-20T12:00:00Z",
+          confidence: "high", freshness: "fresh",
+        }] } : {}),
         ...(empty ? { warnings: [] } : {}),
         pagination: { offset, limit, total: rows.length, next_offset: offset + limit < rows.length ? offset + limit : null },
       } });
@@ -183,6 +187,14 @@ for (const width of [2560, 1912, 375]) {
     await narrative.screenshot({ path: testInfo.outputPath(`narrative-unknown-${width}.png`) });
     await page.getByRole("tab", { name: "Installed Software", exact: true }).click();
     await expect(page.getByText("Installed software source is unavailable", { exact: true })).toBeVisible();
+    const provenance = page.getByRole("complementary", { name: "Data trust and provenance", exact: true }).first();
+    await expect(provenance.getByText("Source coverage unavailable", { exact: true })).toHaveClass(/status-critical/);
+    await expect(provenance.getByText("Cited evidence · high confidence", { exact: true })).toHaveClass(/status-info/);
+    await expect(provenance.getByText("Confidence describes cited evidence, not source completeness.", { exact: true })).toBeVisible();
+    await page.evaluate(() => scrollTo(0, 0));
+    await expect(provenance).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath(`source-coverage-viewport-${width}.png`) });
+    await provenance.screenshot({ path: testInfo.outputPath(`source-coverage-${width}.png`) });
     const summary = page.getByRole("region", { name: "Installed software summary" });
     await expect(summary.getByText("—", { exact: true })).toHaveCount(3);
     await expect(page.getByRole("region", { name: "Installed software dashboard" })).toHaveCount(0);
