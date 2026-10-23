@@ -81,6 +81,13 @@ dashboard does not draw empty-success charts when its source is unavailable.
 Normalization and lifecycle review actions use the shared responsive control
 styles, including the manual-date field.
 
+Shared provenance banners distinguish confidence in cited evidence from source
+coverage. Explicit source states are shown separately: ready sources are not a
+claim of complete coverage, and unavailable, incomplete, or unknown coverage
+does not erase confidence in the observations that were returned. Domain-provided
+aggregate evidence states retain precedence. Confidence uses its own visual
+treatment rather than operational severity colors.
+
 Dataset publication retains manifests, hashes, source status, and generation
 pointers. Local and OneLake stores use their respective activation mechanisms;
 failed source-family acquisition must not silently clear last-known-good data.

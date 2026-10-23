@@ -1,7 +1,7 @@
 import type { DurableEvidence, DurableSourceStatus, EvidenceItem } from "@/lib/types";
 import type { PageHeaderCompleteness } from "./PageHeader";
 import { formatDateTime, relativeTime } from "@/lib/format";
-import { StatusBadge, statusTone } from "./StatusBadge";
+import { StatusBadge, statusTone, type StatusTone } from "./StatusBadge";
 
 const VISIBLE_WARNING_COUNT = 2;
 
@@ -29,6 +29,21 @@ function freshnessChip(value?: string): string {
   return relativeTime(value);
 }
 
+function sourceCoverage(statuses: Record<string, string>): { label: string; tone: StatusTone } | null {
+  const states = Object.values(statuses).map(state => state.trim().toLowerCase());
+  if (!states.length) return null;
+  if (states.every(state => state === "unavailable")) {
+    return { label: "Source coverage unavailable", tone: "critical" };
+  }
+  if (states.some(state => ["partial", "degraded", "stale", "unavailable"].includes(state))) {
+    return { label: "Source coverage incomplete", tone: "warning" };
+  }
+  if (states.every(state => state === "ready")) {
+    return { label: "Sources reporting ready", tone: "info" };
+  }
+  return { label: "Source coverage unknown", tone: "unknown" };
+}
+
 /** Makes evidence confidence, provenance, freshness, and warnings visible beside the decision surface,
  * rendered as a lightweight left-to-right chain (source → freshness → confidence) so the provenance
  * story reads as a connected sequence rather than a flat badge list. */
@@ -54,6 +69,9 @@ export function EvidenceBar({
   const additionalWarnings = uniqueWarnings.slice(VISIBLE_WARNING_COUNT);
   const timestamp = latest?.timestamp || fallbackTimestamp;
   const confidence = latest?.confidence || "unknown";
+  const confidenceTone = confidence === "high" ? "info"
+    : confidence === "medium" || confidence === "low" ? "warning" : "unknown";
+  const coverage = aggregateState ? null : sourceCoverage(sourceStatus);
   const aggregateLabel =
     aggregateState?.state === "complete" && aggregateState.freshness === "current"
       ? null
@@ -66,7 +84,7 @@ export function EvidenceBar({
           ? "unavailable"
           : "degraded",
       )
-    : statusTone(confidence);
+    : coverage?.tone ?? confidenceTone;
   const segments = [
     latest?.source_engine
       ? { key: "source", label: "Source", value: latest.source_engine, title: `${latest.source_engine}${latest.source_table ? ` · ${latest.source_table}` : ""}` }
@@ -80,12 +98,13 @@ export function EvidenceBar({
   return (
     <aside className={`evidence-bar evidence-bar-${tone}`} aria-label="Data trust and provenance">
       <div className="evidence-bar-primary">
+        {coverage && <StatusBadge label={coverage.label} tone={coverage.tone} compact />}
         <StatusBadge
           label={
             aggregateLabel ??
-            `${confidenceSubject ? `${confidenceSubject} · ` : ""}${confidence} confidence`
+            `${confidenceSubject || "Cited evidence"} · ${confidence} confidence`
           }
-          tone={tone}
+          tone={aggregateLabel ? tone : confidenceTone}
           compact
         />
         {segments.map((segment, index) => (
@@ -97,6 +116,9 @@ export function EvidenceBar({
           </span>
         ))}
       </div>
+      {coverage && (
+        <span>Confidence describes cited evidence, not source completeness.</span>
+      )}
       {timestamp && <time dateTime={timestamp}>{formatDateTime(timestamp)}</time>}
       {Object.keys(sourceStatus).length > 0 && (
         <div aria-label="Live source status">
