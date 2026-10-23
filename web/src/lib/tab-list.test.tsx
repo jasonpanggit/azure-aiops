@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { handleTabListKeyDown } from "./tab-list";
 
 function Tabs() {
@@ -18,9 +18,11 @@ describe("Shared tab keyboard activation", () => {
     render(<Tabs />);
     const first = screen.getByRole("tab", { name: "First" });
     const last = screen.getByRole("tab", { name: "Last" });
+    const reveal = vi.spyOn(last, "scrollIntoView");
     fireEvent.keyDown(first, { key: "ArrowRight" });
     expect(last).toHaveFocus();
     expect(last).toHaveAttribute("aria-selected", "true");
+    expect(reveal).toHaveBeenCalledWith({ block: "nearest", inline: "nearest", behavior: "instant" });
     fireEvent.keyDown(last, { key: "ArrowRight" });
     expect(first).toHaveFocus();
     fireEvent.keyDown(first, { key: "ArrowLeft" });

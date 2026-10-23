@@ -64,6 +64,7 @@ from operations.orchestration_contract import (
     COVERAGE_CITATION_ID,
     AzureEntityRef,
     CandidatePlan,
+    CanonicalEvidenceSnapshot,
     Citation,
     DomainEntityRef,
     EvidenceSnapshotV2,
@@ -81,6 +82,7 @@ from operations.orchestration_contract import (
 )
 from operations.orchestration_policy import OrchestrationPolicy, PolicyViolation
 from operations.orchestration_service import (
+    RESOURCE_HEALTH_INSIGHT_QUESTION,
     OrchestrationService,
     deterministic_network_claims,
     execute_from_question,
@@ -88,6 +90,7 @@ from operations.orchestration_service import (
     legacy_session_history,
     snapshot_claim_freshness,
     valid_inventory_page_snapshot,
+    valid_resource_health_page_snapshot,
 )
 from operations.page_context import PageSnapshot, canonicalize_snapshot_v2
 from operations.specialist_manifest import (
@@ -907,6 +910,99 @@ def _canonical_plan_preview(
         },
         policy_validated,
     )
+
+
+def _execute_resource_health_insight(
+    *,
+    payload: CanonicalInvestigationPayload,
+    canonical_snapshot: CanonicalEvidenceSnapshot | None,
+    scope: Scope,
+    principal: Any,
+) -> OrchestrationResult:
+    """Explain authorized page observations without invoking investigation tools."""
+
+    request = CanonicalInvestigationRequest.model_validate(
+        payload.model_dump(exclude={"hint"})
+    )
+    requested_scope = OrchestrationPolicy().validate_request(request, scope)
+    snapshot = request.snapshot
+    store = investigation_thread_store()
+    thread = (
+        store.authorize(
+            request.thread_id,
+            principal.subject,
+            requested_scope,
+            expected_revision=request.expected_thread_revision,
+        )
+        if request.thread_id
+        else store.create(principal.subject, requested_scope)
+    )
+    retained: list[dict[str, Any]] = []
+    uncertainty: list[str] = []
+    claims: list[dict[str, Any]] = []
+    if valid_resource_health_page_snapshot(snapshot, canonical_snapshot):
+        retained, uncertainty = (
+            OrchestrationService._current_authorized_evidence_with_uncertainty(
+                snapshot,
+                canonical_snapshot,
+                evidence_selection_id=OrchestrationService._evidence_selection_identity(
+                    request, requested_scope,
+                ),
+            )
+        )
+        claims = OrchestrationService._deterministic_resource_health_claims(
+            request.question, snapshot=snapshot, retained_evidence=retained,
+        )
+    used_refs = {
+        str(reference)
+        for claim in claims
+        for reference in claim.get("evidence_refs") or []
+    }
+    used = [item for item in retained if item["evidence_id"] in used_refs]
+    result = OrchestrationResult(
+        status=STATUS_OK if claims else STATUS_UNAVAILABLE,
+        policy_status="accepted",
+        selected_specialists=["resource_health_observability"],
+        selected_tools=[],
+        tool_results=[],
+        uncertainty=uncertainty,
+        coverage=snapshot.coverage,
+        citations=[
+            Citation(
+                citation_id=item["evidence_id"],
+                source=item["source"],
+                status=item["status"],
+                observed_at=item["observed_at"],
+                resource_id=item["resource_id"],
+            )
+            for item in used
+        ],
+        thread_id=thread.thread_id,
+        thread_revision=thread.revision + 1,
+        synthesis={
+            "status": "deterministic" if claims else "skipped",
+            "reason": (
+                "deterministic_resource_health_page_evidence" if claims
+                else "resource_health_page_evidence_not_authorized"
+            ),
+            "domain_count": int(bool(claims)),
+            "claims": claims,
+            "used_retained_evidence": used,
+            "warning": (
+                "" if claims else
+                "Resource Health page evidence is incomplete or failed identity validation; "
+                "no page insight was made."
+            ),
+        },
+    )
+    updated = store.append(
+        thread.thread_id,
+        principal.subject,
+        requested_scope,
+        {"question": request.question, **result.model_dump(mode="json")},
+        expected_revision=thread.revision,
+    )
+    return result.model_copy(update={"thread_revision": updated.revision})
 
 
 def _execute_retained_compatibility(
@@ -2010,6 +2106,11 @@ def investigate_canonical(
         payload.model_dump(exclude={"hint"})
     )
     browser_snapshot = request.snapshot
+    page_health_insight = (
+        browser_snapshot.page_kind == "resource_health"
+        and browser_snapshot.page_id == "resource-health"
+        and payload.question == RESOURCE_HEALTH_INSIGHT_QUESTION
+    )
     _validate_bound_cve_request(payload, browser_snapshot)
     exact_inventory_starter = (
         browser_snapshot.page_kind == "inventory"
@@ -2396,7 +2497,17 @@ def investigate_canonical(
                 candidate=hint_candidate,
                 effective_scope=scope,
             )
-        if rollout.canonical_enabled:
+        if page_health_insight:
+            # This is a page explanation, not a general investigation. The
+            # compatibility narrator otherwise receives tool results only,
+            # discarding the page evidence despite the UI's grounding label.
+            result = _execute_resource_health_insight(
+                payload=payload,
+                canonical_snapshot=canonical_browser_snapshot,
+                scope=scope,
+                principal=principal,
+            )
+        elif rollout.canonical_enabled:
             result = OrchestrationService(
                 planner=planner,
                 fallback_planner=(
@@ -2466,7 +2577,7 @@ def investigate_canonical(
             }
         )
 
-    if rollout.canonical_enabled and coordinator_enabled:
+    if rollout.canonical_enabled and coordinator_enabled and not page_health_insight:
         result = result.model_copy(
             update={
                 "synthesis": {

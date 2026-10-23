@@ -39,6 +39,7 @@ from operations.orchestration_contract import (
 )
 from operations.orchestration_policy import PolicyViolation
 from operations.orchestration_service import (
+    RESOURCE_HEALTH_INSIGHT_QUESTION,
     OrchestrationService,
     PlannerUnavailableError,
 )
@@ -6740,22 +6741,7 @@ def test_fabric_starters_preserve_exact_page_truth_before_optional_narration(
     ]
 
 
-def test_resource_health_starters_preserve_exact_page_truth_and_fail_closed(
-    tmp_path,
-    monkeypatch,
-):
-    _enable_canonical_rollout(monkeypatch)
-    context = _context(tmp_path, None)
-    context.semantic_provider = None
-    tool_calls: list[tuple[str, dict[str, object]]] = []
-
-    def unavailable_tool(name, arguments, **_kwargs):
-        tool_calls.append((name, dict(arguments)))
-        return ToolResult(
-            status="unavailable",
-            warning=f"The {name} provider is deferred",
-        )
-
+def _resource_health_page_request():
     def resource(
         evidence_id,
         resource_id,
@@ -6875,6 +6861,145 @@ def test_resource_health_starters_preserve_exact_page_truth_and_fail_closed(
             ],
         },
     }
+    return body
+
+
+@pytest.mark.parametrize("canonical_enabled", [False, True])
+@pytest.mark.parametrize("metric_state", ["populated", "missing", "unavailable", "partial"])
+def test_resource_health_automatic_insight_uses_only_current_page_evidence(
+    tmp_path, monkeypatch, canonical_enabled, metric_state,
+):
+    if canonical_enabled:
+        _enable_canonical_rollout(monkeypatch)
+    else:
+        monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "disabled")
+    context = _context(tmp_path, None)
+    context.semantic_provider = None
+    body = _resource_health_page_request()
+    body["question"] = RESOURCE_HEALTH_INSIGHT_QUESTION
+    rows = body["snapshot"]["evidence"]
+    if metric_state == "populated":
+        rows[0]["data"].update(status="critical", cpu_percent=95.0)
+    elif metric_state == "missing":
+        rows[0]["data"].update(status="unknown", cpu_percent=None, series_point_count=0)
+        rows[0]["data"]["unavailable_metrics"] = ["cpu_percent"]
+    elif metric_state == "unavailable":
+        body["snapshot"]["evidence"] = [rows[-1]]
+        body["snapshot"]["material_claims"] = [body["snapshot"]["material_claims"][-1]]
+        body["snapshot"]["coverage"].update(visible_count=0, complete=False)
+        body["snapshot"]["freshness"][-1]["status"] = "unavailable"
+    else:
+        body["snapshot"]["coverage"].update(total_count=5, complete=False)
+
+    def unrelated_incident(*_args, **_kwargs):
+        pytest.fail("Page insight must not retrieve migrate-demo/migrate-repl-01 incident data")
+
+    monkeypatch.setattr("api.routers.copilot.call_tool", unrelated_incident)
+    monkeypatch.setattr("operations.investigation.call_tool", unrelated_incident)
+    monkeypatch.setattr("api.routers.copilot.run_investigation", unrelated_incident)
+    response = TestClient(create_app(context), raise_server_exceptions=False).post(
+        "/api/v1/copilot/investigations?subscription=sub-a", json=body, headers=HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["rollout"]["canonical_enabled"] is canonical_enabled
+    assert data["mutation_authorized"] is False
+    assert data["selected_tools"] == []
+    assert data["tool_results"] == []
+    synthesis = data["synthesis"]
+    if metric_state == "unavailable":
+        assert synthesis["reason"] == "resource_health_page_evidence_not_authorized"
+        assert synthesis["claims"] == []
+        assert data["citations"] == []
+        return
+    assert synthesis["reason"] == "deterministic_resource_health_page_evidence"
+    assert "compatibility_answer" not in synthesis
+    summary = " ".join(claim["summary"] for claim in synthesis["claims"])
+    assert "migrate-demo" not in summary
+    assert "migrate-repl-01" not in summary
+    if metric_state == "populated":
+        assert "vm-1 is critical at 95.0% CPU" in summary
+    elif metric_state == "missing":
+        assert "2 unknown" in summary
+        assert "cpu_percent is unavailable" in json.dumps(synthesis["claims"])
+    else:
+        assert "coverage is partial" in summary
+    assert "vm-1" in summary and "vm-2" in summary
+    assert "unknown is not treated as unhealthy or as zero" in summary
+    assert "memory_percent is unavailable" in json.dumps(synthesis["claims"])
+    references = {
+        reference for claim in synthesis["claims"] for reference in claim["evidence_refs"]
+    }
+    assert references == {item["citation_id"] for item in data["citations"]}
+    assert all(item["source"].startswith("page_snapshot:resource_health:")
+               for item in data["citations"])
+    if metric_state == "populated":
+        body["thread_id"] = data["thread_id"]
+        body["expected_thread_revision"] = data["thread_revision"]
+        body["snapshot"]["evidence"][0]["data"].update(status="healthy", cpu_percent=0)
+        refreshed = TestClient(create_app(context), raise_server_exceptions=False).post(
+            "/api/v1/copilot/investigations?subscription=sub-a", json=body, headers=HEADERS,
+        )
+        assert refreshed.status_code == 200, refreshed.text
+        current = refreshed.json()["data"]
+        assert current["thread_revision"] == data["thread_revision"] + 1
+        assert "95.0% CPU" not in json.dumps(current["synthesis"])
+        assert "No resource is classified as warning or critical" in json.dumps(current["synthesis"])
+        assert not references.intersection({
+            item["citation_id"] for item in current["citations"]
+        })
+
+
+@pytest.mark.parametrize("invalid", ["identity", "metric", "scope", "missing-row"])
+def test_resource_health_automatic_insight_rejects_invalid_evidence(
+    tmp_path, monkeypatch, invalid,
+):
+    monkeypatch.setenv("AIOPS_COPILOT_ROLLOUT_MODE", "disabled")
+    context = _context(tmp_path, None)
+    context.semantic_provider = None
+    body = _resource_health_page_request()
+    body["question"] = RESOURCE_HEALTH_INSIGHT_QUESTION
+    if invalid == "identity":
+        body["snapshot"]["evidence"][0]["entity"]["resource_id"] = (
+            "/subscriptions/sub-b/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/other"
+        )
+    elif invalid == "metric":
+        body["snapshot"]["evidence"][0]["data"]["cpu_percent"] = "95"
+    elif invalid == "scope":
+        body["requested_scope"] = {"subscription": ["sub-b"]}
+    else:
+        body["snapshot"]["evidence"].pop(0)
+        body["snapshot"]["material_claims"].pop(0)
+    response = TestClient(create_app(context), raise_server_exceptions=False).post(
+        "/api/v1/copilot/investigations?subscription=sub-a", json=body, headers=HEADERS,
+    )
+    if invalid in {"scope", "identity"}:
+        assert response.status_code == 400, response.text
+    else:
+        assert response.status_code == 200, response.text
+        synthesis = response.json()["data"]["synthesis"]
+        assert synthesis["claims"] == []
+        assert synthesis["reason"] == "resource_health_page_evidence_not_authorized"
+
+
+def test_resource_health_starters_preserve_exact_page_truth_and_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    _enable_canonical_rollout(monkeypatch)
+    context = _context(tmp_path, None)
+    context.semantic_provider = None
+    tool_calls: list[tuple[str, dict[str, object]]] = []
+
+    def unavailable_tool(name, arguments, **_kwargs):
+        tool_calls.append((name, dict(arguments)))
+        return ToolResult(
+            status="unavailable",
+            warning=f"The {name} provider is deferred",
+        )
+
+    body = _resource_health_page_request()
+    metric_coverage = body["snapshot"]["evidence"][-1]
     monkeypatch.setattr("api.routers.copilot.call_tool", unavailable_tool)
     client = TestClient(create_app(context), raise_server_exceptions=False)
     cases = (

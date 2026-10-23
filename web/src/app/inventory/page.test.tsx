@@ -627,6 +627,10 @@ describe("Inventory OS tracer", () => {
 
     expect(await screen.findByText("Installed software source is unavailable")).toBeInTheDocument();
     expect(screen.getByText(/rows are not presented as a successful empty result/)).toBeInTheDocument();
+    expect(screen.queryByText("No installed software observations")).not.toBeInTheDocument();
+    const summary = screen.getByRole("region", { name: "Installed software summary" });
+    expect(within(summary).getAllByText("—")).toHaveLength(3);
+    expect(summary).not.toHaveTextContent("0");
     expect(screen.queryByRole("button", { name: /View machines for/ })).not.toBeInTheDocument();
   });
 

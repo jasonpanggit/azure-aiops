@@ -117,8 +117,16 @@ function ObservationWorkspace() {
           : <ol className="change-observation-list">{rows.map(row => <li key={row.observation_id}>
             <div className="timeline-event-labels"><StatusBadge label={row.category} tone="info" compact /><time dateTime={row.changed_at}>{formatDateTime(row.changed_at)}</time></div>
             <h3>{row.summary}</h3>
-            <p>{row.change_id} · {row.change_type} · Source: {row.source}</p>
-            <p>Resource: {row.resource_name} · Application: {row.application} · Service: {row.business_service} · Environment: {row.environment}</p>
+            <p>Resource: {row.resource_name} · {row.change_type}</p>
+            <details><summary>Observation identity and mapping</summary>
+              <dl className="observation-metadata">
+                <div><dt>Change ID</dt><dd>{row.change_id}</dd></div>
+                <div><dt>Source</dt><dd>{row.source}</dd></div>
+                <div><dt>Application</dt><dd>{row.application}</dd></div>
+                <div><dt>Service</dt><dd>{row.business_service}</dd></div>
+                <div><dt>Environment</dt><dd>{row.environment}</dd></div>
+              </dl>
+            </details>
             <details><summary>Compare reported configuration states</summary>
               <p>Allowlisted fields from this change only, not the current baseline. Missing states are unreported, never inferred additions or removals. Other property names and values are withheld.</p>
               {row.configuration.fields.length ? <><p>Scroll horizontally to inspect all columns.</p><div className="table-scroll" role="region" aria-label={`Configuration states for ${row.change_id}`} tabIndex={0}>

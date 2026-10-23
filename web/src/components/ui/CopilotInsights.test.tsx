@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildCopilotSnapshot, toCanonicalInvestigationView } from "@/lib/services";
+import { buildResourceHealthCopilotContext, RESOURCE_HEALTH_INSIGHT_QUESTION } from "@/lib/copilot/page-adapters";
 import type { CanonicalCopilotResult } from "@/lib/types";
 import { CopilotInsights, interpretInsightResult } from "./CopilotInsights";
 
@@ -79,6 +80,64 @@ describe("CopilotInsights", () => {
     expect(request.contract_version).toBe("1");
     expect(request.snapshot.version).toBe("2");
     expect(request.snapshot.page_kind).toBe("remediation");
+  });
+
+  it("submits the exact Health observations, including null metrics, for a page-only insight", async () => {
+    const health = buildResourceHealthCopilotContext({
+      scope: { subscription: ["sub-a"] },
+      resources: [95, null].map((cpu, index) => ({
+        resource_id: `/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-${index}`,
+        resource_name: `vm-${index}`,
+        resource_type: "microsoft.compute/virtualmachines",
+        status: cpu === null ? "unknown" : "critical",
+        cpu_percent: cpu,
+        memory_percent: null,
+        disk_free_percent: null,
+        unavailable_metrics: ["memory_percent", "disk_free_percent", ...(cpu === null ? ["cpu_percent"] : [])],
+        series_point_count: cpu === null ? 0 : 12,
+        observed_at: "2026-10-23T00:00:00Z",
+      })),
+      loadedCount: 2,
+      totalCount: 2,
+      available: true,
+      freshness: "fresh",
+      observedAt: "2026-10-23T00:00:00Z",
+      evidence: [],
+    });
+    investigateCanonical.mockResolvedValue({
+      data: result({
+        synthesis: {
+          status: "deterministic",
+          reason: "deterministic_resource_health_page_evidence",
+          domain_count: 1,
+          warning: "",
+          claims: [{
+            finding_id: "resource-health:utilization-anomalies",
+            summary: "vm-0 is critical at 95% CPU; vm-1 is unknown.",
+            evidence_refs: ["retained:health"],
+            confidence: "medium",
+            freshness: "fresh",
+            uncertainty: [],
+          }],
+        },
+      }),
+    });
+    render(<CopilotInsights snapshot={health.snapshot} requestedScope={health.requestedScope}
+      question={RESOURCE_HEALTH_INSIGHT_QUESTION} contextLabel="Resource health" />);
+    await screen.findByText("vm-0 is critical at 95% CPU; vm-1 is unknown.");
+    const [request, scope] = investigateCanonical.mock.calls[0];
+    expect(request.question).toBe(RESOURCE_HEALTH_INSIGHT_QUESTION);
+    expect(request.snapshot.page_kind).toBe("resource_health");
+    expect(request.snapshot.page_id).toBe("resource-health");
+    expect(scope).toEqual({ subscription: ["sub-a"] });
+    const observations = request.snapshot.evidence.filter(
+      (row: { claim_type: string }) => row.claim_type === "resource_utilization",
+    );
+    expect(observations.map((row: { data: { cpu_percent: number | null } }) => row.data.cpu_percent))
+      .toEqual([95, null]);
+    expect(observations[1].data).toMatchObject({
+      status: "unknown", series_point_count: 0, actionable: false, mutation_authorized: false,
+    });
   });
 
   it("renders the live retained compatibility LLM answer with its agent and model provenance", async () => {

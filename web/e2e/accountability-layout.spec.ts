@@ -213,7 +213,7 @@ for (const width of [1440, 820, 768, 375, 320]) {
     const resources = page.getByRole("region", { name: "Resource utilization", exact: true });
     const cards = resources.locator(".health-resource-grid").getByRole("article");
     await expect(cards).toHaveCount(3);
-    await expect(resources.getByText("2 of 3 resources returned metrics", { exact: true })).toBeVisible();
+    await expect(resources.getByText("2 of 3 health responses · 2 resources with CPU samples", { exact: true })).toBeVisible();
     const navigation = page.getByRole("navigation", { name: "Health sections", exact: true });
     const links = navigation.getByRole("link");
     await expect(links).toHaveCount(2);
@@ -302,7 +302,7 @@ for (const width of [1440, 820, 768, 375, 320]) {
     const resources = page.getByRole("region", { name: "Resource utilization", exact: true });
     const cards = resources.locator(".health-resource-grid").getByRole("article");
     await expect(cards).toHaveCount(3);
-    await expect(resources.getByText("2 of 3 resources returned metrics", { exact: true })).toBeVisible();
+    await expect(resources.getByText("2 of 3 health responses · 2 resources with CPU samples", { exact: true })).toBeVisible();
     const longName = `payments${"production".repeat(12)}`;
     await expect(resources.getByRole("article", { name: longName, exact: true }).getByRole("heading", { name: longName, exact: true })).toBeVisible();
     await expect(resources.getByRole("alert")).toContainText("diagnostic".repeat(18));

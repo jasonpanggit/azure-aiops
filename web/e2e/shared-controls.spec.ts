@@ -47,6 +47,13 @@ test.beforeEach(async ({ page }) => {
           </details>
         </div>
       </section>
+      <div class="table-footer">
+        <span>Showing 1-20 of 50 records</span>
+        <span class="table-footer-actions">
+          <select class="table-footer-size" aria-label="Rows per page"><option>20 / page</option></select>
+          <button class="button" aria-label="Next page">Next</button>
+        </span>
+      </div>
       <div class="copilot-drawer-composer">
         <textarea aria-label="Question"></textarea>
         <button class="button button-ai">Ask</button>
@@ -124,6 +131,10 @@ for (const width of [1440, 820, 768, 375, 320]) {
 
   test(`contains long filter options and expanded export at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
+    for (const control of await page.locator(".table-footer select,.table-footer button").all()) {
+      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(width <= 820 ? 44 : 40);
+      await expect(control).toHaveCSS("font-size", "14px");
+    }
     const filters = page.locator(".table-column-filters");
     const filterBox = await filters.boundingBox();
     expect(filterBox).not.toBeNull();

@@ -29,6 +29,21 @@ vi.mock("@/components/ui/CopilotDrawer", () => ({
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import FinOpsPage from "./page";
 
+it("counts waste records rather than treating unknown or mixed-currency savings as quantities", async () => {
+  services.finopsWaste.mockResolvedValue(envelope({ count: 3, waste: [
+    { resource_id: "/vm/one", resource_type: "virtualmachines", annual_savings: null, currency: "USD" },
+    { resource_id: "/vm/two", resource_type: "virtualmachines", annual_savings: 100, currency: "EUR" },
+    { resource_id: "/ip/one", resource_type: "publicipaddresses", annual_savings: null, currency: "USD" },
+  ] }));
+  render(<FinOpsPage />);
+  const chart = await screen.findByRole("list", { name: "Counts by waste records" });
+  const rows = within(chart).getAllByRole("listitem");
+  expect(rows[0]).toHaveTextContent("Virtualmachines2");
+  expect(rows[1]).toHaveTextContent("Publicipaddresses1");
+  expect(chart).not.toHaveTextContent("100");
+  expect(screen.getByText(/not savings amounts/)).toBeInTheDocument();
+});
+
 function envelope(data: object) {
   return {
     data,

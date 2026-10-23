@@ -77,6 +77,8 @@ export function PatchReview({ query, rows, ready, imageOwner = false }: { query:
       {notice && <p role="status">{notice}</p>}
       {history && <p>Patch review revision {history.revision}; {history.batches.length}/20 batches.</p>}
       {history?.revision === 20 && <p role="status">Batch capacity reached; previous reviews are preserved.</p>}
+      <details className="patch-review-form" open={rows.length <= 5 ? true : undefined}>
+      <summary>Select findings and prepare a review ({selected.length} selected; {rows.length} available)</summary>
       <form onSubmit={event => { event.preventDefault(); void load(true); }}>
         <fieldset disabled={busy || !history || uncertain || !ready || history.revision >= 20}>
           <legend>Current page selection ({selected.length}/25)</legend>
@@ -91,6 +93,7 @@ export function PatchReview({ query, rows, ready, imageOwner = false }: { query:
           <button className="button button-primary" type="submit" disabled={!selected.length || !note.trim()}>Save review-only batch</button>
         </fieldset>
       </form>
+      </details>
       <details><summary>Inspect retained review-only batches</summary>
         {!history?.batches.length && <p>No saved review batches for this exact principal and scope.</p>}
         {history?.batches.slice().reverse().map(batch => <div className="exposure-recovery-event" key={batch.batch_id}>
