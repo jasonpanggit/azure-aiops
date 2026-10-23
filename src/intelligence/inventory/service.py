@@ -894,14 +894,22 @@ class InventoryService:
         os_status = self.source_status(os_rows)
         software_status = self.software_source_status(software_rows)
         paas_rows = self._scoped_resources(scope, family="paas")
+        lifecycle_counts: Counter[str] = Counter()
+        for group in os_groups:
+            lifecycle_counts[_group_lifecycle(group.to_dict())] += group.machine_count
         return {
             "os_groups": [item.to_dict() for item in os_groups[:os_limit]],
             "software_groups": [
                 item.to_dict() for item in software_groups[:software_limit]
             ],
             "os_machine_count": len(os_rows),
+            "os_group_count": len(os_groups),
             "software_install_count": len(software_rows),
+            "software_group_count": len(software_groups),
+            "lifecycle_counts": dict(lifecycle_counts),
             "paas_resource_count": len(paas_rows),
+            "os_source_status": os_status,
+            "software_source_status": software_status,
             "source_status": {**os_status, **software_status},
             "evidence": [
                 *self._evidence(os_rows),

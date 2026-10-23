@@ -651,6 +651,11 @@ def test_narrative_aggregate_limits_bound_group_payload() -> None:
     assert isinstance(context, dict)
     assert len(context["facts"]["fact_items"]) <= 5
     assert context["aggregate_limits"]["max_os_groups"] == 12
+    facts = {item["label"]: item["value"] for item in result["data"]["fact_items"]}
+    assert facts["OS groups"] == "30"
+    assert facts["Machines"] == "30"
+    assert facts["EOL risk"] == "0 expired, 0 expiring within 90 days, 0 supported, 30 needs review"
+    assert "30 machines across 30 OS groups" in result["data"]["fact_summary"]
     assert result["data"]["status"] == "narrated"
 
 

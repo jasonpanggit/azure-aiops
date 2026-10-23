@@ -580,6 +580,31 @@ describe("Inventory OS tracer", () => {
     expect(screen.getAllByText("Azure Resource Graph / Resources")).toHaveLength(1);
   });
 
+  it("preserves unknown and partial narrative counts instead of formatting them as zero", async () => {
+    narrative.mockResolvedValue({ ...envelope({
+      fact_summary: "Software coverage is incomplete. Complete software counts and absence are unknown.",
+      fact_items: [
+        { label: "Machines", value: "3 observed (incomplete)" },
+        { label: "Software observations", value: "Unknown" },
+        { label: "Software groups", value: "Unknown" },
+      ],
+      narrated_summary: "Review the unavailable software source before drawing conclusions about software risk.",
+      narrated_by: "operations-copilot",
+      model: "test",
+      confidence: "medium",
+      citations: [],
+      source_status: { logs: { source_type: "logs", state: "unavailable", row_count: 0, error: "", observed_at: "", query_version: "v1" } },
+      requested_scope: {},
+      status: "narrated",
+    }), warnings: ["logs inventory source is unavailable; narrative facts may be incomplete."] });
+    render(<ScopeProvider><InventoryPage /></ScopeProvider>);
+    const panel = await screen.findByRole("region", { name: "Inventory risk narrative" });
+    expect(within(panel).getAllByText("Unknown", { exact: true })).toHaveLength(2);
+    expect(within(panel).getByText("3 observed (incomplete)")).toBeInTheDocument();
+    expect(within(panel).queryByText("0", { exact: true })).not.toBeInTheDocument();
+    expect(within(panel).getByText(/logs inventory source is unavailable/)).toBeInTheDocument();
+  });
+
   it("presents a partial software source with trustworthy rows as incomplete, not unavailable", async () => {
     software.mockResolvedValue(envelope({
       groups: [{
@@ -631,6 +656,7 @@ describe("Inventory OS tracer", () => {
     const summary = screen.getByRole("region", { name: "Installed software summary" });
     expect(within(summary).getAllByText("—")).toHaveLength(3);
     expect(summary).not.toHaveTextContent("0");
+    expect(screen.queryByRole("region", { name: "Installed software dashboard" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /View machines for/ })).not.toBeInTheDocument();
   });
 

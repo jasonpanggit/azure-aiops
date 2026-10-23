@@ -9088,7 +9088,8 @@ body.topology-fullscreen-open {
   overflow-wrap: anywhere;
 }
 
-.inventory-filters label {
+.inventory-filters label,
+.inventory-review-form label {
   display: grid;
   min-width: 180px;
   gap: 6px;
@@ -9098,13 +9099,19 @@ body.topology-fullscreen-open {
 }
 
 .inventory-filters input,
-.inventory-filters select {
-  min-height: 36px;
+.inventory-filters select,
+.inventory-review-form input {
+  min-height: var(--control-height);
   padding: 7px 9px;
   color: var(--color-text);
   background: var(--color-surface);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-sm);
+}
+
+.inventory-review-form input {
+  max-width: 100%;
+  font: inherit;
 }
 
 .inventory-source-badges,

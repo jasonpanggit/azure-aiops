@@ -341,7 +341,8 @@ def test_inventory_narrative_returns_fact_only_fallback_with_scoped_sources(
     body = response.json()
     assert body["data"]["status"] == "fact_only"
     assert body["data"]["narrated_summary"] is None
-    assert "4 machines" in body["data"]["fact_summary"]
+    assert "4 observed (incomplete) machines" in body["data"]["fact_summary"]
+    assert "Complete machine and OS-group counts are unknown" in body["data"]["fact_summary"]
     assert body["data"]["source_status"]["arc"]["row_count"] == 2
     assert any("no Foundry" in warning for warning in body["warnings"])
     assert all("resource_id" not in str(item) for item in body["data"]["citations"])
@@ -411,5 +412,6 @@ def test_inventory_narrative_timeout_and_malformed_output_are_fact_only(
     assert response.status_code == 200
     body = response.json()
     assert body["data"]["status"] == "fact_only"
-    assert body["data"]["fact_summary"].startswith("0 machines across 0 OS groups")
+    assert body["data"]["fact_summary"].startswith("OS coverage is incomplete")
+    assert "EOL risk: Unknown" in body["data"]["fact_summary"]
     assert any("Foundry prompt agent failed" in warning for warning in body["warnings"])

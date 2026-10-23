@@ -1401,7 +1401,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
               />
             </section>
           )}
-          <section aria-label="Installed software dashboard" className="dashboard-charts-row">
+          {softwareSummaryAvailable && !softwareInventory.error && <section aria-label="Installed software dashboard" className="dashboard-charts-row">
             <div className="chart-card">
               <h3 className="chart-card-title">Top software by install count (visible page)</h3>
               <CountBarChart data={softwareTopBarData} unit="software" />
@@ -1411,15 +1411,15 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
               <CountBarChart data={softwareSourceMix.map(item => ({ ...item, id: item.label }))} unit="group memberships" />
               <p className="muted">Source tags may overlap; these are not installation counts.</p>
             </div>
-          </section>
+          </section>}
           {mappingError && <StatePanel title="Mapping decision unavailable" message={mappingError} tone="error" />}
           {mappings.error && <StatePanel title="Normalization mappings unavailable" message={inventoryUnavailableMessage(mappings.error)} tone="error"
             action={<button type="button" className="button button-secondary" onClick={mappings.refetch} disabled={mappings.loading}>Retry normalization mappings</button>} />}
           {mappingItems.length > 0 && (
-            <section id="inventory-normalization" aria-label="Software normalization review" className="detail-panel">
+            <section id="inventory-normalization" aria-label="Software normalization review" className="detail-panel inventory-review">
               <h2>Normalization review</h2>
               <p>Only approved mappings change software group counts.</p>
-              <ul>
+              <ul className="inventory-review-list">
                 {mappingItems.map((mapping) => (
                   <li key={mapping.mapping_id}>
                     <strong>{mapping.raw_name} {mapping.raw_version}</strong>
@@ -1434,6 +1434,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                       <>
                         <button
                           type="button"
+                          className="button button-secondary"
                           disabled={mappingSubmitting === mapping.mapping_id}
                           onClick={() => void decideMapping(mapping, "approve")}
                         >
@@ -1441,6 +1442,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                         </button>
                         <button
                           type="button"
+                          className="button button-secondary"
                           disabled={mappingSubmitting === mapping.mapping_id}
                           onClick={() => void decideMapping(mapping, "reject")}
                         >
@@ -1940,7 +1942,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
             </div>
           </section>
           {reviewGroup && (
-            <section id="inventory-lifecycle" aria-label="EOL lifecycle review" className="detail-panel">
+            <section id="inventory-lifecycle" aria-label="EOL lifecycle review" className="detail-panel inventory-review">
               <h2>Review lifecycle: {reviewGroup.os_name} {reviewGroup.os_version}</h2>
               {reviewError && <StatePanel title="Lifecycle review unavailable" message={reviewError} tone="error" />}
               {review && (
@@ -1951,7 +1953,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                       : "No catalog winner was selected. Review every cited candidate before confirming."}
                   </p>
                   {review.candidates.length > 0 && (
-                    <ul>
+                    <ul className="inventory-review-list">
                       {review.candidates.map((candidate) => (
                         <li key={candidate.candidate_id}>
                           <strong>{candidate.date}</strong> · {candidate.source_kind} · confidence {candidate.confidence}
@@ -1963,6 +1965,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                           {review.status === "review_required" && (
                             <button
                               type="button"
+                              className="button button-secondary"
                               disabled={reviewSubmitting}
                               onClick={() => confirmLifecycle(candidate.candidate_id)}
                             >
@@ -1975,6 +1978,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                   )}
                   {review.status === "review_required" && (
                     <form
+                      className="inventory-review-form"
                       onSubmit={(event) => {
                         event.preventDefault();
                         void confirmLifecycle();
@@ -1989,7 +1993,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                           required
                         />
                       </label>
-                      <button type="submit" disabled={reviewSubmitting || !manualDate}>
+                      <button type="submit" className="button button-secondary" disabled={reviewSubmitting || !manualDate}>
                         Confirm manual date
                       </button>
                     </form>

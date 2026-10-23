@@ -7,8 +7,20 @@ const envelope = (data: unknown) => ({
   data, scope: { subscription: ["sub-ui"] }, evidence: [], knowledge_version: "inventory-layout", warnings: [warning],
 });
 
-async function mockSources(page: Page, unavailable: string[] = [], empty = false) {
+async function mockSources(page: Page, unavailable: string[] = [], empty = false, softwareUnavailable = false) {
   const fixtures = buildInventoryFixtures();
+  if (softwareUnavailable) {
+    fixtures.software.groups = [];
+    fixtures.software.source_status = {
+      logs: { source_type: "logs", state: "unavailable", row_count: 0, observed_at: "", query_version: "v1", error: "Software source unavailable." },
+    };
+    fixtures.narrative.fact_summary = "Software coverage is incomplete. Complete software counts and absence are unknown.";
+    fixtures.narrative.fact_items = [
+      { label: "Machines", value: "27 observed (incomplete)" },
+      { label: "Software observations", value: "Unknown" },
+      { label: "Software groups", value: "Unknown" },
+    ];
+  }
   const exportColumns = ["family", "resource_name", "resource_type", "resource_id", "subscription_id", "resource_group", "environment", "location", "observed_at"];
   const exportRows = fixtures.resources.resources.map(resource => ({
     ...resource, location: "australiaeast", observed_at: "2026-09-20T12:00:00Z",
@@ -155,6 +167,51 @@ const views = [
   { key: "azure", tab: "Azure Inventory", groups: "Azure inventory groups", table: "Azure group table", search: "Search resources", filter: "production-sku-0",
     detail: "Azure resource detail", detailTable: "Azure resource detail table", noun: "resources" },
 ] as const;
+
+for (const width of [2560, 1912, 375]) {
+  test(`Inventory distinguishes unavailable software from empty evidence at ${width}px`, async ({ page }, testInfo) => {
+    const errors: string[] = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await mockSources(page, [], false, true);
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto("/inventory");
+    const narrative = page.getByRole("region", { name: "Inventory risk narrative" });
+    await expect(narrative.getByText("Unknown", { exact: true })).toHaveCount(2);
+    await expect(narrative.getByText("27 observed (incomplete)", { exact: true })).toBeVisible();
+    await expect(narrative.getByText("0", { exact: true })).toHaveCount(0);
+    await assertBounds(page, width);
+    await narrative.screenshot({ path: testInfo.outputPath(`narrative-unknown-${width}.png`) });
+    await page.getByRole("tab", { name: "Installed Software", exact: true }).click();
+    await expect(page.getByText("Installed software source is unavailable", { exact: true })).toBeVisible();
+    const summary = page.getByRole("region", { name: "Installed software summary" });
+    await expect(summary.getByText("—", { exact: true })).toHaveCount(3);
+    await expect(page.getByRole("region", { name: "Installed software dashboard" })).toHaveCount(0);
+    const approve = page.getByRole("button", { name: "Approve mapping", exact: true });
+    const reject = page.getByRole("button", { name: "Reject mapping", exact: true });
+    const controlHeight = width <= 820 ? "44px" : "40px";
+    for (const button of [approve, reject]) {
+      await expect(button).toHaveCSS("min-height", controlHeight);
+      await expect(button).toHaveCSS("font-size", "14px");
+      await expect(button).toHaveCSS("border-top-width", "1px");
+    }
+    const approveBox = (await approve.boundingBox())!;
+    const rejectBox = (await reject.boundingBox())!;
+    expect(rejectBox.x >= approveBox.x + approveBox.width + 7 || rejectBox.y >= approveBox.y + approveBox.height + 7).toBe(true);
+    await assertBounds(page, width);
+    await page.screenshot({ path: testInfo.outputPath(`software-unavailable-${width}.png`), fullPage: true });
+    await page.getByRole("tab", { name: "OS Inventory", exact: true }).click();
+    await page.getByRole("button", { name: "Review EOL date", exact: true }).click();
+    const review = page.getByRole("region", { name: "EOL lifecycle review", exact: true });
+    for (const button of await review.getByRole("button").all()) {
+      await expect(button).toHaveCSS("min-height", controlHeight);
+      await expect(button).toHaveCSS("font-size", "14px");
+    }
+    await expect(review.getByLabel("Or enter a date")).toHaveCSS("min-height", controlHeight);
+    await assertBounds(page, width);
+    await review.screenshot({ path: testInfo.outputPath(`lifecycle-review-${width}.png`) });
+    expect(errors).toEqual([]);
+  });
+}
 
 for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
   for (const view of views) {
