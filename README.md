@@ -72,6 +72,15 @@ refreshes to it. Inventory owns resource identity and observations, while patch,
 vulnerability, policy, health, and cost domains retain their own evidence paths.
 Software joins use explicit resource IDs rather than inferred hostnames.
 
+Inventory risk narratives distinguish ready, empty observations from incomplete
+coverage. Unavailable or incomplete families with no retained observations show
+`Unknown`, not zero or absence of risk; retained counts are labeled observed and
+incomplete. Scope-level group and lifecycle totals use all authorized groups,
+independent of the bounded top-group list sent for narration. The software
+dashboard does not draw empty-success charts when its source is unavailable.
+Normalization and lifecycle review actions use the shared responsive control
+styles, including the manual-date field.
+
 Dataset publication retains manifests, hashes, source status, and generation
 pointers. Local and OneLake stores use their respective activation mechanisms;
 failed source-family acquisition must not silently clear last-known-good data.

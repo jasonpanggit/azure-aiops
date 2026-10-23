@@ -8,7 +8,6 @@ the deterministic facts, source state, and citations always remain available.
 
 from __future__ import annotations
 
-from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from api.scope import Scope
@@ -33,7 +32,10 @@ _NARRATIVE_QUESTION = (
     "them one-by-one -- weave the most material ones into your sentences and "
     "focus on what they mean together (e.g. concentration, blast radius, "
     "urgency). Use only the supplied facts, mention source degradation when "
-    "present, and do not recommend or claim an action that is not supported."
+    "present, and do not recommend or claim an action that is not supported. "
+    "Unknown or incomplete source coverage never proves zero observations, "
+    "absence of software, or absence of risk. Counts marked observed are lower "
+    "bounds from retained rows, not complete estate totals."
 )
 
 
@@ -47,12 +49,7 @@ def build_inventory_narrative(
     os_groups = list(aggregates["os_groups"])
     software_groups = list(aggregates["software_groups"])
     statuses = _safe_source_status(aggregates["source_status"])
-    facts, fact_items = _deterministic_facts(
-        os_groups,
-        software_groups,
-        aggregates["os_machine_count"],
-        aggregates["software_install_count"],
-    )
+    facts, fact_items = _deterministic_facts(aggregates)
     citations = _citations(aggregates.get("evidence") or ())
     confidence = _confidence(statuses, bool(os_groups or software_groups))
     payload = {
@@ -128,16 +125,21 @@ def build_inventory_narrative(
 
 
 def _deterministic_facts(
-    os_groups: list[dict[str, Any]],
-    software_groups: list[dict[str, Any]],
-    machine_count: int,
-    install_count: int,
+    aggregates: dict[str, Any],
 ) -> tuple[str, list[dict[str, str]]]:
-    risk = Counter(_risk_bucket(group) for group in os_groups for _ in range(group["machine_count"]))
+    os_groups = aggregates["os_groups"]
+    software_groups = aggregates["software_groups"]
+    machine_count = aggregates["os_machine_count"]
+    install_count = aggregates["software_install_count"]
+    os_ready = _sources_ready(aggregates["os_source_status"])
+    software_ready = _sources_ready(aggregates["software_source_status"])
+    risk = aggregates["lifecycle_counts"]
     risk_text = (
-        f"{risk['expired']} expired, {risk['expiring']} expiring within 90 days, "
-        f"{risk['supported']} supported, {risk['review']} needs review"
+        f"{risk.get('expired', 0)} expired, {risk.get('expiring', 0)} expiring within 90 days, "
+        f"{risk.get('supported', 0)} supported, {risk.get('review', 0)} needs review"
     )
+    if not os_ready:
+        risk_text = f"Observed rows only: {risk_text}; overall risk unknown" if machine_count else "Unknown"
     top_os = ", ".join(
         f"{group['os_name']} {group['os_version']} ({group['machine_count']})"
         for group in os_groups[:3]
@@ -146,33 +148,46 @@ def _deterministic_facts(
         f"{group['software_name']} {group['software_version']} ({group['install_count']})"
         for group in software_groups[:3]
     ) or "none"
-    summary = (
-        f"{machine_count} machines across {len(os_groups)} OS groups. "
-        f"EOL risk: {risk_text}. "
-        f"Top OS groups: {top_os}. "
+    os_count = _qualified_count(machine_count, os_ready)
+    os_group_count = _qualified_count(aggregates["os_group_count"], os_ready)
+    software_count = _qualified_count(install_count, software_ready)
+    software_group_count = _qualified_count(aggregates["software_group_count"], software_ready)
+    os_summary = (
+        f"{machine_count} machines across {aggregates['os_group_count']} OS groups."
+        if os_ready else
+        f"OS coverage is incomplete: {os_count} machines; {os_group_count} OS groups. "
+        "Complete machine and OS-group counts are unknown."
+    )
+    software_summary = (
         f"{install_count} installed-software observations across "
-        f"{len(software_groups)} software groups. Top software: {top_software}."
+        f"{aggregates['software_group_count']} software groups. Top software: {top_software}."
+        if software_ready else
+        f"Software coverage is incomplete: {software_count} observations; "
+        f"{software_group_count} groups. Complete software counts and absence are unknown."
+        + (f" Top observed software: {top_software}." if software_groups else "")
+    )
+    summary = (
+        f"{os_summary} EOL risk: {risk_text}. "
+        + (f"Top OS groups: {top_os}. " if os_ready or os_groups else "")
+        + software_summary
     )
     return summary, [
-        {"label": "Machines", "value": str(machine_count)},
-        {"label": "OS groups", "value": str(len(os_groups))},
+        {"label": "Machines", "value": os_count},
+        {"label": "OS groups", "value": os_group_count},
         {"label": "EOL risk", "value": risk_text},
-        {"label": "Software observations", "value": str(install_count)},
-        {"label": "Software groups", "value": str(len(software_groups))},
+        {"label": "Software observations", "value": software_count},
+        {"label": "Software groups", "value": software_group_count},
     ]
 
 
-def _risk_bucket(group: dict[str, Any]) -> str:
-    if group.get("review_required") or str(group.get("lifecycle_status", "")).casefold() == "unknown":
-        return "review"
-    if str(group.get("lifecycle_status", "")).casefold() == "eol":
-        return "expired"
-    days = group.get("days_remaining")
-    if isinstance(days, int) and 0 <= days <= 90:
-        return "expiring"
-    if str(group.get("lifecycle_status", "")).casefold() in {"supported", "extended"}:
-        return "supported"
-    return "review"
+def _sources_ready(statuses: dict[str, Any]) -> bool:
+    return bool(statuses) and all(item.get("state") == "ready" for item in statuses.values())
+
+
+def _qualified_count(count: int, ready: bool) -> str:
+    if ready:
+        return str(count)
+    return f"{count} observed (incomplete)" if count else "Unknown"
 
 
 def _safe_source_status(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
