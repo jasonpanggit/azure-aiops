@@ -97,13 +97,26 @@ class GraphRefresher:
         self._owner = uuid.uuid4().hex
         self._revision = 0
 
+    def assert_ready(self) -> None:
+        """Reject unresolved intent before acquisition, without tokens or writes.
+
+        This read-only check does not reserve a refresh. Callers must retain
+        their source lease; refresh rechecks state and uses CAS before posting.
+        """
+        self._read_ready()
+
+    def _read_ready(self) -> dict[str, Any]:
+        self._guard()
+        current = self._store.read(_STATE)
+        self._guard()
+        if current.get("phase") == "requested":
+            raise GraphRefreshAmbiguousError("graph_refresh_unresolved_intent")
+        return current
+
     def refresh(self, *, source_run_id: str) -> dict[str, Any]:
         """Run one refresh; return the persisted outcome or raise explicitly."""
         deadline = self._clock() + self._timeout
-        self._guard()
-        current = self._store.read(_STATE)
-        if current.get("phase") == "requested":
-            raise GraphRefreshAmbiguousError("graph_refresh_unresolved_intent")
+        current = self._read_ready()
         started = {"sourceRunId": source_run_id, "graphModelId": self._graph,
                    "workspaceId": self._workspace}
         self._revision = int(current.get("revision") or 0)

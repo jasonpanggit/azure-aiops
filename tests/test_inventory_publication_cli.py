@@ -137,6 +137,9 @@ class _Refresher:
     def __init__(self, outcome):
         self.outcome, self.calls = outcome, []
 
+    def assert_ready(self):
+        pass
+
     def refresh(self, *, source_run_id):
         self.calls.append(source_run_id)
         if isinstance(self.outcome, Exception):
@@ -240,7 +243,9 @@ def test_real_refresh_invalid_poll_reports_review_and_durably_blocks_replay(
         assert publication_cli.main() == 1
         output = capsys.readouterr().out
         summary = json.loads(output)
-        assert summary["publication_status"] == "completed"
+        assert summary["publication_status"] == (
+            "completed" if expected_reason == reason else "not_started"
+        )
         assert summary["graph_refresh"] == {
             "status": "ambiguous",
             "operator_review_required": True,
@@ -291,4 +296,93 @@ def test_non_refresh_runtime_error_is_not_swallowed(monkeypatch, tmp_path):
     refresher = _Refresher(RuntimeError("private-storage-detail"))
     monkeypatch.setattr(publication_cli, "_graph_refresher", lambda _root, _guard=None: refresher)
     with pytest.raises(RuntimeError, match="private-storage-detail"):
+        publication_cli.main()
+
+
+def test_unresolved_refresh_blocks_before_discovery_or_publication(monkeypatch, capsys, tmp_path):
+    import json
+
+    _chain_setup(monkeypatch, tmp_path, "completed", "completed")
+    root = tmp_path / "state"
+    store = OneLakeDocumentStore(root)
+    intent = {
+        "phase": "requested", "revision": 1, "owner": "previous-run",
+        "jobInstanceId": "7b0f4d58-1111-4222-8333-444455556666",
+        "sourceRunId": "activation-previous",
+    }
+    store.write("graph-refresh/state.json", intent, expected_revision=0)
+    before = (root / "graph-refresh/state.json").read_bytes()
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("Unresolved graph refresh must block before producer writes")
+
+    def factory(_root, guard):
+        return GraphRefresher(
+            SimpleNamespace(get_token=unexpected),
+            workspace_id="2c1fea36-104d-4c26-86db-12e09e432b41",
+            graph_model_id="e4aa8669-82d3-4ef4-9241-47252fca23fd",
+            state_store=store,
+            http_client=httpx.Client(transport=httpx.MockTransport(unexpected)),
+            guard=guard,
+        )
+
+    monkeypatch.setattr(publication_cli, "_graph_refresher", factory)
+    monkeypatch.setattr(publication_cli, "build_onboarding_service", unexpected)
+    monkeypatch.setattr(publication_cli, "run_inventory_refresh_all_connections", unexpected)
+    assert publication_cli.main() == 1
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {
+        "status": "blocked",
+        "connections": {},
+        "source_generation": None,
+        "publication_status": "not_started",
+        "tables": [],
+        "graph_refresh": {
+            "status": "ambiguous",
+            "reason": "graph_refresh_unresolved_intent",
+            "operator_review_required": True,
+        },
+    }
+    assert (root / "graph-refresh/state.json").read_bytes() == before
+    with publication_cli.RunLock(tmp_path):
+        pass
+
+
+def test_preflight_storage_failure_stops_before_discovery_and_is_not_hidden(
+    monkeypatch, capsys, tmp_path,
+):
+    _chain_setup(monkeypatch, tmp_path, "completed", "completed")
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("Producer must not run after a failed readiness read")
+
+    def read(_name):
+        raise OSError("state unavailable")
+
+    instance = GraphRefresher(
+        SimpleNamespace(get_token=unexpected),
+        workspace_id="2c1fea36-104d-4c26-86db-12e09e432b41",
+        graph_model_id="e4aa8669-82d3-4ef4-9241-47252fca23fd",
+        state_store=SimpleNamespace(read=read, write=unexpected),
+        http_client=httpx.Client(transport=httpx.MockTransport(unexpected)),
+    )
+    monkeypatch.setattr(publication_cli, "_graph_refresher", lambda *_: instance)
+    monkeypatch.setattr(publication_cli, "build_onboarding_service", unexpected)
+    with pytest.raises(OSError, match="state unavailable"):
+        publication_cli.main()
+    assert capsys.readouterr().out == ""
+    with publication_cli.RunLock(tmp_path):
+        pass
+
+
+def test_partial_graph_configuration_stops_before_discovery(monkeypatch, tmp_path):
+    _chain_setup(monkeypatch, tmp_path, "completed", "completed")
+    monkeypatch.setenv("AIOPS_GRAPH_REFRESH_WORKSPACE_ID", "2c1fea36-104d-4c26-86db-12e09e432b41")
+    monkeypatch.delenv("AIOPS_GRAPH_REFRESH_GRAPH_MODEL_ID", raising=False)
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("Invalid refresh configuration must stop before acquisition")
+
+    monkeypatch.setattr(publication_cli, "build_onboarding_service", unexpected)
+    with pytest.raises(ValueError, match="requires both"):
         publication_cli.main()

@@ -39,6 +39,21 @@ Operator review must reconcile the recorded job against the exact target and
 source before permitting another refresh. An acceptance-record CAS conflict
 stops polling and never overwrites another owner's record.
 
+When graph refresh is configured, the producer checks the durable intent under
+its source lease **before** building the onboarding service or acquiring and
+publishing inventory. An unresolved intent returns nonzero with `status:
+blocked`, `publication_status: not_started`, and an ambiguous graph-refresh
+outcome requiring operator review. It does not create a new source generation,
+request a token, poll the old job, or change the intent. Storage or lease errors
+propagate rather than being treated as ready. Refresh-disabled producers retain
+their existing behavior.
+
+This preflight deliberately pauses the configured producer chain, not just the
+next refresh, to avoid replacing source data while the prior refresh outcome is
+unknown. It is read-only, not a reservation or distributed exclusion mechanism:
+the producer retains its source lease and refresh rechecks current state and CAS
+authority immediately before requesting a new job.
+
 Every poll must return the accepted job instance ID and a nonempty string
 status, including failed or cancelled outcomes. Missing or mismatched identity,
 malformed JSON or malformed status leaves the receipt `requested`, retains the
