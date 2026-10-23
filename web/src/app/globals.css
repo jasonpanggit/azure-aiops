@@ -414,6 +414,12 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+:where(.page-container, .page-shell, .copilot-drawer) p {
+  max-inline-size: 75ch;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
 button,
 input,
 select,
@@ -5891,9 +5897,56 @@ body.topology-fullscreen-open {
   margin-bottom: 16px;
 }
 
+.health-section-nav {
+  gap: 8px;
+}
+
+.health-section-nav a.button {
+  min-height: 44px;
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.health-triage-body {
+  display: grid;
+  gap: 16px;
+}
+
+.health-triage-body p {
+  margin: 0;
+}
+
+.health-triage-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  align-items: end;
+  gap: 16px;
+}
+
+.health-triage-controls label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.health-triage-controls .form-control {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.health-summary-metrics {
+  margin: 16px 0 24px;
+}
+
 .health-resource-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  align-items: start;
   gap: 16px;
   margin-top: 16px;
 }
@@ -5904,6 +5957,7 @@ body.topology-fullscreen-open {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  overflow-wrap: anywhere;
 }
 
 .health-resource-header,
@@ -5916,6 +5970,18 @@ body.topology-fullscreen-open {
 
 .health-resource-title {
   min-width: 0;
+  flex: 1 1 160px;
+}
+
+.health-resource-header {
+  flex-wrap: wrap;
+}
+
+.health-resource-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 
 .health-resource-title h3 {
@@ -5961,6 +6027,12 @@ body.topology-fullscreen-open {
 .health-resource-cpu {
   align-items: center;
   justify-content: flex-start;
+}
+
+.health-resource-cpu svg {
+  flex: 0 1 160px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .health-resource-metrics {
@@ -11238,4 +11310,96 @@ body.topology-fullscreen-open {
 @media (max-width: 780px) {
   .agents-workspace .card-header { flex-wrap: wrap; }
   .agents-workspace .card-header > div:first-child { flex-basis: 100%; }
+}
+
+:is(.page-container, .page-shell, .copilot-drawer) p + p,
+.inventory-page .narrative-summary p + p {
+  margin-block-start: 12px;
+}
+
+:where(.page-container, .page-shell, .copilot-drawer) :is(h2, h3, h4, summary) + p {
+  margin-block-start: 8px;
+}
+
+:where(.page-container, .page-shell, .copilot-drawer) p + :is(h2, h3, h4) {
+  margin-block-start: 20px;
+}
+
+:where(.page-container, .page-shell, .copilot-drawer) p + :is(ul, ol) {
+  max-inline-size: 75ch;
+  margin-block: 12px;
+  padding-inline-start: 24px;
+  line-height: 1.6;
+}
+
+:where(.page-container, .page-shell, .copilot-drawer) :is(ul, ol) + p {
+  margin-block-start: 12px;
+}
+
+:where(.page-container, .page-shell, .copilot-drawer) p + details {
+  margin-block-start: 12px;
+}
+
+:where(.page-container, .page-shell, .copilot-drawer) :is(p + ul, p + ol) > li + li {
+  margin-block-start: 6px;
+}
+
+/* These layouts already separate direct children with grid or flex gaps. */
+:is(.page-container, .page-shell, .copilot-drawer) :is(
+  .executive-brief,
+  .health-triage-body,
+  .health-resource-card,
+  .source-recovery-actions,
+  .copilot-insights,
+  .detail-panel,
+  .inventory-dashboard,
+  .twin-history-body,
+  .twin-history-section,
+  .twin-pair-review,
+  .predeploy-history-body,
+  .predeploy-history-comparison,
+  .predeploy-intake,
+  .network-intents,
+  .network-history,
+  .network-intents-receipts,
+  .network-history-receipts,
+  .service-reliability-review,
+  .saved-views-body,
+  .exposure-evidence-rail-heading,
+  .compliance-review-heading,
+  .compliance-review-recommendation,
+  .compliance-review-next-step,
+  .remediation-handoff-copy,
+  .remediation-execution-heading,
+  .remediation-supersede-form,
+  .remediation-review-section,
+  .remediation-decision-list > li,
+  .remediation-rollouts fieldset,
+  .twin-capture-list > li,
+  .twin-scenario-columns article,
+  .remediation-review-panel,
+  [role="tabpanel"]
+) > :is(p + p, p + details),
+.page-container :is(
+  .overview-history-workspace,
+  .agents-job,
+  .copilot-request-recovery,
+  .service-reliability,
+  .remediation-verification-inbox,
+  .remediation-rollouts,
+  .network-review-context,
+  .situation-response-deadline
+) > .card-body > :is(p + p, p + details),
+.page-container .service-reliability [aria-label="Measured component requests"] > p + p,
+:is(.page-shell, .inventory-page) > p + p {
+  margin-block-start: 0;
+}
+
+:is(.page-container, .page-shell, .copilot-drawer) :is(td, th, [role="cell"], button) p {
+  max-inline-size: none;
+  line-height: inherit;
+}
+
+:is(.page-container, .page-shell, .copilot-drawer) :is(td, th, [role="cell"], button) p + p {
+  margin-block-start: 0;
 }
