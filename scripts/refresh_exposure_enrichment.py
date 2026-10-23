@@ -221,6 +221,16 @@ def _write_report(stdout: TextIO, report: dict[str, Any]) -> None:
     stdout.write(json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n")
 
 
+def _error_category(error: Exception) -> str:
+    if isinstance(error, ValueError):
+        return "value_error"
+    if isinstance(error, TimeoutError):
+        return "timeout_error"
+    if isinstance(error, OSError):
+        return "os_error"
+    return "unexpected_error"
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -232,15 +242,25 @@ def main(
 
     args = _parser().parse_args(argv)
     outcomes: list[dict[str, Any]] = []
+    stage = "arguments"
     try:
         if args.prefetch_generation:
             if args.all_due or args.source or args.identifiers or args.force:
                 raise ValueError("prefetch_generation_has_conflicting_arguments")
-            report = prefetch_factory(max_items=args.max_items).run().to_dict()
+            stage = "prefetch_build"
+            service = prefetch_factory(max_items=args.max_items)
+            stage = "prefetch_run"
+            result = service.run()
+            stage = "prefetch_report"
+            report = result.to_dict()
+            stage = "report_write"
             _write_report(stdout, report)
             return 0
+        stage = "worker_build"
         worker = worker_factory(max_items=args.max_items)
+        stage = "target_selection"
         targets = _targets(args, worker)
+        stage = "worker_refresh"
         worker.refresh(
             targets,
             force=args.force,
@@ -248,23 +268,27 @@ def main(
                 _redacted_outcome(outcome)
             ),
         )
-    except ValueError:
+    except ValueError as exc:
         _write_report(
             stdout,
             {
                 "status": "failed",
                 "safe_error_code": "invalid_refresh_contract",
                 "outcomes": outcomes,
+                "failure_stage": stage,
+                "error_category": _error_category(exc),
             },
         )
         return 2
-    except Exception:  # noqa: BLE001 - never serialize provider/store exception text.
+    except Exception as exc:  # noqa: BLE001 - never serialize provider/store exception text.
         _write_report(
             stdout,
             {
                 "status": "failed",
                 "safe_error_code": "enrichment_scheduler_failed",
                 "outcomes": outcomes,
+                "failure_stage": stage,
+                "error_category": _error_category(exc),
             },
         )
         return 1

@@ -25,6 +25,28 @@ that live Exposure evidence is ready.
 
 ## Prerequisites
 
+### Enrichment scheduler failure diagnostics
+
+`scripts/refresh_exposure_enrichment.py` emits additive `failure_stage` and
+`error_category` fields on caught failures. Stages identify the CLI operation:
+`arguments`, `prefetch_build`, `prefetch_run`, `prefetch_report`, `report_write`,
+`worker_build`, `target_selection`, or `worker_refresh`. Categories are fixed
+labels: `value_error`, `timeout_error`, `os_error`, or `unexpected_error`.
+They never serialize exception messages, class names, tracebacks or provider
+payloads. Existing error codes and exit codes remain unchanged; in particular,
+`invalid_refresh_contract` with exit 2 may originate from a runtime ValueError,
+so inspect the stage rather than assuming bad command-line input.
+
+These fields locate an operation boundary, not a root cause. `prefetch_run`
+does not distinguish internal discovery, provider refresh or checkpoint work.
+An empty failure `outcomes` array does not prove no calls or writes occurred:
+prefetch results are returned only after the service completes. Do not infer
+capacity, authorization, schema, rollback safety or retry permission from these
+diagnostics. Historical logs without the fields cannot be retroactively
+qualified; bind any future receipt to its actual deployed image and source.
+
+### Release prerequisites
+
 Before any shadow or canary stage, prove all of the following:
 
 1. The deployment has an authorized active connection and can acquire AUM,
