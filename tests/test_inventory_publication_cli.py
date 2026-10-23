@@ -1,9 +1,15 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
-from fabric.graph_refresh import GraphRefreshAmbiguousError, GraphRefreshError
+from fabric.graph_refresh import (
+    GraphRefreshAmbiguousError,
+    GraphRefresher,
+    GraphRefreshError,
+)
 from intelligence.inventory import publication_cli
+from storage.onelake_documents import OneLakeDocumentStore
 
 
 def test_inventory_job_requires_explicit_roots(monkeypatch):
@@ -185,6 +191,68 @@ def test_refresh_summary_distinguishes_ambiguous_outcome(
     assert summary["graph_refresh"]["status"] == status
     assert summary["graph_refresh"]["operator_review_required"] is review
     assert summary["graph_refresh"]["reason"] == str(error)
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        ({"status": "Failed"}, "graph_refresh_job_mismatch"),
+        ({"status": {}}, "graph_refresh_poll_invalid"),
+        ({"id": "wrong-job", "status": "Completed"}, "graph_refresh_job_mismatch"),
+    ],
+)
+def test_real_refresh_invalid_poll_reports_review_and_durably_blocks_replay(
+    monkeypatch, capsys, tmp_path, payload, reason,
+):
+    import json
+
+    _chain_setup(monkeypatch, tmp_path, "completed", "completed")
+    workspace = "2c1fea36-104d-4c26-86db-12e09e432b41"
+    graph = "e4aa8669-82d3-4ef4-9241-47252fca23fd"
+    job = "7b0f4d58-1111-4222-8333-444455556666"
+    location = (
+        f"https://api.fabric.microsoft.com/v1/workspaces/{workspace}"
+        f"/items/{graph}/jobs/instances/{job}"
+    )
+    root = tmp_path / "refresh-state"
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        if request.method == "POST":
+            return httpx.Response(202, headers={"Location": location, "Retry-After": "1"})
+        assert calls == ["POST", "GET"], "An invalid receipt must stop polling"
+        return httpx.Response(200, json=payload)
+
+    def factory(_root, guard=None):
+        return GraphRefresher(
+            SimpleNamespace(get_token=lambda *_: SimpleNamespace(token="private-token")),
+            workspace_id=workspace,
+            graph_model_id=graph,
+            state_store=OneLakeDocumentStore(root),
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+            guard=guard,
+            sleep=lambda _: None,
+        )
+
+    monkeypatch.setattr(publication_cli, "_graph_refresher", factory)
+    for expected_reason in (reason, "graph_refresh_unresolved_intent"):
+        assert publication_cli.main() == 1
+        output = capsys.readouterr().out
+        summary = json.loads(output)
+        assert summary["publication_status"] == "completed"
+        assert summary["graph_refresh"] == {
+            "status": "ambiguous",
+            "operator_review_required": True,
+            "reason": expected_reason,
+        }
+        assert "private-token" not in output
+        persisted = OneLakeDocumentStore(root).read("graph-refresh/state.json")
+        assert persisted["phase"] == "requested"
+        assert persisted["jobInstanceId"] == job
+        assert persisted["sourceRunId"] == "activation-1"
+        assert persisted["revision"] == 2
+    assert calls == ["POST", "GET"]
 
 
 def test_graph_refresher_env_is_all_or_nothing(monkeypatch):

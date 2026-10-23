@@ -176,6 +176,91 @@ def test_failed_job_raises_and_records_failure():
     assert store.doc["phase"] == "failed"
 
 
+@pytest.mark.parametrize("status", ["Failed", "Cancelled", "Deduped", "Completed", "InProgress"])
+@pytest.mark.parametrize("identity", [None, "", "00000000-0000-4000-8000-000000000000", [], {}])
+def test_poll_without_verified_job_identity_stays_ambiguous_and_blocks_replay(status, identity):
+    store = Store()
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        if request.method == "POST":
+            return httpx.Response(202, headers={"Location": LOCATION, "Retry-After": "1"})
+        assert calls == ["POST", "GET"], "An invalid receipt must stop polling"
+        payload = {"status": status}
+        if identity is not None:
+            payload["id"] = identity
+        return httpx.Response(200, json=payload)
+
+    with pytest.raises(GraphRefreshAmbiguousError, match="job_mismatch"):
+        refresher(handler, store).refresh(source_run_id="activation-a")
+    assert store.doc["phase"] == "requested"
+    assert store.doc["revision"] == 2
+    assert store.doc["jobInstanceId"] == JOB
+    with pytest.raises(GraphRefreshAmbiguousError, match="unresolved_intent"):
+        refresher(handler, store).refresh(source_run_id="activation-b")
+    assert calls == ["POST", "GET"]
+
+
+@pytest.mark.parametrize("status", [None, [], {}, 1, True, "", "   "])
+def test_malformed_poll_status_stays_ambiguous_without_another_poll(status):
+    store = Store()
+    handler, calls = flow([status])
+    with pytest.raises(GraphRefreshAmbiguousError, match="poll_invalid"):
+        refresher(handler, store).refresh(source_run_id="activation-a")
+    assert store.doc["phase"] == "requested"
+    assert store.doc["jobInstanceId"] == JOB
+    assert store.doc["revision"] == 2
+    with pytest.raises(GraphRefreshAmbiguousError, match="unresolved_intent"):
+        refresher(handler, store).refresh(source_run_id="activation-b")
+    assert calls == ["POST", "GET"]
+
+
+def test_future_nonterminal_status_remains_bounded_and_can_complete():
+    store = Store()
+    handler, calls = flow(["FuturePendingState", "Completed"])
+    result = refresher(handler, store).refresh(source_run_id="activation-a")
+    assert result["status"] == "Completed"
+    assert calls == ["POST", "GET", "GET"]
+
+
+@pytest.mark.parametrize("status", ["Failed", "Cancelled", "Deduped"])
+def test_verified_terminal_failure_allows_a_later_distinct_refresh(status):
+    store = Store()
+    handler, calls = flow([status, "Completed"])
+    with pytest.raises(GraphRefreshError, match=f"graph_refresh_{status.lower()}"):
+        refresher(handler, store).refresh(source_run_id="activation-a")
+    assert store.doc["phase"] == "failed"
+    assert store.doc["revision"] == 3
+    result = refresher(handler, store).refresh(source_run_id="activation-b")
+    assert result["phase"] == "completed"
+    assert result["sourceRunId"] == "activation-b"
+    assert result["revision"] == 6
+    assert calls == ["POST", "GET", "POST", "GET"]
+
+
+@pytest.mark.parametrize("payload", ["null", "[]", '"Completed"', "{}", '{"id":', ""])
+def test_malformed_poll_body_retains_accepted_intent(payload):
+    store = Store()
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        if request.method == "POST":
+            return httpx.Response(202, headers={"Location": LOCATION, "Retry-After": "1"})
+        assert calls == ["POST", "GET"], "An invalid receipt must stop polling"
+        return httpx.Response(200, content=payload)
+
+    with pytest.raises(GraphRefreshAmbiguousError, match="poll_invalid"):
+        refresher(handler, store).refresh(source_run_id="activation-a")
+    assert store.doc["phase"] == "requested"
+    assert store.doc["jobInstanceId"] == JOB
+    assert store.doc["revision"] == 2
+    with pytest.raises(GraphRefreshAmbiguousError, match="unresolved_intent"):
+        refresher(handler, store).refresh(source_run_id="activation-b")
+    assert calls == ["POST", "GET"]
+
+
 def test_rejected_post_not_retried():
     store = Store()
     handler, calls = flow([], post_status=429)

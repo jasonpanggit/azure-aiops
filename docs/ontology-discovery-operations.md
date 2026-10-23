@@ -39,6 +39,13 @@ Operator review must reconcile the recorded job against the exact target and
 source before permitting another refresh. An acceptance-record CAS conflict
 stops polling and never overwrites another owner's record.
 
+Every poll must return the accepted job instance ID and a nonempty string
+status, including failed or cancelled outcomes. Missing or mismatched identity,
+malformed JSON or malformed status leaves the receipt `requested`, retains the
+accepted job ID, and requires operator review; it cannot unlock another
+refresh. Unknown nonempty status strings remain nonterminal and use the same
+finite polling deadline.
+
 An accepted request adds a state revision before its terminal record: revision
 numbers are CAS tokens, not a fixed two-revisions-per-run counter. Requests
 rejected before acceptance need not have a job ID; an unresolved pre-acceptance

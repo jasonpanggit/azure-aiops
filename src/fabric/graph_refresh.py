@@ -51,6 +51,8 @@ class GraphRefresher:
     "requested" state blocks later refreshes until an operator reviews it.
     A validated accepted job identity is saved before polling; it remains
     requested, not completed, if polling or the finite deadline fails.
+    Every poll must identify that accepted job and return a nonempty string
+    status; unverified results never release the blocking intent.
     ``guard`` (e.g. the source lease check) runs before the POST, around every
     poll, and before every state record, and must raise when ownership is lost.
     """
@@ -154,11 +156,13 @@ class GraphRefresher:
                 observed_id = body.get("id")
             except (ValueError, KeyError, TypeError, AttributeError):
                 raise GraphRefreshAmbiguousError("graph_refresh_poll_invalid") from None
-            if observed_id is not None and observed_id != job_id:
+            if not isinstance(status, str) or not status.strip():
+                raise GraphRefreshAmbiguousError("graph_refresh_poll_invalid")
+            if observed_id != job_id:
                 raise GraphRefreshAmbiguousError("graph_refresh_job_mismatch")
             self._remaining(deadline)
             if status == "Completed":
-                if observed_id != job_id or body.get("failureReason"):
+                if body.get("failureReason"):
                     raise GraphRefreshAmbiguousError("graph_refresh_completion_unverified")
                 self._guard()
                 return self._commit(
