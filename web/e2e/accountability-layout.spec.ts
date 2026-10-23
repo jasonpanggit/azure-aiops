@@ -151,7 +151,7 @@ async function assertNavigation(page: Page, name: string) {
   expect((await target.boundingBox())!.y).toBeGreaterThanOrEqual(55);
 }
 
-for (const width of [1440, 820, 768, 375, 320]) {
+for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
   test(`FinOps keeps currency, coverage and cost controls readable at ${width}px`, async ({ page }, testInfo) => {
     await mockSources(page);
     await page.setViewportSize({ width, height: 900 });

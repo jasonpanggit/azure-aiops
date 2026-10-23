@@ -41,6 +41,17 @@ Expanding or selecting patches never creates or approves a review automatically.
 
 ## Release boundary
 
+### Wide-screen follow-up
+
+The operational page canvas grows to a bounded 1920px rather than stopping at
+1440px. Inventory narrative sections share readable columns once the containing
+panel reaches 960px; long narrative paragraphs retain the 75ch reading measure.
+Shared card descriptions use their available header width, and partial/stale/error
+notices place the symbol beside the message instead of reserving a tall, mostly
+empty panel. Empty and loading states retain their existing centered treatment.
+This changes layout only, not evidence, scope, actions, or factual copy. Regression
+coverage includes 1912px and 2560px as well as the existing mobile widths.
+
 Compliance score inversion and shared prose spacing were already corrected in
 the baseline and are deliberately not reimplemented here. Their live outcome,
 and the outcome of this update, require a separately authorized release and

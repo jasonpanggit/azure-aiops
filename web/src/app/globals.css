@@ -30,7 +30,7 @@
   --radius-lg: 12px;
   --topbar-height: 56px;
   --sidebar-width: 244px;
-  --content-max: 1440px;
+  --content-max: 1920px;
 }
 
 .investigation-workspace {
@@ -1223,8 +1223,14 @@ textarea:focus-visible {
   margin: 0;
 }
 
+.card-header > div:first-child {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
 .card-header p {
-  max-width: 60ch;
+  max-width: none;
+  max-inline-size: none;
   margin: 4px 0 0;
   color: var(--color-text-secondary);
   font-size: 14px;
@@ -1726,6 +1732,28 @@ textarea:focus-visible {
   max-width: 560px;
   margin-top: 5px;
   color: var(--color-text-secondary);
+}
+
+.state-panel:is(.state-partial, .state-stale, .state-error) {
+  min-height: 0;
+  grid-template-columns: 36px minmax(0, 1fr);
+  column-gap: 16px;
+  padding: 20px;
+  place-items: start;
+  text-align: left;
+}
+
+.state-panel:is(.state-partial, .state-stale, .state-error) .state-symbol {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  margin: 0;
+}
+
+.state-panel:is(.state-partial, .state-stale, .state-error) > :is(h2, p, .state-action) {
+  grid-column: 2;
+  min-width: 0;
+  max-width: none;
+  max-inline-size: none;
 }
 
 .state-error {
@@ -6017,7 +6045,17 @@ body.topology-fullscreen-open {
 }
 
 .health-resource-card .state-panel {
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+}
+
+.health-resource-card .state-panel .state-symbol {
+  grid-column: 1;
+  grid-row: auto;
+}
+
+.health-resource-card .state-panel > :is(h2, p, .state-action) {
+  grid-column: 1;
 }
 
 .health-resource-card .state-panel p {
@@ -9255,6 +9293,19 @@ body.topology-fullscreen-open {
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+.inventory-page #inventory-narrative {
+  container: inventory-narrative / inline-size;
+}
+
+@container inventory-narrative (min-width: 960px) {
+  .inventory-page .narrative-body {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px 32px;
+    align-items: start;
+  }
 }
 
 .inventory-page .narrative-section h3 {
