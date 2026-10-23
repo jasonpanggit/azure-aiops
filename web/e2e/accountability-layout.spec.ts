@@ -12,10 +12,14 @@ const envelope = (data: unknown) => ({
   evidence: [{ source_engine: "ARG", source_table: "observed", timestamp: "2026-09-20T12:00:00Z", confidence: "low", freshness: "stale" }],
 });
 
-async function mockSources(page: Page, unavailable: string[] = [], emptyInventory = false) {
+async function mockSources(page: Page, unavailable: string[] = [], emptyInventory = false, longHealthText = false) {
   const cost = buildCostSignals();
   const access = buildAccessSignals();
-  const resources = emptyInventory ? [] : buildHealthResources();
+  const resources = emptyInventory ? [] : buildHealthResources().map((resource, index) => longHealthText ? {
+    ...resource,
+    resource_name: index === 0 ? `payments${"production".repeat(12)}` : resource.resource_name,
+    resource_group: `resourcegroup${"production".repeat(12)}`,
+  } : resource);
   let settings = buildEnterpriseSettings();
   await page.route("**/api/v1/**", (route) => {
     const request = route.request();
@@ -28,7 +32,9 @@ async function mockSources(page: Page, unavailable: string[] = [], emptyInventor
       const resource = resources.find((item) => item.resource_id === url.searchParams.get("resource_id"));
       if (!resource || resource.resource_name === "payments-worker-1") {
         return route.fulfill({
-          status: 503, json: { error: { code: "upstream_unavailable", message: "Metrics are unavailable for this resource." } },
+          status: 503, json: { error: { code: "upstream_unavailable", message: longHealthText
+            ? `Metrics are unavailable for this resource. Reference: ${"diagnostic".repeat(18)}`
+            : "Metrics are unavailable for this resource." } },
         });
       }
       return route.fulfill({ json: envelope(buildHealthSnapshot(resource)) });
@@ -208,6 +214,23 @@ for (const width of [1440, 820, 768, 375, 320]) {
     const cards = resources.locator(".health-resource-grid").getByRole("article");
     await expect(cards).toHaveCount(3);
     await expect(resources.getByText("2 of 3 resources returned metrics", { exact: true })).toBeVisible();
+    const navigation = page.getByRole("navigation", { name: "Health sections", exact: true });
+    const links = navigation.getByRole("link");
+    await expect(links).toHaveCount(2);
+    for (const link of await links.all()) {
+      await expect(link).toHaveClass(/button button-secondary/);
+      await expect(link).toHaveCSS("background-image", "none");
+      await expect(link).toHaveCSS("border-top-style", "solid");
+      await expect(link).toHaveCSS("text-decoration-line", "none");
+      expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    }
+    await links.first().focus();
+    await page.keyboard.press("Tab");
+    await expect(links.last()).toBeFocused();
+    await expect(links.last()).toHaveCSS("outline-style", "solid");
+    await links.last().hover();
+    await expect(links.last()).toHaveCSS("text-decoration-line", "none");
+    if (width === 1440 || width === 375) await navigation.screenshot({ path: testInfo.outputPath(`health-section-nav-${width}.png`) });
     await expect(page.getByRole("heading", { name: "Some metrics are unavailable", exact: true })).toBeVisible();
     const failed = resources.getByRole("article", { name: "payments-worker-1", exact: true });
     await expect(failed.getByRole("alert")).toContainText("Metrics are unavailable");
@@ -217,8 +240,27 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await failed.getByRole("button", { name: "Retry health for payments-worker-1", exact: true }).click();
     expect(new URL((await retry).url()).searchParams.get("resource_id")).toBe(buildHealthResources()[1].resource_id);
     await expect(failed.getByRole("alert")).toBeVisible();
+    const triage = resources.getByRole("region", { name: "Health coverage and triage", exact: true });
+    const state = triage.getByRole("combobox", { name: "Health state", exact: true });
+    const search = triage.getByRole("searchbox", { name: "Find compute resource", exact: true });
+    for (const control of [state, search]) {
+      await expect(control).toHaveClass(/form-control/);
+      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      await expect(control).toHaveCSS("font-size", "16px");
+    }
+    const stateBox = (await state.boundingBox())!;
+    const searchBox = (await search.boundingBox())!;
+    expect(searchBox.x >= stateBox.x + stateBox.width + 15 || searchBox.y >= stateBox.y + stateBox.height + 15).toBe(true);
+    const summaryBox = (await resources.locator(".health-summary-metrics").boundingBox())!;
+    const triageBox = (await triage.boundingBox())!;
+    expect(summaryBox.y - triageBox.y - triageBox.height).toBeGreaterThanOrEqual(16);
     for (const card of await cards.all()) {
       expect((await card.boundingBox())!.width).toBeGreaterThanOrEqual(245);
+      const trailing = await card.evaluate(element => {
+        const last = element.lastElementChild!.getBoundingClientRect();
+        return element.getBoundingClientRect().bottom - last.bottom;
+      });
+      expect(trailing).toBeLessThanOrEqual(17);
     }
     const scroller = page.getByRole("region", { name: "Scrollable CPU chart", exact: true });
     await expect(scroller).toBeVisible();
@@ -235,7 +277,49 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await assertNavigation(page, "Health sections");
     await assertInsightLast(page, "#health-comparison");
     await assertLayout(page, width);
-    if (width === 375) await resources.screenshot({ path: testInfo.outputPath("health-resources-375.png") });
+    await state.focus();
+    await page.keyboard.press("Tab");
+    await expect(search).toBeFocused();
+    await expect(search).toHaveCSS("outline-style", "solid");
+    await state.selectOption("failed");
+    await expect(cards).toHaveCount(1);
+    await expect(failed).toBeVisible();
+    await state.selectOption("all");
+    await search.fill("payments-worker-2");
+    await expect(cards).toHaveCount(1);
+    await expect(cards.first()).toHaveAccessibleName("payments-worker-2");
+    await search.fill("");
+    await expect(cards).toHaveCount(3);
+    if (width === 1440 || width === 375) {
+      await resources.screenshot({ path: testInfo.outputPath(`health-resources-${width}.png`) });
+    }
+  });
+
+  test(`Resource Health wraps long identifiers and diagnostics at ${width}px`, async ({ page }, testInfo) => {
+    await mockSources(page, [], false, true);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/resource-health");
+    const resources = page.getByRole("region", { name: "Resource utilization", exact: true });
+    const cards = resources.locator(".health-resource-grid").getByRole("article");
+    await expect(cards).toHaveCount(3);
+    await expect(resources.getByText("2 of 3 resources returned metrics", { exact: true })).toBeVisible();
+    const longName = `payments${"production".repeat(12)}`;
+    await expect(resources.getByRole("article", { name: longName, exact: true }).getByRole("heading", { name: longName, exact: true })).toBeVisible();
+    await expect(resources.getByRole("alert")).toContainText("diagnostic".repeat(18));
+    for (const card of await cards.all()) {
+      const overflow = await card.evaluate(root => Array.from(root.querySelectorAll("*")).flatMap(element => {
+        const bounds = element.getBoundingClientRect();
+        const cardBounds = root.getBoundingClientRect();
+        return bounds.width > 0 && (bounds.left < cardBounds.left - 1 || bounds.right > cardBounds.right + 1)
+          ? [element.tagName + "." + element.className] : [];
+      }));
+      expect(overflow).toEqual([]);
+      for (const text of await card.locator("h3, .cell-subtext, .state-panel p").all()) {
+        expect(await text.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+      }
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
+    if (width === 1440 || width === 375) await resources.screenshot({ path: testInfo.outputPath(`health-long-content-${width}.png`) });
   });
 
   test(`Governance keeps generation, raw evidence and explicit policy saves usable at ${width}px`, async ({ page }, testInfo) => {

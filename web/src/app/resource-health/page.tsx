@@ -102,14 +102,7 @@ function ResourceCard({
           <h3>{resource.resource_name}</h3>
           <div className="cell-subtext">{resource.resource_group}</div>
         </div>
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            justifyContent: "flex-end",
-            gap: "0.35rem",
-          }}
-        >
+        <div className="health-resource-badges">
           <StatusBadge
             label={resourceTypeLabel(resource.resource_type)}
             tone="info"
@@ -589,9 +582,9 @@ export default function ResourceHealthPage() {
         }
       />
 
-      <nav className="section-nav" aria-label="Health sections">
-        <a href="#health-resources">Resource utilization</a>
-        {!inventoryLoading && !inventoryError && details.length > 0 && <a href="#health-comparison">CPU comparison</a>}
+      <nav className="section-nav health-section-nav" aria-label="Health sections">
+        <a className="button button-secondary" href="#health-resources">Resource utilization</a>
+        {!inventoryLoading && !inventoryError && details.length > 0 && <a className="button button-secondary" href="#health-comparison">CPU comparison</a>}
       </nav>
 
       {unavailableMetrics.length > 0 ? (
@@ -639,18 +632,20 @@ export default function ResourceHealthPage() {
         <>
           <section className="card" aria-label="Health coverage and triage">
             <div className="card-header"><h2>Health coverage and triage</h2></div>
-            <div className="card-body">
+            <div className="card-body health-triage-body">
               <p role="status">{details.length} of {resources.length} resources returned health evidence. {coverage.loading ?? 0} loading; {coverage.failed ?? 0} failed; {coverage.unknown ?? 0} unknown. Missing evidence is not healthy.</p>
-              <label>Health state
-                <select value={healthFilter} onChange={event => setHealthFilter(event.target.value)}>
-                  {["all", "critical", "warning", "healthy", "unknown", "failed", "loading"].map(state => <option key={state} value={state}>{state}</option>)}
-                </select>
-              </label>
-              <label>Find compute resource<input ref={resourceSearchInput} type="search" value={resourceSearch} onChange={event => setResourceSearch(event.target.value)} /></label>
+              <div className="health-triage-controls">
+                <label>Health state
+                  <select className="form-control" value={healthFilter} onChange={event => setHealthFilter(event.target.value)}>
+                    {["all", "critical", "warning", "healthy", "unknown", "failed", "loading"].map(state => <option key={state} value={state}>{state}</option>)}
+                  </select>
+                </label>
+                <label>Find compute resource<input className="form-control" ref={resourceSearchInput} type="search" value={resourceSearch} onChange={event => setResourceSearch(event.target.value)} /></label>
+              </div>
               <p>{visibleResources.length} matching resources of {resources.length} observed.</p>
             </div>
           </section>
-          <div className="metric-grid" style={{ marginBottom: "1.5rem" }}>
+          <div className="metric-grid health-summary-metrics">
             <MetricCard
               label="Resources in scope"
               value={summary.total}
