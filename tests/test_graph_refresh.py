@@ -75,6 +75,61 @@ def test_success_polls_until_completed_and_persists_outcome():
     assert store.doc["sourceRunId"] == "activation-1"
     assert "private-token" not in str(store.doc)
 
+
+@pytest.mark.parametrize("phase", [None, "completed", "failed", "rejected"])
+def test_preflight_is_read_only_and_does_not_acquire_token_or_http(phase):
+    store = Store()
+    if phase is not None:
+        store.doc = {"phase": phase, "revision": 3}
+    before = dict(store.doc)
+    guards = []
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("Readiness check must not request tokens or mutate state")
+
+    store.write = unexpected
+    instance = refresher(unexpected, store, guard=lambda: guards.append("held"))
+    instance._credential = SimpleNamespace(get_token=unexpected)
+    instance.assert_ready()
+    assert store.doc == before
+    assert guards == ["held", "held"]
+
+
+def test_preflight_does_not_reserve_or_allow_stale_readiness():
+    store = Store()
+    handler, calls = flow(["Completed"])
+    instance = refresher(handler, store)
+    instance.assert_ready()
+    store.doc = {"phase": "requested", "revision": 1, "owner": "other"}
+    with pytest.raises(GraphRefreshAmbiguousError, match="unresolved_intent"):
+        instance.refresh(source_run_id="activation-new")
+    assert calls == []
+    assert store.doc["owner"] == "other"
+
+
+@pytest.mark.parametrize("lose_after_read", [False, True])
+def test_preflight_requires_source_lease_before_and_after_read(lose_after_read):
+    store = Store()
+    reads = []
+    original_read = store.read
+
+    def read(name):
+        reads.append(name)
+        return original_read(name)
+
+    def guard():
+        if not lose_after_read or reads:
+            raise RuntimeError("lease lost")
+
+    store.read = read
+    handler, calls = flow(["Completed"])
+    with pytest.raises(RuntimeError, match="lease lost"):
+        refresher(handler, store, guard=guard).assert_ready()
+    assert len(reads) == int(lose_after_read)
+    assert store.doc == {}
+    assert calls == []
+
+
 def test_accepted_job_is_durable_before_poll_failure_and_blocks_replay():
     store = Store()
     calls = []

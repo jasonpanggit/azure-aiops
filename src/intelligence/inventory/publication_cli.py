@@ -53,6 +53,24 @@ def main() -> int:
         output_dir=config["AIOPS_CONNECTION_HOME"],
     )
     with renewing_run_lock(RunLock(source_config.output_dir)) as lock:
+        refresher = _graph_refresher(config["AIOPS_CONNECTION_HOME"], lock.assert_held)
+        if refresher is not None:
+            try:
+                refresher.assert_ready()
+            except GraphRefreshAmbiguousError as exc:
+                print(json.dumps({
+                    "status": "blocked",
+                    "connections": {},
+                    "source_generation": None,
+                    "publication_status": "not_started",
+                    "tables": [],
+                    "graph_refresh": {
+                        "status": "ambiguous",
+                        "operator_review_required": True,
+                        "reason": str(exc),
+                    },
+                }, sort_keys=True))
+                return 1
         onboarding = build_onboarding_service(connector)
         connections = onboarding.registry.list(include_disabled=False)
         if not connections:
@@ -81,12 +99,7 @@ def main() -> int:
             and publication.get("status") == "completed"
         )
         graph_refresh: dict[str, object] | None = None
-        refresher = (
-            _graph_refresher(config["AIOPS_CONNECTION_HOME"], lock.assert_held)
-            if published
-            else None
-        )
-        if refresher is not None:
+        if published and refresher is not None:
             lock.assert_held()
             try:
                 if not publication.get("sourceRunId"):
