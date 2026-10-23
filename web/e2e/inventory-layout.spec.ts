@@ -156,7 +156,7 @@ const views = [
     detail: "Azure resource detail", detailTable: "Azure resource detail table", noun: "resources" },
 ] as const;
 
-for (const width of [1440, 820, 768, 375, 320]) {
+for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
   for (const view of views) {
     test(`Inventory ${view.key} keeps scoped records, inline detail and controls readable at ${width}px`, async ({ page }, testInfo) => {
       await mockSources(page);
@@ -207,7 +207,9 @@ for (const width of [1440, 820, 768, 375, 320]) {
         await expect(page.locator((await link.getAttribute("href"))!)).toHaveCount(1);
       }
       await assertBounds(page, width);
-      if (width === 375) await page.screenshot({ path: testInfo.outputPath(`ui-inventory-${view.key}-375.png`), fullPage: true });
+      if (width === 375 || width >= 1912) {
+        await page.screenshot({ path: testInfo.outputPath(`ui-inventory-${view.key}-${width}.png`), fullPage: true });
+      }
     });
   }
 }
