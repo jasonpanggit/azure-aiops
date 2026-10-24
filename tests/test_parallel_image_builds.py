@@ -216,3 +216,12 @@ def test_invalid_parallelism_is_rejected(release, value):
     assert result.returncode == 2
     assert not events
     assert tfvars == 'image_tag = "old"\n'
+
+
+def test_api_dependency_ownership_does_not_duplicate_virtualenv_layer():
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    assert "COPY --from=builder --chown=10001:10001 /app/.venv /app/.venv" in dockerfile
+    assert "find /app -path /app/.venv -prune -o -exec chown aiops:aiops {} +" in dockerfile
+    assert "chown -R aiops:aiops /data /app" not in dockerfile
+    assert "useradd --create-home --uid 10001 aiops" in dockerfile
+    assert "USER aiops" in dockerfile

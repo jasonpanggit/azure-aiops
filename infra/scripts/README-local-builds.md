@@ -29,6 +29,12 @@ cache keys. Installation and every test/lint/build still run; a cache hit is
 not validation evidence. Keep external release evidence tied to its exact
 commit and command/environment rather than skipping checks on a changed tree.
 
+The API virtual environment is copied with its final numeric owner. The final
+ownership step prunes that directory rather than recursively modifying it in
+a later layer, avoiding a second copy of installed packages in the image.
+Other application paths retain their existing `aiops` ownership and writable
+behavior. Runtime commands, dependencies and readiness probes are unchanged.
+
 `AIOPS_BUILD_MODE=local` builds with `docker buildx` and pushes. It only beats
 ACR if the Docker VM is configured for it. Out of the box on an M-series Mac it
 is *slower*, and the web image build fails outright.
