@@ -126,6 +126,11 @@ output "fabric_lakehouse_id" {
   value       = var.enable_fabric ? fabric_lakehouse.context_graph[0].id : null
 }
 
+output "fabric_ontology_name" {
+  description = "Ontology name used by the deployed runtime and setup tooling."
+  value       = var.enable_fabric ? var.fabric_ontology_name : null
+}
+
 output "ontology_evidence_role_contract" {
   description = "Exact five-item contract consumed by the external OneLake ManagedIdentity Read reconciler."
   value = var.enable_fabric && var.ontology_discovery_environment == "validation" ? {

@@ -1,5 +1,9 @@
 # Deploying AIOps to Azure
 
+For a fresh SPN-based deployment, follow [`SETUP.md`](../SETUP.md), including
+the offline preview/opt-in setup runner and the manual Entra/Fabric tenant gates.
+The runner preserves the existing deployment authorization and digest checks.
+
 Terraform for the Operations Workbench: two Container Apps (the FastAPI
 Operations API and the Next.js workbench), an Azure AI Foundry project whose
 prompt agent narrates Copilot answers, and an optional Microsoft Fabric
@@ -9,8 +13,9 @@ For real subscription discovery, Fabric ontology activation, provider health,
 and hub/spoke validation, follow
 [`docs/PRODUCTION_RUNTIME_ACTIVATION.md`](../docs/PRODUCTION_RUNTIME_ACTIVATION.md).
 
-Everything lands in a single, self-contained resource group. Nothing outside
-that group is read or modified.
+Azure platform resources land in one resource group. Fabric items are managed
+through the Fabric API, and configured `onboarded_subscriptions` receive
+subscription-scoped managed-identity assignments outside that group.
 
 ## What gets created
 
@@ -68,9 +73,11 @@ first apply. Deployment is therefore three steps.
 
 ```bash
 # 1. Provision the platform. Apps start on a placeholder image.
-./infra/scripts/deploy.sh apply
+AIOPS_DEFER_CATALOG_PUBLICATION=true ./infra/scripts/deploy.sh apply
+# Only if enable_fabric=true: bind config and publish the Fabric baseline.
+uv run --no-sync python infra/scripts/setup-platform.py --stage fabric --apply
 
-# 2. Build and push both images (linux/amd64, as Container Apps requires).
+# 2. Build and push all four images (linux/amd64, as Container Apps requires).
 ./infra/scripts/build-and-push.sh v1
 
 # 3. Point the apps at the real images.
