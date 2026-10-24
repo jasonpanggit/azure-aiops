@@ -25,6 +25,20 @@ that live Exposure evidence is ready.
 
 ## Prerequisites
 
+### Prefetch generation stability
+
+Generation discovery reads the published Gold pointer using strict document
+snapshots before and after its table reads. A changed payload or storage token
+(including replacement with identical content), removal, or read failure stops
+the pass before enrichment providers or cache/cursor writes. The scheduler
+reports the failure through its existing sanitized error contract; it does not
+retry discovery or select an older generation automatically.
+
+This is a pointer-stability bracket, not a transactional Delta snapshot: unchanged
+pointer bytes do not prove every table remained unchanged, and publication or
+pointer movement after discovery can still occur. Do not use it as proof of
+cross-table lineage parity, provider success, or sustained recurrence.
+
 ### Enrichment scheduler failure diagnostics
 
 `scripts/refresh_exposure_enrichment.py` emits additive `failure_stage` and
@@ -39,8 +53,13 @@ so inspect the stage rather than assuming bad command-line input.
 
 These fields locate an operation boundary, not a root cause. `prefetch_run`
 does not distinguish internal discovery, provider refresh or checkpoint work.
-An empty failure `outcomes` array does not prove no calls or writes occurred:
-prefetch results are returned only after the service completes. Do not infer
+Prefetch failures retain redacted per-item worker outcomes observed before the
+failure, including when a subsequent cursor write fails. These outcomes are not
+a completed run or a successful cursor checkpoint; failed item outcomes remain
+failed. Successful report shapes and exit codes are unchanged. An empty failure
+`outcomes` array still does not prove no calls or writes occurred: an operation
+can fail before an outcome is emitted, and older images only return prefetch
+results after service completion. Bind the evidence to the actual image. Do not infer
 capacity, authorization, schema, rollback safety or retry permission from these
 diagnostics. Historical logs without the fields cannot be retroactively
 qualified; bind any future receipt to its actual deployed image and source.
