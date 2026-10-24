@@ -2554,7 +2554,7 @@ textarea:focus-visible {
     align-items: start;
   }
 
-  .exposure-landing-sections > :is(.exposure-decision, #exposure-dashboard) {
+  .exposure-landing-sections > :is(.exposure-decision, #exposure-findings, #exposure-dashboard) {
     grid-column: 1 / -1;
   }
 
