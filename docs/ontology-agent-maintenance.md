@@ -76,6 +76,63 @@ Serialized evidence records observation time, page count, candidates and fixed
 `search_complete: true` describes paging only, not source freshness or coverage.
 No graph mutation or proposal approval is performed by this adapter.
 
+For opt-in direct item metadata checks, call `fetch_verified()` instead of
+`fetch()`. It first completes bounded search, then issues one sequential
+[Core Get Item](https://learn.microsoft.com/en-us/rest/api/fabric/core/items/get-item)
+request per candidate using the same client and allowed workspace. Search
+limits bound the number of items checked; the Fabric transport's existing
+attempt limit bounds retries. All requests carry the Catalog skill header.
+
+Direct responses must match the requested item ID, workspace ID and catalog
+item type. Current names and descriptions are retained separately from indexed
+metadata, with an endpoint, timezone-aware verification time and a metadata
+change flag. Empty or malformed responses, access/deletion errors, unsupported
+item APIs, identity/type drift and invalid clocks fail the whole call without
+partial success output. They do not trigger retries outside the existing
+transport policy, source fallback or retirement.
+
+The resulting evidence retains the original `catalog` observation and adds
+`verified_items`. Its `verification_scope: item_metadata_only` and
+`requires_schema_verification: true` explicitly limit what was checked;
+top-level `requires_direct_verification: false` means only that every returned
+candidate passed the direct item metadata check. It does not establish schema,
+lineage, underlying data access or publication approval. Empty results still
+have partial coverage and never prove absence. Search and sequential GETs are
+not an atomic snapshot; an item can change after its check. No caller identity
+qualification, scheduled collector or ontology writer is enabled by this API.
+
+### Read-only executable Catalog qualification
+
+The finite command below runs `fetch_verified()` with the existing Fabric
+runtime configuration and its managed-identity or service-principal credential:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m fabric.catalog_cli \
+  --config fabric.config.yaml --page-size 100 --max-pages 10 --max-items 1000
+```
+
+`AIOPS_FABRIC_CONFIG` supplies the default config path; the existing
+`AIOPS_FABRIC_CONFIG_JSON` runtime override remains supported by the config
+loader. Workspace scope is pinned to that configuration's `workspace_id` and
+cannot be overridden with a command-line workspace or credential. The command
+only searches Catalog and reads item metadata. It does not list domains, change
+permissions, create proposals, write baseline state or start a scheduled job.
+
+Successful stdout contains one JSON advisory report with the configured auth
+mode and verified evidence. This is metadata qualification, not full ontology
+maintenance acceptance. A caught configuration, authentication, transport or
+metadata failure returns exit code 1, emits a sanitized failure stage on stderr
+and emits no partial stdout. Exceptions, credentials and provider bodies are
+not included in failure reports. Store successful output only in an
+appropriately protected operator evidence location; item metadata can be
+sensitive. HTTP retries and per-request timeouts use the existing Fabric
+transport; page/item bounds are not a whole-command wall-clock deadline.
+
+The sole deployment operator must qualify the command against the exact
+deployed image and existing workload identity before any scheduler integration.
+A local fixture pass or signed-in-user test cannot establish managed-identity
+access or prove that this command ran in a deployed workload.
+
 Use `POST /v1/catalog/search` with an explicit allowlisted `WorkspaceId` filter
 and bounded page size (the API permits 1..1000). Page using the returned
 `continuationToken` alone: it carries the initial filter, search and page size,
