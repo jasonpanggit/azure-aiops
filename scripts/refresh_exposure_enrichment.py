@@ -250,7 +250,11 @@ def main(
             stage = "prefetch_build"
             service = prefetch_factory(max_items=args.max_items)
             stage = "prefetch_run"
-            result = service.run()
+            result = service.run(
+                on_outcome=lambda outcome: outcomes.append(
+                    _redacted_outcome(outcome)
+                ),
+            )
             stage = "prefetch_report"
             report = result.to_dict()
             stage = "report_write"

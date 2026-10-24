@@ -27,7 +27,7 @@ def test_prefetch_failure_reports_safe_stage_and_category(stage, error, category
         if stage == "prefetch_build":
             fail()
         return SimpleNamespace(
-            run=lambda: fail() if stage == "prefetch_run" else SimpleNamespace(to_dict=fail)
+            run=lambda **_: fail() if stage == "prefetch_run" else SimpleNamespace(to_dict=fail)
         )
 
     output = io.StringIO()
@@ -110,7 +110,7 @@ def test_successful_prefetch_report_is_unchanged():
     assert main(
         ["--prefetch-generation"],
         prefetch_factory=lambda **_: SimpleNamespace(
-            run=lambda: SimpleNamespace(to_dict=lambda: original)
+            run=lambda **_: SimpleNamespace(to_dict=lambda: original)
         ),
         stdout=output,
     ) == 0
@@ -131,7 +131,7 @@ def test_report_write_failure_has_its_own_stage_when_output_recovers():
     assert main(
         ["--prefetch-generation"],
         prefetch_factory=lambda **_: SimpleNamespace(
-            run=lambda: SimpleNamespace(to_dict=lambda: {"status": "succeeded"})
+            run=lambda **_: SimpleNamespace(to_dict=lambda: {"status": "succeeded"})
         ),
         stdout=output,
     ) == 1
