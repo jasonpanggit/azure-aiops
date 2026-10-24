@@ -99,7 +99,7 @@ async function assertNavigation(page: Page, label: string) {
   await expect(page.locator((await links.last().getAttribute("href"))!)).toBeInViewport();
 }
 
-for (const width of [1440, 820, 768, 375, 320]) {
+for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
   test(`Copilot keeps the composer, evidence and disclosed output usable at ${width}px`, async ({ page }, testInfo) => {
     await mockSources(page);
     await page.setViewportSize({ width, height: 900 });
@@ -113,6 +113,14 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await expect(ask).toHaveCSS("background-color", "rgb(15, 108, 189)");
     const input = form.getByRole("textbox", { name: "Copilot question", exact: true });
     expect((await input.boundingBox())!.width).toBeGreaterThanOrEqual(100);
+    if (width <= 820) {
+      await expect(form).toHaveCSS("position", "static");
+      const prompts = (await page.locator(".copilot-prompts").boundingBox())!;
+      const composer = (await form.boundingBox())!;
+      expect(composer.y).toBeGreaterThanOrEqual(prompts.y + prompts.height);
+    } else {
+      await expect(form).toHaveCSS("position", "fixed");
+    }
     await input.fill("Review Payments");
     await input.press("Shift+Enter");
     await expect(input).toHaveValue("Review Payments\n");
@@ -133,16 +141,23 @@ for (const width of [1440, 820, 768, 375, 320]) {
     await assertNavigation(page, "Copilot sections");
     await expect(page.getByRole("complementary", { name: "Trust boundary", exact: true })).toBeVisible();
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-    const composer = (await form.boundingBox())!;
-    expect(composer.y + composer.height).toBeLessThanOrEqual(900);
-    expect((await page.locator(".copilot-turn").last().boundingBox())!.y +
-      (await page.locator(".copilot-turn").last().boundingBox())!.height).toBeLessThanOrEqual(composer.y);
     const trust = (await page.locator("#copilot-trust").boundingBox())!;
-    expect(trust.y + trust.height).toBeLessThanOrEqual(composer.y);
+    const composer = (await form.boundingBox())!;
+    const lastTurn = (await page.locator(".copilot-turn").last().boundingBox())!;
+    expect(lastTurn.y + lastTurn.height).toBeLessThanOrEqual(composer.y);
+    if (width <= 820) {
+      expect(trust.y).toBeGreaterThanOrEqual(composer.y + composer.height);
+      await form.scrollIntoViewIfNeeded();
+      expect((await form.boundingBox())!.y + composer.height).toBeLessThanOrEqual(900);
+    } else {
+      expect(composer.y + composer.height).toBeLessThanOrEqual(900);
+      expect(trust.y + trust.height).toBeLessThanOrEqual(composer.y);
+    }
     await expectContentSized(page.locator("#copilot-trust"));
     await assertBounds(page, width);
     if (width === 375) {
       await page.screenshot({ path: testInfo.outputPath("ui-copilot-trust-375.png") });
+      await page.evaluate(() => window.scrollTo(0, 0));
       await page.screenshot({ path: testInfo.outputPath("ui-copilot-375.png"), fullPage: true });
     }
   });

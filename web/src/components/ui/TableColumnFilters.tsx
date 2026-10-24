@@ -22,6 +22,7 @@ interface TableColumnFiltersProps {
   totalCount?: number;
 }
 
+/** Consistent labeled table filters with an optional explicit all-values label. */
 export function TableColumnFilters({
   filters,
   onReset,
@@ -44,7 +45,7 @@ export function TableColumnFilters({
               aria-label={`Filter by ${filter.label}`}
             >
               {filter.defaultValue === undefined && (
-                <option value="all">{filter.allLabel ?? `All ${filter.label.toLowerCase()}`}</option>
+                <option value="all">{filter.allLabel ?? `Any ${filter.label.toLowerCase()}`}</option>
               )}
               {filter.options.map((option) => (
                 <option key={option.value} value={option.value}>

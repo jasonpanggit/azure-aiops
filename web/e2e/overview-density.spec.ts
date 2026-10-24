@@ -38,7 +38,7 @@ async function mockOverview(page: Page, count: number, unavailable = false) {
   return captures;
 }
 
-for (const width of [1440, 820, 768, 375, 320]) {
+for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
   for (const count of [0, 2]) {
     test(`Home ${count} retained observations stay compact and readable at ${width}px`, async ({ page }, info) => {
       const captures = await mockOverview(page, count);
@@ -62,6 +62,26 @@ for (const width of [1440, 820, 768, 375, 320]) {
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
       await expectContentSized(page.locator(".dashboard-grid > .card"));
+      const score = page.getByRole("region", { name: "Overview score and evidence", exact: true });
+      const explanations = score.locator(".evidence-explanation-grid > div");
+      const left = (await explanations.nth(0).boundingBox())!;
+      const right = (await explanations.nth(1).boundingBox())!;
+      const grid = (await score.locator(".evidence-explanation-grid").boundingBox())!;
+      if (width >= 1200) {
+        expect(Math.abs(left.y - right.y)).toBeLessThanOrEqual(1);
+        expect(right.x).toBeGreaterThanOrEqual(left.x + left.width + 24);
+        expect(Math.abs(left.width - right.width)).toBeLessThanOrEqual(1);
+        expect(right.x + right.width).toBeGreaterThanOrEqual(grid.x + grid.width - 1);
+      } else {
+        expect(right.y).toBeGreaterThanOrEqual(left.y + left.height + 20);
+        expect(Math.abs(left.x - right.x)).toBeLessThanOrEqual(1);
+      }
+      for (const table of await score.locator(".data-table-wrap").all()) {
+        expect(Math.abs((await table.boundingBox())!.width - grid.width)).toBeLessThanOrEqual(1);
+      }
+      await expect(score.getByText(/Synchronization does not prove Fabric publication/)).toBeVisible();
+      await expect(score.getByText(/Connection readiness does not contribute/)).toBeVisible();
+      if (count === 0) await score.screenshot({ path: info.outputPath(`home-score-evidence-${width}.png`), style: ".shell-topbar { visibility: hidden; }" });
       await workspace.screenshot({ path: info.outputPath(`home-${count}-${width}.png`) });
       await guidance.focus();
       await guidance.press("Enter");

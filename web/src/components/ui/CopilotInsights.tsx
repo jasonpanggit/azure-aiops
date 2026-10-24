@@ -237,6 +237,7 @@ export function CopilotInsights({
   }, [evidenceAvailable, question, ready, refreshGeneration, scopeJson, snapshotJson]);
 
   const badge = result ? BADGES[result.kind] : BADGES.unavailable;
+  const warning = !loading ? result?.warning : "";
 
   return (
     <article className="callout copilot-insights" aria-live="polite" aria-busy={loading}>
@@ -263,11 +264,17 @@ export function CopilotInsights({
       ) : (
         <>
           <StatusBadge label={BADGES.unavailable.label} tone="warning" compact />
-          <p>{error || result?.warning || "No grounded insight was produced for this scope."}</p>
+          <p>{error || (!evidenceAvailable ? warning : "") || "No grounded insight was produced for this scope."}</p>
         </>
       )}
-      {!loading && result?.warning && (result.kind === "llm" || result.findings.length > 0) && (
-        <small>{result.warning}</small>
+      {warning && result && (result.kind === "llm" || result.findings.length > 0) && (
+        <small>{warning}</small>
+      )}
+      {warning && evidenceAvailable && result?.kind === "unavailable" && (
+        <details className="copilot-insights-details">
+          <summary>Evidence limitations and diagnostics</summary>
+          <p>{warning}</p>
+        </details>
       )}
       {!loading && result && (result.confidence || result.specialists?.length || result.provider) ? (
         <small className="copilot-insights-provenance">

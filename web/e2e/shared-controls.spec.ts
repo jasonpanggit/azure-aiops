@@ -22,8 +22,15 @@ test.beforeEach(async ({ page }) => {
           </button>
         </div>
       </header>
-      <article class="copilot-insights">
+      <article class="callout copilot-insights">
         <div class="copilot-insights-heading"><strong>Operations Copilot insights</strong></div>
+        <span class="status-badge">Insight unavailable</span>
+        <p>No grounded insight was produced for this scope.</p>
+        <details class="copilot-insights-details">
+          <summary>Evidence limitations and diagnostics</summary>
+          <p>${"Unavailable evidence and incomplete source coverage require review. ".repeat(10)}</p>
+        </details>
+        <small>Specialists: inventory_resources, resource_health. Confidence: medium.</small>
         <div class="button-row">
           <button class="button button-secondary">Refresh insights</button>
           <button class="button button-ai">Ask a follow-up</button>
@@ -108,7 +115,32 @@ test("keeps disabled and keyboard-focus states distinct", async ({ page }) => {
   await expect(refresh).toHaveCSS("outline-width", "3px");
 });
 
-for (const width of [1440, 820, 768, 375, 320]) {
+for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
+  test(`lays out the production Copilot callout classes and diagnostics at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const panel = page.locator(".callout.copilot-insights");
+    await expect(panel).toHaveCSS("display", "grid");
+    const heading = (await panel.locator(".copilot-insights-heading").boundingBox())!;
+    const badge = (await panel.locator(".status-badge").boundingBox())!;
+    const status = (await panel.getByText("No grounded insight was produced for this scope.", { exact: true }).boundingBox())!;
+    expect(badge.y).toBeGreaterThanOrEqual(heading.y + heading.height);
+    expect(status.y).toBeGreaterThanOrEqual(badge.y + badge.height);
+    await panel.locator("summary").focus();
+    await panel.locator("summary").press("Enter");
+    const diagnostics = panel.locator("details p");
+    await expect(diagnostics).toBeVisible();
+    const diagnosticBox = (await diagnostics.boundingBox())!;
+    const buttons = (await panel.locator(".button-row").boundingBox())!;
+    expect(buttons.y).toBeGreaterThanOrEqual(diagnosticBox.y + diagnosticBox.height);
+    for (const item of await panel.locator(":scope > *").all()) {
+      const box = (await item.boundingBox())!;
+      const outer = (await panel.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(outer.x);
+      expect(box.x + box.width).toBeLessThanOrEqual(outer.x + outer.width);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  });
+
   test(`keeps header actions readable and bounded at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const header = page.locator(".page-header");

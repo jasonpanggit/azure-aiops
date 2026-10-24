@@ -117,7 +117,7 @@ const routes = [
   { path: "/exposure/kbs/KB600001", nav: "KB detail sections", links: 3 },
 ];
 
-for (const width of [1440, 820, 768, 375, 320]) {
+for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
   for (const route of routes) {
     test(`${route.path} has task-first sections and one insight at ${width}px`, async ({ page }, testInfo) => {
       const pageErrors: string[] = [];

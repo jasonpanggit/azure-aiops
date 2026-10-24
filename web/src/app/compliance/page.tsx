@@ -832,7 +832,7 @@ function ComplianceWorkspace() {
             <label>Policy change reason<textarea value={policyReason} maxLength={1000} onChange={event => setPolicyReason(event.target.value)} /></label>
             <button className="button button-primary" type="button" disabled={!policyReason.trim() || (!draftChanges.length && policyState?.policy_revision !== 0)} onClick={persistPolicy}>Save policy revision</button>
           </fieldset>
-          <div className="card-body"><button type="button" disabled={policyBusy} onClick={policyRead.refetch}>Reload saved policy</button><p>Revision {policyState?.revision ?? "unavailable"}. Reloading replaces the draft; review again after a conflict.</p></div>
+          <div className="card-body"><button type="button" className="button button-secondary" disabled={policyBusy} onClick={policyRead.refetch}>Reload saved policy</button><p>Revision {policyState?.revision ?? "unavailable"}. Reloading replaces the draft; review again after a conflict.</p></div>
         </section>
 
         <aside className="card" aria-labelledby="compliance-exceptions">
@@ -846,7 +846,7 @@ function ComplianceWorkspace() {
             <label>Risk acceptance reason<textarea rows={3} value={exceptionDraft.reason} onChange={(event) => setExceptionDraft({ ...exceptionDraft, reason: event.target.value })} /></label>
             <label>Expires at (00:00 UTC)<input type="date" value={exceptionDraft.expiresAt} onChange={(event) => setExceptionDraft({ ...exceptionDraft, expiresAt: event.target.value })} /></label>
             <button type="button" className="button button-primary" disabled={!selected} onClick={() => acceptRisk()}>Accept selected risk</button>
-            <button type="button" disabled={!selected || !acceptedIds.has(selected.id)} onClick={() => acceptRisk("revoke")}>Revoke selected acceptance</button>
+            <button type="button" className="button button-secondary" disabled={!selected || !acceptedIds.has(selected.id)} onClick={() => acceptRisk("revoke")}>Revoke selected acceptance</button>
             <StructuredData value={exceptions} />
           </fieldset>
           <details className="card-body"><summary>Policy and exception audit</summary><StructuredData value={policyState?.audit ?? []} /></details>

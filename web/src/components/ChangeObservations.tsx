@@ -115,9 +115,11 @@ function ObservationWorkspace() {
         {feed.data?.data.facet_metadata.source.truncated && <p>Source suggestions show {feed.data.data.facet_metadata.source.returned} of {feed.data.data.facet_metadata.source.total} distinct authorized source labels. An exact typed source still searches the full projection.</p>}
         {!rows.length ? <StatePanel title="No matching observations in the loaded projection" message="This does not establish that no changes occurred. Adjust filters or review a previous page." />
           : <ol className="change-observation-list">{rows.map(row => <li key={row.observation_id}>
-            <div className="timeline-event-labels"><StatusBadge label={row.category} tone="info" compact /><time dateTime={row.changed_at}>{formatDateTime(row.changed_at)}</time></div>
-            <h3>{row.summary}</h3>
-            <p>Resource: {row.resource_name} · {row.change_type}</p>
+            <div className="change-observation-summary">
+              <div className="timeline-event-labels"><StatusBadge label={row.category} tone="info" compact /><time dateTime={row.changed_at}>{formatDateTime(row.changed_at)}</time></div>
+              <h3>{row.summary}</h3>
+              <p>Resource: {row.resource_name} · {row.change_type}</p>
+            </div>
             <details><summary>Observation identity and mapping</summary>
               <dl className="observation-metadata">
                 <div><dt>Change ID</dt><dd>{row.change_id}</dd></div>

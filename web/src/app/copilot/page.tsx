@@ -324,6 +324,25 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
             </div>
           ))}
           {loading && <div className="copilot-thinking" role="status"><span /><span /><span /> Reviewing evidence</div>}
+          <form id="copilot-composer" className="copilot-composer" aria-label="Ask Operations Copilot" onSubmit={(event) => { event.preventDefault(); ask(); }}>
+            <textarea
+              aria-label="Copilot question"
+              disabled={reviewing}
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  ask();
+                }
+              }}
+              placeholder="Ask about applications, ownership, failed patches, critical infrastructure, or business service context"
+              rows={2}
+            />
+            {loading ? <button type="button" className="button button-secondary" aria-label="Stop waiting for this response" onClick={stopWaiting}>Stop waiting</button> : <button type="submit" className="button button-ai" disabled={reviewing || Boolean(recovery) || !question.trim()}>
+              Ask Copilot
+            </button>}
+          </form>
         </section>
 
         <aside id="copilot-trust" className="copilot-boundary card" aria-label="Trust boundary">
@@ -345,25 +364,6 @@ function CopilotWorkspace({ scope, pinnedThreadId, pinnedRevision, bookmarkedReq
         </aside>
       </div>
 
-      <form id="copilot-composer" className="copilot-composer" aria-label="Ask Operations Copilot" onSubmit={(event) => { event.preventDefault(); ask(); }}>
-        <textarea
-          aria-label="Copilot question"
-          disabled={reviewing}
-          value={question}
-          onChange={(event) => setQuestion(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              ask();
-            }
-          }}
-          placeholder="Ask about applications, ownership, failed patches, critical infrastructure, or business service context"
-          rows={2}
-        />
-        {loading ? <button type="button" className="button button-secondary" aria-label="Stop waiting for this response" onClick={stopWaiting}>Stop waiting</button> : <button type="submit" className="button button-ai" disabled={reviewing || Boolean(recovery) || !question.trim()}>
-          Ask Copilot
-        </button>}
-      </form>
     </div>
   );
 }

@@ -220,7 +220,7 @@ function ServicesWorkspace() {
                       <div className="table-secondary">Fields: service, owner, support, environment; not resource coverage</div></> : "No connection mapping rows reported"}</td>
                     <td>{Array.from(service.environments).join(", ") || "Not mapped"}</td>
                     <td>{service.connections.length ? service.subscriptions.size : "Unreported"}</td>
-                    <td><Link className="table-open-link" aria-label={`Review ${service.name}`} href={overviewHref(service.unmapped ? "/connections" : `/services/${encodeURIComponent(service.name)}`, scope)}>Open brief</Link></td>
+                    <td className="cell-nowrap"><Link className="button button-secondary" aria-label={`Review ${service.name}`} href={overviewHref(service.unmapped ? "/connections" : `/services/${encodeURIComponent(service.name)}`, scope)}>{service.unmapped ? "Review mappings" : "Open brief"}</Link></td>
                   </tr>
                 ))}
               </tbody>
