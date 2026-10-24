@@ -67,7 +67,7 @@ ARG SOURCE_CACHE_BUST=0
 ARG AIOPS_SOURCE_REVISION
 LABEL source_cache_bust="${SOURCE_CACHE_BUST}"
 
-COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder --chown=10001:10001 /app/.venv /app/.venv
 COPY .dockerignore pyproject.toml uv.lock Dockerfile Dockerfile.default-promotion /app/
 COPY infra/scripts/build-and-push.sh infra/scripts/deploy.sh /app/infra/scripts/
 COPY infra/terraform/container_apps.tf infra/terraform/outputs.tf infra/terraform/variables.tf /app/infra/terraform/
@@ -100,7 +100,8 @@ RUN python -c 'import json,pathlib,re,sys; source=sys.argv[1]; assert re.fullmat
 # The API writes connection registries and synced datasets under AIOPS_HOME.
 RUN useradd --create-home --uid 10001 aiops \
     && mkdir -p /data \
-    && chown -R aiops:aiops /data /app
+    && chown aiops:aiops /data \
+    && find /app -path /app/.venv -prune -o -exec chown aiops:aiops {} +
 USER aiops
 
 EXPOSE 8080

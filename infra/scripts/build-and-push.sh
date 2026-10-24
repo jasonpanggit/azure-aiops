@@ -121,7 +121,18 @@ fi
 # enabled and a Docker VM with >=12 GB RAM to beat ACR.
 platform="linux/amd64"
 build_mode="${AIOPS_BUILD_MODE:-acr}"
+case "${build_mode}" in
+  acr) default_parallelism=2 ;;
+  local) default_parallelism=1 ;;
+  *) echo "build-and-push: invalid AIOPS_BUILD_MODE ${build_mode}." >&2; exit 2 ;;
+esac
+build_parallelism="${AIOPS_BUILD_PARALLELISM:-${default_parallelism}}"
+case "${build_parallelism}" in
+  1|2|3|4) ;;
+  *) echo "build-and-push: AIOPS_BUILD_PARALLELISM must be 1, 2, 3 or 4." >&2; exit 2 ;;
+esac
 acr_context=""
+build_pids=()
 source_revision="$(git -C "${repo_root}" rev-parse HEAD)"
 default_base_digest=""
 canary_base_image=""
@@ -137,7 +148,34 @@ prepare_acr_context() {
   rm -rf "${acr_context}"
   mkdir -p "${acr_context}"
   git -C "${repo_root}" archive HEAD | tar -x -C "${acr_context}"
-  trap '[[ -z "${acr_context}" ]] || rm -rf "${acr_context}"' EXIT
+  trap 'for pid in ${build_pids[@]+"${build_pids[@]}"}; do wait "${pid}" || :; done; [[ -z "${acr_context}" ]] || rm -rf "${acr_context}"' EXIT
+}
+
+build_application_images() {
+  local images=(aiops-api aiops-web mcp-server azure-mcp)
+  local dockerfiles=(Dockerfile web/Dockerfile Dockerfile.mcp Dockerfile.azure-mcp)
+  local contexts=("${repo_root}" "${repo_root}/web" "${repo_root}" "${repo_root}")
+  local offset index end pid failed
+  echo "build-and-push: application build concurrency=${build_parallelism}"
+  for ((offset=0; offset<${#images[@]}; offset+=build_parallelism)); do
+    build_pids=()
+    end=$((offset + build_parallelism))
+    for ((index=offset; index<end && index<${#images[@]}; index++)); do
+      build_image "${images[index]}" "${repo_root}/${dockerfiles[index]}" "${contexts[index]}" &
+      build_pids+=("$!")
+    done
+    failed=0
+    for pid in "${build_pids[@]}"; do
+      if ! wait "${pid}"; then
+        failed=1
+      fi
+    done
+    build_pids=()
+    if [[ "${failed}" -ne 0 ]]; then
+      echo "build-and-push: build batch failed; NOT recording or deploying this release." >&2
+      return 1
+    fi
+  done
 }
 
 build_image() {
@@ -338,10 +376,7 @@ if [[ "${authorization_release}" -eq 1 ]]; then
   echo
   echo "build-and-push: pushed API authorization release '${tag}'."
 else
-  build_image aiops-api "${repo_root}/Dockerfile" "${repo_root}"
-  build_image aiops-web "${repo_root}/web/Dockerfile" "${repo_root}/web"
-  build_image mcp-server "${repo_root}/Dockerfile.mcp" "${repo_root}"
-  build_image azure-mcp "${repo_root}/Dockerfile.azure-mcp" "${repo_root}"
+  build_application_images
   verify_pushed aiops-api aiops-web mcp-server azure-mcp
   api_digest="$(resolve_api_digest)"
   record_application_release "${api_digest}"
