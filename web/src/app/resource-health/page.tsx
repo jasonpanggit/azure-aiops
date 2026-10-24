@@ -550,7 +550,7 @@ export default function ResourceHealthPage() {
       <PageHeader
         eyebrow="Resource health"
         title="Compute resource health and utilization"
-        description="Azure Monitor utilization metrics for VMs and Container Apps in scope, hydrated independently after inventory loads."
+        description="Compare available Azure Monitor utilization for VMs and Container Apps in the selected scope. Missing metrics remain unknown."
         metadata={
           <>
             <span>{summary.total} in scope</span>
@@ -641,7 +641,7 @@ export default function ResourceHealthPage() {
               <div className="health-triage-controls">
                 <label>Health state
                   <select className="form-control" value={healthFilter} onChange={event => setHealthFilter(event.target.value)}>
-                    {["all", "critical", "warning", "healthy", "unknown", "failed", "loading"].map(state => <option key={state} value={state}>{state}</option>)}
+                    {["all", "critical", "warning", "healthy", "unknown", "failed", "loading"].map(state => <option key={state} value={state}>{state === "all" ? "All states" : state[0].toUpperCase() + state.slice(1)}</option>)}
                   </select>
                 </label>
                 <label>Find compute resource<input className="form-control" ref={resourceSearchInput} type="search" value={resourceSearch} onChange={event => setResourceSearch(event.target.value)} /></label>

@@ -374,7 +374,7 @@ function ExposureOverview({ scope, generation }: { scope: ScopeSelection; genera
       <PageHeader
         eyebrow="Exposure management"
         title="Which exposure should be reduced first?"
-        description="Prioritize generation-pinned exposure findings without loading the full operational ontology into the API process."
+        description="Review exposure findings by severity, affected targets, and evidence coverage before opening a review queue."
         completeness={aggregate}
         actions={<CopilotDrawerButton onClick={() => setCopilotOpen(true)} label="Ask Copilot about exposure" />}
         metadata={

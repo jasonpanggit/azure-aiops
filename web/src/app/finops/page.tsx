@@ -834,6 +834,7 @@ export default function FinOpsPage() {
                           <td>
                             <button
                               type="button"
+                              className="button button-secondary"
                               aria-label={`Clear Scenario ${scenario.name}`}
                               onClick={() => clearScenarioSelection(scenario.name)}
                               disabled={scenario.selectedCount === 0}

@@ -82,6 +82,27 @@ describe("CopilotInsights", () => {
     expect(request.snapshot.page_kind).toBe("remediation");
   });
 
+  it("keeps unavailability visible and retains the exact reason in an accessible disclosure", async () => {
+    investigateCanonical.mockResolvedValue({
+      data: result({
+        synthesis: {
+          status: "unavailable", reason: "no_cited_findings", domain_count: 0,
+          claims: [], warning: "Provider coverage is incomplete.",
+        } as never,
+      }),
+    });
+    render(<CopilotInsights snapshot={snapshot} />);
+    expect(await screen.findByText("No grounded insight was produced for this scope.")).toBeVisible();
+    expect(screen.getByText("Insight unavailable")).toBeVisible();
+    const disclosure = screen.getByText("Evidence limitations and diagnostics");
+    expect(disclosure.closest("details")).not.toHaveAttribute("open");
+    expect(disclosure.closest("details")).toHaveTextContent(
+      "No cited findings were returned for this scope. Provider coverage is incomplete.",
+    );
+    fireEvent.click(disclosure);
+    expect(disclosure.closest("details")).toHaveAttribute("open");
+  });
+
   it("submits the exact Health observations, including null metrics, for a page-only insight", async () => {
     const health = buildResourceHealthCopilotContext({
       scope: { subscription: ["sub-a"] },

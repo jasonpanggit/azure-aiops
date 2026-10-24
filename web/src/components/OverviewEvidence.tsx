@@ -31,17 +31,24 @@ export function OverviewEvidence({ posture, sources, scope }: {
           <td>{row.deduction ?? "Unavailable"}</td><td><Link href={overviewHref(row.path, scope)}>Review {row.id}</Link></td>
         </tr>)}</tbody>
       </table></div>
-      <p>Raw deduction: {posture.rawDeduction ?? "unavailable"}; displayed score: {posture.score ?? "unavailable"}.
-        {" "}Thresholds: controlled ≥80, needs attention 60–79, elevated &lt;60.
-        Saturation at zero can hide further count increases; review the raw contributors.</p>
-      <p>Situations use only the loaded page, while exposure and Network counts use their respective summaries.
-        A vulnerability finding is not a distinct CVE or affected server. The sources may overlap and were not read atomically.
-        Without a declared Network design policy, structural checks do not establish design conformance.
-        Counts alone do not explain causality. Connection readiness does not contribute to this formula.</p>
-      <h3>Evidence coverage and next checks</h3>
-      <p>These are source-read and registry observations, not inventory completeness. Evidence freshness is reported by each source;
-        no timestamp, evidence row, or warning is silently converted into coverage. Synchronization does not prove Fabric publication.</p>
-      <p className="muted">On narrow screens, scroll each table horizontally to reach its review links.</p>
+      <div className="evidence-explanation-grid">
+        <div>
+          <h3>How to interpret the score</h3>
+          <p>Raw deduction: {posture.rawDeduction ?? "unavailable"}; displayed score: {posture.score ?? "unavailable"}.
+            {" "}Thresholds: controlled ≥80, needs attention 60–79, elevated &lt;60.
+            Saturation at zero can hide further count increases; review the raw contributors.</p>
+          <p>Situations use only the loaded page, while exposure and Network counts use their respective summaries.
+            A vulnerability finding is not a distinct CVE or affected server. The sources may overlap and were not read atomically.
+            Without a declared Network design policy, structural checks do not establish design conformance.
+            Counts alone do not explain causality. Connection readiness does not contribute to this formula.</p>
+        </div>
+        <div>
+          <h3>Evidence coverage and next checks</h3>
+          <p>These are source-read and registry observations, not inventory completeness. Evidence freshness is reported by each source;
+            no timestamp, evidence row, or warning is silently converted into coverage. Synchronization does not prove Fabric publication.</p>
+          <p className="muted">On narrow screens, scroll each table horizontally to reach its review links.</p>
+        </div>
+      </div>
       <div className="data-table-wrap" tabIndex={0} role="region" aria-label="Source coverage, horizontally scrollable"><table className="data-table">
         <caption>Selected-scope reads; unqueried pages and unreported totals remain unknown</caption>
         <thead><tr><th>Source</th><th>Read / extent</th><th>Evidence freshness</th><th>Warnings</th><th>Next check</th></tr></thead>

@@ -73,15 +73,17 @@ export function ConnectionReadiness({ connection, scope, refreshKey }: {
     },
   ];
   return (
-    <section className="card" aria-label={`Readiness for ${connection.name}`}>
+    <section className="card connection-readiness" aria-label={`Readiness for ${connection.name}`}>
       <div className="card-header"><div><h2>Connection readiness journey</h2><p>{connection.name}: a successful sync does not prove Fabric publication or downstream readiness. Each stage reports its own evidence.</p></div></div>
-      <ol className="timeline-list card-body">
+      <ol className="card-body connection-readiness-stages">
         {stages.map(stage => <li key={stage.name}>
-          <strong>{stage.name}</strong>
-          <StatusBadge label={stage.status} tone={stage.status === "unavailable" ? "critical" : stage.status === "healthy" ? "success" : "neutral"} compact />
-          <span>{stage.detail}</span>
+          <div className="connection-readiness-heading">
+            <strong>{stage.name}</strong>
+            <StatusBadge label={stage.status} tone={stage.status === "unavailable" ? "critical" : stage.status === "healthy" ? "success" : "neutral"} compact />
+          </div>
+          <p>{stage.detail}</p>
           {stage.href
-            ? <Link href={stage.href}>Inspect {stage.name.toLowerCase()}</Link>
+            ? <Link className="inline-link" href={stage.href}>Inspect {stage.name.toLowerCase()}</Link>
             : <span>Inventory drill-through is unavailable: the destination does not support this selected connection scope.</span>}
         </li>)}
       </ol>
