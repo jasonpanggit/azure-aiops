@@ -54,7 +54,9 @@ class FabricClient:
         params: Mapping[str, object] | None = None,
         json_body: object | None = None,
         wait_for_completion: bool = True,
+        telemetry_skill: str | None = None,
     ) -> dict[str, Any]:
+        """Send a Fabric request, optionally attributing its initial HTTP retries."""
         url = self._trusted_url(path)
         response = self._send(
             method,
@@ -62,6 +64,7 @@ class FabricClient:
             params=params,
             json_body=json_body,
             request_id=str(uuid.uuid4()),
+            telemetry_skill=telemetry_skill,
         )
         if response.status_code == 202 and wait_for_completion:
             operation_id = response.headers.get("x-ms-operation-id")
@@ -129,6 +132,7 @@ class FabricClient:
         params: Mapping[str, object] | None = None,
         json_body: object | None = None,
         request_id: str | None = None,
+        telemetry_skill: str | None = None,
     ) -> httpx.Response:
         url = self._trusted_url(url)
         last_response: httpx.Response | None = None
@@ -147,6 +151,7 @@ class FabricClient:
                         "Accept": "application/json",
                         "Content-Type": "application/json",
                         "x-ms-client-request-id": stable_request_id,
+                        **({"x-ms-fabric-skill": telemetry_skill} if telemetry_skill else {}),
                     },
                 )
             except httpx.TransportError:

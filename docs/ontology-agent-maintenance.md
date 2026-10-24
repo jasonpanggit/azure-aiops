@@ -48,8 +48,33 @@ types, names, descriptions and containing workspace metadata. The
 [Catalog Search API](https://learn.microsoft.com/en-us/rest/api/fabric/core/catalog/search)
 is preview and supports user, service-principal and managed-identity callers,
 subject to the caller's authorized access. Discovery is not data access.
-This is a proposed integration boundary, not an installed collector or live
-qualification receipt.
+`fabric.catalog_source.FabricCatalogSource` implements bounded candidate
+acquisition using the existing credentialed Fabric transport. It is not enabled
+in the coordinator or a scheduled job, and is not a live qualification receipt.
+
+For an existing `FabricClient` and a previously resolved, explicitly allowed
+workspace ID:
+
+```python
+from fabric.catalog_source import FabricCatalogSource
+
+observation = FabricCatalogSource(
+    client,
+    workspace_id=allowed_workspace_id,
+    page_size=100,
+    max_pages=10,
+    max_items=1000,
+).fetch()
+evidence = observation.to_dict()
+```
+
+The adapter returns only after bounded pagination finishes; errors propagate
+without partial success output. It rejects duplicate items, repeated tokens,
+malformed entries, unsupported continuation URLs and cross-workspace results.
+Serialized evidence records observation time, page count, candidates and fixed
+`coverage: partial`, `authoritative: false`, `requires_direct_verification: true`.
+`search_complete: true` describes paging only, not source freshness or coverage.
+No graph mutation or proposal approval is performed by this adapter.
 
 Use `POST /v1/catalog/search` with an explicit allowlisted `WorkspaceId` filter
 and bounded page size (the API permits 1..1000). Page using the returned
