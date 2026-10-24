@@ -129,6 +129,20 @@ for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
       await expect(nav.getByRole("link")).toHaveCount(route.links);
       await expect(page.locator(".state-loading")).toHaveCount(0);
       await expect(page.locator(".copilot-insights")).toHaveCount(1);
+      if (route.path === "/exposure") {
+        const sections = page.locator(".exposure-landing-sections");
+        const container = (await sections.boundingBox())!;
+        for (const id of ["exposure-findings", "exposure-dashboard"]) {
+          const section = (await page.locator(`#${id}`).boundingBox())!;
+          expect(Math.abs(section.x - container.x)).toBeLessThanOrEqual(1);
+          expect(Math.abs(section.width - container.width)).toBeLessThanOrEqual(1);
+        }
+        if (width >= 1200) {
+          const findings = (await page.locator("#exposure-findings").boundingBox())!;
+          const dashboard = (await page.locator("#exposure-dashboard").boundingBox())!;
+          expect(dashboard.y).toBeGreaterThanOrEqual(findings.y + findings.height);
+        }
+      }
       if (route.path === "/exposure/patch-priorities") {
         const coverage = page.getByRole("list", { name: "Counts by query coverage", exact: true });
         await expect(coverage).toHaveText("Represented1Query total1");
