@@ -28,6 +28,52 @@ owner-qualified handoff, not an amendment of that package.
 
 ## Executable local verification
 
+### Protected-row incremental maintenance
+
+Incremental reconciliation preserves the prior graph row and its hash when an
+identity is explicitly unresolved or stale, even in an otherwise complete scan.
+An absent protected row is not a retirement; a changed protected row does not
+replace last-known-good evidence; a new protected row is not admitted. Hash
+application and graph replay follow the same rule. A later complete observation
+without that protection can update, admit or retire the row normally.
+
+This preservation rule does not grant publication authority or qualify native
+unattended authoring. Retirement still requires complete authoritative coverage;
+partial scans preserve unseen rows, and existing release gates remain unchanged.
+
+### OneLake Catalog discovery input
+
+OneLake Catalog can supplement source discovery with Fabric item identifiers,
+types, names, descriptions and containing workspace metadata. The
+[Catalog Search API](https://learn.microsoft.com/en-us/rest/api/fabric/core/catalog/search)
+is preview and supports user, service-principal and managed-identity callers,
+subject to the caller's authorized access. Discovery is not data access.
+This is a proposed integration boundary, not an installed collector or live
+qualification receipt.
+
+Use `POST /v1/catalog/search` with an explicit allowlisted `WorkspaceId` filter
+and bounded page size (the API permits 1..1000). Page using the returned
+`continuationToken` alone: it carries the initial filter, search and page size,
+and must not be combined with a new filter or search. Enforce total page/item
+limits and reject malformed, repeated-token or out-of-scope responses rather
+than treating incomplete enumeration as authoritative. Skill-driven audit
+requests include `x-ms-fabric-skill: onelake-catalog-govern-cli`.
+
+Treat these results as advisory candidates only. Resolve each candidate through
+the relevant direct workspace/item API before inspecting its schema or lineage
+and proposing ontology changes. Record the workspace/item IDs, caller scope,
+observation time and direct-verification evidence with the proposal. Catalog
+metadata must not be interpreted as a sensitivity label, endorsement, data
+entitlement, current schema or fresh lineage.
+
+The catalog index may lag by up to 24 hours and omits some item types. A missing
+search result therefore cannot retire a row, mark a baseline authoritative or
+prove that a source was deleted. A catalog-only observation must remain
+non-authoritative even after all search pages are consumed. Direct source
+coverage, existing baseline reconciliation and steward/release gates still own
+maintenance decisions. Before enabling a collector, qualify the actual
+workload identity, expected item coverage and pagination in the target workspace.
+
 From the repository root, without plugin autoload, bytecode or pytest cache:
 
 ```bash

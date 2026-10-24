@@ -62,11 +62,15 @@ class IncrementalDelta:
     authoritative: bool
 
     def apply_to(self, previous_row_hashes: Mapping[str, str]) -> dict[str, str]:
-        """Apply the observation without inventing retirements for partial scans."""
-        if self.authoritative:
-            return dict(self.current_row_hashes)
+        """Apply trusted changes while preserving unresolved and stale rows."""
         merged = dict(previous_row_hashes)
-        merged.update(self.current_row_hashes)
+        protected = set(self.unresolved) | set(self.stale)
+        for key in set(self.added) | set(self.changed):
+            if key not in protected:
+                merged[key] = self.current_row_hashes[key]
+        if self.authoritative:
+            for key in set(self.retired) - protected:
+                merged.pop(key, None)
         return merged
 
     def to_dict(self) -> dict[str, Any]:
@@ -126,7 +130,7 @@ def classify_incremental(
         and normalized_freshness not in {"degraded", "unknown"}
     )
     if authoritative:
-        retired = missing - unresolved
+        retired = missing - unresolved - stale
     else:
         retired = set()
         unresolved |= missing
@@ -237,7 +241,7 @@ def apply_incremental_graph(
     result: dict[str, list[dict[str, Any]]] = {}
     added_or_changed = set(delta.added) | set(delta.changed)
     protected = set(delta.unresolved) | set(delta.stale)
-    retired = set(delta.retired) if delta.authoritative else set()
+    retired = set(delta.retired) - protected if delta.authoritative else set()
     for section in _GRAPH_SECTIONS:
         identity_field = section_identity[section]
         merged = {
