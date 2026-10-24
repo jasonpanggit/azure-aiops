@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -51,6 +51,45 @@ class CatalogObservation:
                     "workspace_id": row.workspace_id,
                 }
                 for row in self.candidates
+            ],
+        }
+
+
+@dataclass(frozen=True)
+class VerifiedCatalogItem:
+    """Direct item metadata with its endpoint and observation time."""
+
+    current: CatalogCandidate
+    endpoint: str
+    verified_at: datetime
+    catalog_metadata_changed: bool
+
+
+@dataclass(frozen=True)
+class VerifiedCatalogObservation:
+    """Advisory catalog evidence paired with directly checked item metadata."""
+
+    catalog: CatalogObservation
+    verified_items: tuple[VerifiedCatalogItem, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize metadata verification without claiming schema or lineage."""
+        return {
+            "source": "onelake_catalog_verified_items",
+            "catalog": self.catalog.to_dict(),
+            "coverage": "partial",
+            "authoritative": False,
+            "verification_scope": "item_metadata_only",
+            "requires_direct_verification": False,
+            "requires_schema_verification": True,
+            "verified_items": [
+                {
+                    "current": asdict(row.current),
+                    "endpoint": row.endpoint,
+                    "verified_at": row.verified_at.astimezone(UTC).isoformat(),
+                    "catalog_metadata_changed": row.catalog_metadata_changed,
+                }
+                for row in self.verified_items
             ],
         }
 
@@ -129,6 +168,47 @@ class FabricCatalogSource:
             body = {"continuationToken": token}
         raise ValueError("Catalog page limit exceeded")
 
+    def fetch_verified(self) -> VerifiedCatalogObservation:
+        """Check every discovered item's current metadata, or raise atomically.
+
+        Search limits bound the number of direct GETs. Deletion, access errors,
+        unsupported item APIs and identity/type drift are errors, not retirement
+        evidence. Sequential reads do not provide a transactional snapshot.
+        """
+        catalog = self.fetch()
+        verified: list[VerifiedCatalogItem] = []
+        for candidate in catalog.candidates:
+            endpoint = (
+                f"/workspaces/{self.workspace_id}/items/{candidate.item_id}"
+            )
+            value = self.client.request(
+                "GET", endpoint, wait_for_completion=False,
+                telemetry_skill="onelake-catalog-govern-cli",
+            )
+            if (
+                _guid(value.get("id")) != candidate.item_id
+                or _guid(value.get("workspaceId")) != self.workspace_id
+                or _text(value.get("type")) != candidate.item_type
+            ):
+                raise ValueError("Catalog direct item identity or type changed")
+            current = CatalogCandidate(
+                item_id=candidate.item_id,
+                item_type=candidate.item_type,
+                workspace_id=self.workspace_id,
+                display_name=_text(value.get("displayName")),
+                description=_description(value.get("description")),
+            )
+            verified_at = self.clock()
+            if verified_at.tzinfo is None or verified_at.utcoffset() is None:
+                raise ValueError("Catalog verification time must be timezone-aware")
+            if verified_at < catalog.observed_at:
+                raise ValueError("Catalog verification time precedes search observation")
+            verified.append(VerifiedCatalogItem(
+                current=current, endpoint=endpoint, verified_at=verified_at,
+                catalog_metadata_changed=current != candidate,
+            ))
+        return VerifiedCatalogObservation(catalog=catalog, verified_items=tuple(verified))
+
     def _candidate(self, value: object) -> CatalogCandidate:
         if not isinstance(value, dict) or value.get("catalogEntryType") != "FabricItem":
             raise ValueError("Catalog returned a non-item entry")
@@ -139,16 +219,11 @@ class FabricCatalogSource:
         item_type = _text(value.get("type"))
         if item_type == "Workspace":
             raise ValueError("Catalog returned a workspace instead of an item")
-        description = value.get("description", "")
-        if description is None:
-            description = ""
-        if not isinstance(description, str):
-            raise TypeError("Catalog returned an invalid description")
         return CatalogCandidate(
             item_id=_guid(value.get("id")),
             item_type=item_type,
             display_name=_text(value.get("displayName")),
-            description=description,
+            description=_description(value.get("description")),
             workspace_id=self.workspace_id,
         )
 
@@ -162,4 +237,12 @@ def _guid(value: object) -> str:
 def _text(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Catalog item metadata must be nonempty text")
+    return value
+
+
+def _description(value: object) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise TypeError("Catalog returned an invalid description")
     return value
