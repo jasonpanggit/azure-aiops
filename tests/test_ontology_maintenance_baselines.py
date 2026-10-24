@@ -44,6 +44,101 @@ def _graph(
     )
 
 
+@pytest.mark.parametrize("protection", ["stale_ids", "unresolved_ids"])
+@pytest.mark.parametrize("coverage", ["complete", "partial"])
+@pytest.mark.parametrize("observation", ["missing", "changed", "new"])
+def test_protected_rows_preserve_graph_and_hash_baseline(
+    protection, coverage, observation,
+) -> None:
+    previous = _graph(entities=("a", "b"), relationships=())
+    current = _graph(
+        entities=("a",) if observation == "missing" else ("a", "b", "c"),
+        relationships=(),
+    )
+    key = "entities/c" if observation == "new" else "entities/b"
+    for row in current["entities"]:
+        if row["resource_id"] == "b":
+            row["name"] = "untrusted-change"
+    delta = classify_incremental(
+        previous_row_hashes=graph_row_hashes(previous),
+        current_row_hashes=graph_row_hashes(current),
+        source_generation_id="generation-2",
+        observed_at=NOW,
+        freshness="current",
+        coverage=coverage,
+        **{protection: (key,)},
+    )
+    assert key not in delta.retired
+    replay = apply_incremental_graph(
+        previous_graph=previous, current_graph=current, delta=delta,
+    )
+    assert delta.apply_to(graph_row_hashes(previous)) == graph_row_hashes(replay)
+    prior = next((row for row in previous["entities"] if "entities/" + row["resource_id"] == key), None)
+    actual = next((row for row in replay["entities"] if "entities/" + row["resource_id"] == key), None)
+    assert actual == prior
+
+    recovered = classify_incremental(
+        previous_row_hashes=graph_row_hashes(replay),
+        current_row_hashes=graph_row_hashes(current),
+        source_generation_id="generation-3",
+        observed_at=NOW,
+        freshness="current",
+        coverage="complete",
+    )
+    trusted = apply_incremental_graph(
+        previous_graph=replay, current_graph=current, delta=recovered,
+    )
+    assert trusted == current
+    assert recovered.apply_to(graph_row_hashes(replay)) == graph_row_hashes(current)
+
+
+def test_protected_baseline_survives_restart_until_trusted_retirement(tmp_path) -> None:
+    path = tmp_path / "state.json"
+    store = OntologyRunStore(path)
+    original = _graph()
+    store.select_reconciliation_mode(
+        connection_id="connection-1", now=NOW, baseline_scope=SCOPE,
+        baseline_lineage_key=LINEAGE,
+    )
+    _commit(
+        store, predecessor="", watermark="generation-1", full_graph=original,
+    )
+    missing = _graph(entities=("a",), relationships=())
+    protected = ("entities/b", "relationships/rel:a:b")
+    delta = classify_incremental(
+        previous_row_hashes=graph_row_hashes(original),
+        current_row_hashes=graph_row_hashes(missing),
+        source_generation_id="generation-2", observed_at=NOW,
+        freshness="current", coverage="complete", stale_ids=protected,
+    )
+    replay = apply_incremental_graph(
+        previous_graph=original, current_graph=missing, delta=delta,
+    )
+    assert replay == original
+    assert delta.apply_to(graph_row_hashes(original)) == graph_row_hashes(original)
+    _commit(
+        store, predecessor="generation-1", watermark="generation-2",
+        full_graph=replay, incremental_graph=replay, baseline_graph=replay,
+        expected_baseline_revision=1, dispatch_id="dispatch-2",
+    )
+    restarted = OntologyRunStore(path)
+    baseline = restarted.get_committed_baseline(
+        connection_id="connection-1", scope=SCOPE, lineage_key=LINEAGE,
+    )
+    assert baseline["graph"] == original
+    assert baseline["row_hashes"] == graph_row_hashes(original)
+    trusted = classify_incremental(
+        previous_row_hashes=baseline["row_hashes"],
+        current_row_hashes=graph_row_hashes(missing),
+        source_generation_id="generation-3", observed_at=NOW,
+        freshness="current", coverage="complete",
+    )
+    assert set(trusted.retired) == set(protected)
+    assert apply_incremental_graph(
+        previous_graph=baseline["graph"], current_graph=missing, delta=trusted,
+    ) == missing
+
+
 def _commit(
     store: OntologyRunStore,
     *,

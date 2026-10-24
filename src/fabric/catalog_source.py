@@ -1,0 +1,165 @@
+"""Bounded advisory discovery from the preview OneLake Catalog Search API."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+from .fabric_client import FabricClient
+
+
+@dataclass(frozen=True)
+class CatalogCandidate:
+    """Item metadata requiring direct source verification before maintenance."""
+
+    item_id: str
+    item_type: str
+    display_name: str
+    description: str
+    workspace_id: str
+
+
+@dataclass(frozen=True)
+class CatalogObservation:
+    """Fully paged search evidence, never authoritative source coverage."""
+
+    workspace_id: str
+    observed_at: datetime
+    pages_fetched: int
+    candidates: tuple[CatalogCandidate, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize advisory evidence without claiming schema or permissions."""
+        return {
+            "source": "onelake_catalog",
+            "workspace_id": self.workspace_id,
+            "observed_at": self.observed_at.astimezone(UTC).isoformat(),
+            "pages_fetched": self.pages_fetched,
+            "search_complete": True,
+            "coverage": "partial",
+            "authoritative": False,
+            "requires_direct_verification": True,
+            "candidates": [
+                {
+                    "item_id": row.item_id,
+                    "item_type": row.item_type,
+                    "display_name": row.display_name,
+                    "description": row.description,
+                    "workspace_id": row.workspace_id,
+                }
+                for row in self.candidates
+            ],
+        }
+
+
+class FabricCatalogSource:
+    """Fetch one explicitly allowed workspace with fail-closed resource bounds."""
+
+    def __init__(
+        self,
+        client: FabricClient,
+        *,
+        workspace_id: str,
+        page_size: int = 100,
+        max_pages: int = 10,
+        max_items: int = 1000,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self.workspace_id = _guid(workspace_id)
+        for name, value in (
+            ("page_size", page_size), ("max_pages", max_pages), ("max_items", max_items),
+        ):
+            if type(value) is not int or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if page_size > 1000:
+            raise ValueError("page_size must not exceed 1000")
+        self.client = client
+        self.page_size = page_size
+        self.max_pages = max_pages
+        self.max_items = max_items
+        self.clock = clock
+
+    def fetch(self) -> CatalogObservation:
+        """Return complete bounded search results or raise without partial output.
+
+        Search completion is not source completeness: the index can lag and is
+        caller-scoped. This method never creates graph rows or retirements.
+        """
+        body: dict[str, object] = {
+            "filter": f"WorkspaceId eq '{self.workspace_id}'",
+            "pageSize": self.page_size,
+        }
+        rows: dict[str, CatalogCandidate] = {}
+        seen_tokens: set[str] = set()
+        for page_number in range(1, self.max_pages + 1):
+            page = self.client.request(
+                "POST", "/catalog/search", json_body=body,
+                wait_for_completion=False,
+                telemetry_skill="onelake-catalog-govern-cli",
+            )
+            values = page.get("value")
+            if not isinstance(values, list) or len(values) > self.page_size:
+                raise ValueError("Catalog returned an invalid or oversized page")
+            if page.get("continuationUri"):
+                raise ValueError("Catalog returned an unsupported continuation URI")
+            for value in values:
+                candidate = self._candidate(value)
+                if candidate.item_id in rows:
+                    raise ValueError("Catalog returned a duplicate item")
+                if len(rows) >= self.max_items:
+                    raise ValueError("Catalog item limit exceeded")
+                rows[candidate.item_id] = candidate
+            token = page.get("continuationToken")
+            if token is None or token == "":
+                observed_at = self.clock()
+                if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+                    raise ValueError("Catalog observation time must be timezone-aware")
+                return CatalogObservation(
+                    workspace_id=self.workspace_id,
+                    observed_at=observed_at,
+                    pages_fetched=page_number,
+                    candidates=tuple(rows[key] for key in sorted(rows)),
+                )
+            if not isinstance(token, str) or not token.strip() or token in seen_tokens:
+                raise ValueError("Catalog returned an invalid or repeated continuation token")
+            seen_tokens.add(token)
+            body = {"continuationToken": token}
+        raise ValueError("Catalog page limit exceeded")
+
+    def _candidate(self, value: object) -> CatalogCandidate:
+        if not isinstance(value, dict) or value.get("catalogEntryType") != "FabricItem":
+            raise ValueError("Catalog returned a non-item entry")
+        hierarchy = value.get("hierarchy")
+        workspace = hierarchy.get("workspace") if isinstance(hierarchy, dict) else None
+        if not isinstance(workspace, dict) or _guid(workspace.get("id")) != self.workspace_id:
+            raise ValueError("Catalog returned an item outside the allowed workspace")
+        item_type = _text(value.get("type"))
+        if item_type == "Workspace":
+            raise ValueError("Catalog returned a workspace instead of an item")
+        description = value.get("description", "")
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            raise TypeError("Catalog returned an invalid description")
+        return CatalogCandidate(
+            item_id=_guid(value.get("id")),
+            item_type=item_type,
+            display_name=_text(value.get("displayName")),
+            description=description,
+            workspace_id=self.workspace_id,
+        )
+
+
+def _guid(value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError("Catalog identity must be a GUID")
+    return str(UUID(value))
+
+
+def _text(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Catalog item metadata must be nonempty text")
+    return value

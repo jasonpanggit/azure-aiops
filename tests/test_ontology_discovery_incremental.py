@@ -206,6 +206,7 @@ def test_incremental_classifier_records_all_delta_classes_and_provenance() -> No
         "same": "1",
         "changed": "2",
         "added": "1",
+        "waiting": "1",
     }
 
 
