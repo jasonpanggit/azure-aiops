@@ -213,6 +213,12 @@ for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
     const resources = page.getByRole("region", { name: "Resource utilization", exact: true });
     const cards = resources.locator(".health-resource-grid").getByRole("article");
     await expect(cards).toHaveCount(3);
+    const gridBox = (await resources.locator(".health-resource-grid").boundingBox())!;
+    const firstCardBox = (await cards.first().boundingBox())!;
+    const rowBoxes = await Promise.all((await cards.all()).map(card => card.boundingBox()));
+    const firstRow = rowBoxes.filter(box => box && Math.abs(box.y - firstCardBox.y) < 1);
+    const rowRight = Math.max(...firstRow.map(box => box!.x + box!.width));
+    expect(Math.abs(rowRight - gridBox.x - gridBox.width)).toBeLessThanOrEqual(1);
     await expect(resources.getByText("2 of 3 health responses · 2 resources with CPU samples", { exact: true })).toBeVisible();
     const navigation = page.getByRole("navigation", { name: "Health sections", exact: true });
     const links = navigation.getByRole("link");
@@ -320,6 +326,33 @@ for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
     if (width === 1440 || width === 375) await resources.screenshot({ path: testInfo.outputPath(`health-long-content-${width}.png`) });
+  });
+
+  test(`Resource Health uses the full row for five resources at ${width}px`, async ({ page }) => {
+    await mockSources(page);
+    const sample = buildHealthResources()[0];
+    const resources = Array.from({ length: 5 }, (_, index) => ({
+      ...sample, resource_id: `${sample.resource_id}-${index}`, resource_name: `payments-${index}`,
+    }));
+    await page.route("**/api/v1/inventory/resources**", route => route.fulfill({
+      json: { ...envelope({ resources, family_availability: {}, requested_scope: {}, query_version: "inventory-resources-v1" }),
+        pagination: { offset: 0, limit: 500, total: 5, next_offset: null } },
+    }));
+    await page.route("**/api/v1/resource-health/resource?**", route => {
+      const resource = resources.find(item =>
+        item.resource_id === new URL(route.request().url()).searchParams.get("resource_id"))!;
+      return route.fulfill({ json: envelope(buildHealthSnapshot(resource)) });
+    });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/resource-health");
+    const grid = page.locator(".health-resource-grid");
+    const cards = grid.getByRole("article");
+    await expect(cards).toHaveCount(5);
+    const bounds = (await grid.boundingBox())!;
+    const boxes = await Promise.all((await cards.all()).map(card => card.boundingBox()));
+    const firstRow = boxes.filter(box => box && Math.abs(box.y - boxes[0]!.y) < 1);
+    expect(Math.abs(Math.max(...firstRow.map(box => box!.x + box!.width)) - bounds.x - bounds.width)).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
   });
 
   test(`Governance keeps generation, raw evidence and explicit policy saves usable at ${width}px`, async ({ page }, testInfo) => {

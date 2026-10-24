@@ -3097,6 +3097,7 @@ textarea:focus-visible {
 }
 
 .twin-grid .card:first-child,
+.twin-grid > .card:last-child,
 .workspace-grid .card:only-child {
   grid-column: 1 / -1;
 }
@@ -6128,7 +6129,7 @@ body.topology-fullscreen-open {
 
 .health-resource-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   align-items: start;
   gap: 16px;
   margin-top: 16px;

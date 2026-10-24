@@ -207,7 +207,7 @@ async function assertNavigation(page: Page, name: string) {
   expect((await target.boundingBox())!.y).toBeGreaterThanOrEqual(55);
 }
 
-for (const width of [1440, 820, 768, 375, 320]) {
+for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
   test(`Network keeps all five task views before one qualified insight at ${width}px`, async ({ page }, testInfo) => {
     await mockWorkspaces(page);
     await page.setViewportSize({ width, height: 900 });
@@ -287,6 +287,10 @@ for (const width of [1440, 820, 768, 375, 320]) {
     for (const section of await page.locator(".twin-grid > .card").all()) {
       expect((await section.boundingBox())!.width).toBeGreaterThanOrEqual(220);
     }
+    const gridBox = (await page.locator(".twin-grid").boundingBox())!;
+    const contextBox = (await page.locator(".twin-grid > .card").last().boundingBox())!;
+    expect(Math.abs(contextBox.width - gridBox.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(contextBox.x - gridBox.x)).toBeLessThanOrEqual(1);
     expect(await scenario.evaluate((element) =>
       Boolean(element.compareDocumentPosition(document.getElementById("twin-temporal")!) & Node.DOCUMENT_POSITION_FOLLOWING),
     )).toBe(true);
