@@ -85,7 +85,7 @@ elif args[:2] == ["acr", "build"]:
     event("start", image)
     # The first batch must actually overlap, not merely claim parallelism.
     expected = int(os.environ.get("BUILD_TEST_EXPECT_OVERLAP", "1"))
-    if image in {"aiops-api", "aiops-web"}:
+    if image in ["aiops-api", "aiops-web", "mcp-server", "azure-mcp"][:expected]:
         deadline = time.monotonic() + 5
         while True:
             rows = [json.loads(line) for line in (state / "events").read_text().splitlines()]
