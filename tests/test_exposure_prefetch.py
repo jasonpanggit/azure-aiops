@@ -243,6 +243,112 @@ def test_scheduled_factory_reads_pointer_and_cache_from_aiops_home(
     ) == {}
 
 
+@pytest.mark.parametrize("table_name", list(ExposureGenerationDiscovery._TABLE_COLUMNS))
+def test_discovery_stops_after_first_excess_row(tmp_path, table_name) -> None:
+    store = OneLakeDocumentStore(tmp_path)
+    store.write(
+        "exposure/gold-generation-pointer.json",
+        {"readable_generation_id": "generation-7", "revision": 1},
+        expected_revision=0,
+    )
+    reads = []
+    consumed = []
+
+    def rows():
+        for index in range(3):
+            consumed.append(index)
+            yield {}
+        pytest.fail("Discovery must not consume beyond limit plus one")
+
+    def read(table, _columns):
+        reads.append(table)
+        return rows() if table == table_name else ()
+
+    discovery = ExposureGenerationDiscovery(
+        pointer_store=store, table_reader=read, max_rows_per_table=2,
+    )
+    with pytest.raises(ValueError, match="exposure_source_row_bound_exceeded"):
+        discovery.discover()
+    assert consumed == [0, 1, 2]
+    assert reads[-1] == table_name
+
+
+@pytest.mark.parametrize("row_count", [0, 1, 2])
+def test_discovery_accepts_iterables_up_to_exact_row_limit(tmp_path, row_count) -> None:
+    store = OneLakeDocumentStore(tmp_path)
+    store.write(
+        "exposure/gold-generation-pointer.json",
+        {"readable_generation_id": "generation-7", "revision": 1},
+        expected_revision=0,
+    )
+    discovery = ExposureGenerationDiscovery(
+        pointer_store=store,
+        table_reader=lambda table, _columns: (
+            {"cve_id": "CVE-2026-9001"} for _ in range(row_count)
+        ) if table == "silver_defender_findings" else iter(()),
+        max_rows_per_table=2,
+    )
+    result = discovery.discover()
+    assert result.cve_ids == (("CVE-2026-9001",) if row_count else ())
+
+
+def test_discovery_does_not_hide_iterator_failure_before_row_limit(tmp_path) -> None:
+    store = OneLakeDocumentStore(tmp_path)
+    store.write(
+        "exposure/gold-generation-pointer.json",
+        {"readable_generation_id": "generation-7", "revision": 1},
+        expected_revision=0,
+    )
+
+    def rows():
+        yield {}
+        raise OSError("reader-unavailable")
+
+    discovery = ExposureGenerationDiscovery(
+        pointer_store=store, table_reader=lambda *_: rows(), max_rows_per_table=2,
+    )
+    with pytest.raises(OSError, match="reader-unavailable"):
+        discovery.discover()
+
+
+def test_cli_overflow_stops_without_provider_cache_or_cursor_work(tmp_path) -> None:
+    from scripts.refresh_exposure_enrichment import main
+
+    store = OneLakeDocumentStore(tmp_path / "publisher")
+    store.write(
+        "exposure/gold-generation-pointer.json",
+        {"readable_generation_id": "generation-7", "revision": 1},
+        expected_revision=0,
+    )
+    service, cache, _nvd, events = _service(tmp_path / "cache", _Clock())
+    consumed = []
+
+    def rows():
+        for index in range(10):
+            consumed.append(index)
+            yield {"weakness_id": "private-source-value"}
+
+    service.discovery = ExposureGenerationDiscovery(
+        pointer_store=store, table_reader=lambda *_: rows(), max_rows_per_table=2,
+    )
+    output = io.StringIO()
+    assert main(
+        ["--prefetch-generation"],
+        prefetch_factory=lambda **_: service,
+        stdout=output,
+    ) == 2
+    report = json.loads(output.getvalue())
+    assert report["safe_error_code"] == "invalid_refresh_contract"
+    assert report["failure_stage"] == "prefetch_run"
+    assert report["error_category"] == "value_error"
+    assert report["outcomes"] == []
+    assert consumed == [0, 1, 2]
+    assert cache.records() == ()
+    assert events == []
+    assert service.checkpoint_store.read(service.checkpoint_document) == {}
+    assert "private-source-value" not in output.getvalue()
+
+
 @pytest.mark.parametrize("change", ["generation", "revision", "deleted", "etag_only"])
 def test_discovery_rejects_pointer_change_before_any_worker_activity(
     tmp_path, change,

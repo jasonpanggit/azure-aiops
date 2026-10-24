@@ -27,6 +27,15 @@ that live Exposure evidence is ready.
 
 ### Prefetch generation stability
 
+Discovery consumes at most `max_rows_per_table + 1` rows from each table-reader
+iterable. The first excess row raises `exposure_source_row_bound_exceeded`;
+the pass never silently truncates a source or continues to later tables.
+Empty sources and sources exactly at the limit remain valid. Iterator errors
+before the bound propagate through the scheduler's sanitized failure contract.
+This bounds consumption in discovery only: the current Delta adapter still
+materializes its read upstream, so this is not an I/O, Delta-memory, or
+production-scale performance guarantee.
+
 Generation discovery reads the published Gold pointer using strict document
 snapshots before and after its table reads. A changed payload or storage token
 (including replacement with identical content), removal, or read failure stops
