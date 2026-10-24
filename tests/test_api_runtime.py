@@ -393,6 +393,65 @@ def test_resource_health_discovers_container_apps(
     assert "'microsoft.app/containerapps'" in captured_queries["live_compute_resources"]
 
 
+@pytest.mark.parametrize("case", ["lower", "upper", "mixed", "other", "empty"])
+def test_resource_health_connection_filter_is_case_insensitive(
+    monkeypatch, tmp_path, case,
+) -> None:
+    home = tmp_path / "aiops-local"
+    seed_local_environment(root=home, fixture="tests/fixtures/mock_arg_responses.json")
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "demo")
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    context = build_context()
+    subscription_id = "abcdefab-1234-5678-90ab-abcdef123456"
+    connection = SimpleNamespace(
+        connection_id="health-test", subscription_id=subscription_id, is_active=True,
+    )
+    monkeypatch.setattr(
+        context.onboarding.registry, "list",
+        lambda *, include_disabled: [connection] if not include_disabled else [],
+    )
+    requested = {
+        "lower": [subscription_id],
+        "upper": [subscription_id.upper()],
+        "mixed": ["AbCdEfAb-1234-5678-90aB-AbCdEf123456"],
+        "other": ["different-subscription"],
+        "empty": [],
+    }[case]
+
+    service = context.hybrid_resource_health_provider(requested)
+
+    assert service.connections() == (
+        [] if case in {"other", "empty"} else [connection]
+    )
+    service.law_lister = None
+    service.amw_lister = None
+    metrics_calls = []
+
+    class _Metrics:
+        def query_resource_metrics(self, resource_id):
+            metrics_calls.append(resource_id)
+            return {"Percentage CPU": {"value": 42.0}}
+
+    service.metrics_client_factory = lambda connection: _Metrics()
+    row = {
+        "resource_id": f"/subscriptions/{subscription_id}/resourceGroups/Rg/providers/Microsoft.Compute/virtualMachines/Vm",
+        "resource_name": "Vm",
+        "resource_type": "microsoft.compute/virtualmachines",
+        "subscription_id": requested[0] if case in {"upper", "mixed"} else subscription_id,
+        "resource_group": "Rg",
+    }
+    if case in {"other", "empty"}:
+        with pytest.raises(LookupError):
+            service.snapshot_resource(row, subscription_ids=requested)
+        assert metrics_calls == []
+    else:
+        snapshot = service.snapshot_resource(row, subscription_ids=requested)
+        assert snapshot.resources[0].cpu_percent == 42.0
+        assert metrics_calls == [row["resource_id"]]
+
+
 def test_hybrid_vulnerability_does_not_require_deferred_semantic_graph(
     monkeypatch,
 ) -> None:

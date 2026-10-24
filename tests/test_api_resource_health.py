@@ -19,7 +19,7 @@ from api.rbac import Authorizer, Grant, Principal
 from api.routers import resource_health as resource_health_router
 from api.scope import Scope
 from api.telemetry import ApiTelemetry
-from intelligence.health.service import ResourceHealthService
+from intelligence.health.service import ResourceHealthNotFound, ResourceHealthService
 from onboarding.service import SubscriptionOnboardingService
 
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
@@ -207,14 +207,19 @@ def test_resource_endpoint_normalizes_authorized_inventory_identity(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "row",
+    ("row", "reason"),
     [
-        None,
-        _inventory_row(subscription_id="other-sub"),
-        _inventory_row(resource_type="microsoft.network/virtualnetworks"),
+        (None, "inventory_identity_absent"),
+        (_inventory_row(subscription_id="other-sub"), "inventory_identity_absent"),
+        (
+            _inventory_row(resource_type="microsoft.network/virtualnetworks"),
+            "unsupported_resource_type",
+        ),
     ],
 )
-def test_resource_endpoint_returns_same_not_found_before_provider_access(tmp_path, row):
+def test_resource_endpoint_returns_same_not_found_before_provider_access(
+    tmp_path, caplog, row, reason,
+):
     rows = [] if row is None else [row]
     client, _inventory, provider_calls, metrics_calls, _lister_calls = _resource_client(
         tmp_path, rows
@@ -234,9 +239,15 @@ def test_resource_endpoint_returns_same_not_found_before_provider_access(tmp_pat
     assert response.json()["error"]["message"] == "Resource health was not found"
     assert provider_calls == []
     assert metrics_calls == []
+    correlation_id = response.headers["x-correlation-id"]
+    assert (
+        f"resource_health_not_found correlation_id={correlation_id} reason={reason}"
+        in caplog.text
+    )
+    assert reason not in response.text
 
 
-def test_resource_endpoint_missing_matching_connection_is_not_found(tmp_path):
+def test_resource_endpoint_missing_matching_connection_is_not_found(tmp_path, caplog):
     row = _inventory_row()
     inventory = _FakeInventoryReadPort([row])
     provider_calls: list[tuple[str, ...]] = []
@@ -268,6 +279,75 @@ def test_resource_endpoint_missing_matching_connection_is_not_found(tmp_path):
     assert response.status_code == 404
     assert response.json()["error"]["message"] == "Resource health was not found"
     assert provider_calls == [(PROD_SUB,)]
+    correlation_id = response.headers["x-correlation-id"]
+    assert (
+        f"resource_health_not_found correlation_id={correlation_id} reason=no_active_connection"
+        in caplog.text
+    )
+    assert "no_active_connection" not in response.text
+
+
+@pytest.mark.parametrize("field", ["resource_id", "subscription_id"])
+def test_resource_endpoint_logs_incomplete_identity_without_disclosure(
+    tmp_path, monkeypatch, caplog, field,
+):
+    row = _inventory_row()
+    client, inventory, provider_calls, metrics_calls, _ = _resource_client(tmp_path, [row])
+    monkeypatch.setattr(
+        inventory, "get_resource", lambda scope, resource_id: {**row, field: ""},
+    )
+
+    response = client.get(
+        "/api/v1/resource-health/resource",
+        params={"resource_id": row["resource_id"]},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["message"] == "Resource health was not found"
+    assert provider_calls == metrics_calls == []
+    correlation_id = response.headers["x-correlation-id"]
+    assert (
+        f"correlation_id={correlation_id} reason=incomplete_inventory_identity"
+        in caplog.text
+    )
+    assert "incomplete_inventory_identity" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (ResourceHealthNotFound("invalid_identity"), "invalid_identity"),
+        (
+            ResourceHealthNotFound("subscription_scope_mismatch"),
+            "subscription_scope_mismatch",
+        ),
+        (LookupError("private-provider-details"), "service_lookup_error"),
+    ],
+)
+def test_resource_endpoint_logs_service_reason_without_exception_text(
+    tmp_path, monkeypatch, caplog, failure, reason,
+):
+    row = _inventory_row()
+    client, _, _, metrics_calls, _ = _resource_client(tmp_path, [row])
+
+    def rejected(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(ResourceHealthService, "snapshot_resource", rejected)
+    response = client.get(
+        "/api/v1/resource-health/resource",
+        params={"resource_id": row["resource_id"]},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["message"] == "Resource health was not found"
+    assert metrics_calls == []
+    correlation_id = response.headers["x-correlation-id"]
+    assert f"correlation_id={correlation_id} reason={reason}" in caplog.text
+    assert reason not in response.text
+    assert "private-provider-details" not in caplog.text + response.text
 
 
 def test_resource_endpoint_cache_isolated_by_resource_and_force_refresh(tmp_path):

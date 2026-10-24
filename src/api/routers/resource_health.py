@@ -30,13 +30,14 @@ receipts. They do not replace live reads or imply continuous availability.
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
-from intelligence.health.service import SUPPORTED_RESOURCE_TYPES
+from intelligence.health.service import SUPPORTED_RESOURCE_TYPES, ResourceHealthNotFound
 from onboarding.runtime import connection_cache_identity
 from operations.overview_history import HistoryCapture
 from operations.resource_health_history import (
@@ -50,6 +51,7 @@ from ..errors import ApiError, ErrorCode
 from ..evidence import CONFIDENCE_HIGH, Evidence, envelope
 
 router = APIRouter(prefix="/api/v1/resource-health", tags=["resource-health"])
+_LOGGER = logging.getLogger(__name__)
 
 SOURCE_ENGINE = "intelligence.health.ResourceHealthService"
 SOURCE_TABLE = "azure_monitor_metrics"
@@ -138,6 +140,7 @@ def resource_health(
 def resource_health_resource(
     context: Context,
     scope: ReadScope,
+    request: Request,
     resource_id: str = Query(..., min_length=1),
     force_refresh: bool = Query(
         False,
@@ -149,17 +152,15 @@ def resource_health_resource(
 ) -> dict[str, Any]:
     """Return one inventory-authorized resource's live health snapshot."""
     identity = context.inventory_read_port().get_resource(scope, resource_id)
-    if (
-        identity is None
-        or str(identity.get("resource_type") or "").casefold()
-        not in SUPPORTED_RESOURCE_TYPES
-    ):
-        raise _resource_not_found()
+    if identity is None:
+        raise _resource_not_found(request=request, reason="inventory_identity_absent")
+    if str(identity.get("resource_type") or "").casefold() not in SUPPORTED_RESOURCE_TYPES:
+        raise _resource_not_found(request=request, reason="unsupported_resource_type")
 
     canonical_resource_id = str(identity.get("resource_id") or "")
     subscription_id = str(identity.get("subscription_id") or "")
     if not canonical_resource_id or not subscription_id:
-        raise _resource_not_found()
+        raise _resource_not_found(request=request, reason="incomplete_inventory_identity")
 
     # Authorization above is deliberately performed before cache or provider
     # access on every request. Unrestricted administrators still resolve the
@@ -207,7 +208,8 @@ def resource_health_resource(
                 subscription_ids=[subscription_id],
             )
         except LookupError as exc:
-            raise _resource_not_found() from exc
+            reason = exc.reason if isinstance(exc, ResourceHealthNotFound) else "service_lookup_error"
+            raise _resource_not_found(request=request, reason=reason) from exc
         _resource_health_detail_cache[cache_key] = (now, snapshot)
 
     payload = snapshot.to_dict()
@@ -226,7 +228,13 @@ def resource_health_resource(
     )
 
 
-def _resource_not_found() -> ApiError:
+def _resource_not_found(*, request: Request | None = None, reason: str = "") -> ApiError:
+    if request is not None:
+        _LOGGER.warning(
+            "resource_health_not_found correlation_id=%s reason=%s",
+            getattr(request.state, "correlation_id", ""),
+            reason,
+        )
     return ApiError(ErrorCode.NOT_FOUND, "Resource health was not found")
 
 
@@ -291,6 +299,7 @@ def capture_resource_history(
     context: Context,
     principal: CurrentPrincipal,
     scope: ReadScope,
+    request: Request,
     resource_id: str = Query(..., min_length=1, max_length=4096),
 ) -> dict:
     """Acquire one server-side per-resource observation; no submitted metrics or execution."""
@@ -303,7 +312,9 @@ def capture_resource_history(
             ErrorCode.CONFLICT, "Health history changed; reload before capturing"
         )
     started = datetime.now(UTC).isoformat()
-    result = resource_health_resource(context, scope, canonical_id, force_refresh=False)
+    result = resource_health_resource(
+        context, scope, request, canonical_id, force_refresh=False,
+    )
     finished = datetime.now(UTC).isoformat()
     try:
         observation = health_observation(

@@ -1087,6 +1087,24 @@ new authority is restored from a URL.
 Global selector/account controls and continuity sign-out handling remain active
 while an invalid bookmark withholds page data.
 
+## Resource Health identity diagnostics
+
+`GET /api/v1/resource-health/resource?resource_id=...` resolves current scoped
+Inventory identity before cache or provider access. Active connection matching
+is case-insensitive for subscription identifiers; this does not broaden the
+requested subscription set or enable disabled connections.
+
+Identity/type/required-field rejection and service identity/scope/connection
+rejection retain the same public `404 not_found` response. Server logs emit
+`resource_health_not_found correlation_id=... reason=...` so operators can join
+the specific rejection to the response's `x-correlation-id`. Internal reasons
+distinguish `inventory_identity_absent`, `unsupported_resource_type`,
+`incomplete_inventory_identity`, `invalid_identity`,
+`subscription_scope_mismatch`, and `no_active_connection`. An unexpected
+service `LookupError` is labeled `service_lookup_error`, without its exception
+text. Reasons, resource addresses and credentials are not added to public
+error details. A generic404 alone does not identify a rejection branch.
+
 ## Retained Resource Health observations
 
 `GET /api/v1/resource-health/resource/history?resource_id=...` reads personal

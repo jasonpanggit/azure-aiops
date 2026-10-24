@@ -5721,6 +5721,7 @@ def build_context() -> ApiContext:
         return _service_request_metrics(onboarding, arg_config, resource_id, window_hours, connection_id)
 
     def hybrid_resource_health(subscription_ids: list[str]) -> ResourceHealthService:
+        requested_subscriptions = {value.casefold() for value in subscription_ids}
         # Live per-connection utilization: each request re-lists in-scope
         # compute resources via ARG and fetches fresh Monitor Metrics, so no
         # cache is used here (unlike hybrid_network) since a stale CPU
@@ -5806,7 +5807,7 @@ def build_context() -> ApiContext:
             lambda: [
                 connection
                 for connection in onboarding.registry.list(include_disabled=False)
-                if str(connection.subscription_id) in subscription_ids
+                if str(connection.subscription_id).casefold() in requested_subscriptions
             ],
             resource_lister,
             lambda connection: build_connection_monitor_metrics_client(
