@@ -3,6 +3,31 @@
 `build-and-push.sh` defaults to `AIOPS_BUILD_MODE=acr`, which builds natively
 on amd64 inside Azure Container Registry. That is the right default and is
 usually the fastest option (~90-150s per image with a warm layer cache).
+These are illustrative warm-cache timings, not a release SLA.
+
+## Bounded parallel builds
+
+Full application builds submit two independent images at a time in ACR.
+All four builds must finish successfully and all four manifests must exist
+before the script records the release in `terraform.tfvars` or deploys it.
+A failed batch is fully joined before its immutable source archive is removed;
+the tag remains unrecorded. API-only authorization releases still build only
+the API, with the same immutable-tag and source-revision checks.
+
+Use `AIOPS_BUILD_PARALLELISM=1` for serial execution if ACR capacity is limited.
+Values 1 through 4 are supported; local builds default to 1 to avoid exhausting
+Docker Desktop memory. Higher concurrency can increase peak resource usage or
+queue time; it does not reduce total build compute.
+
+```bash
+AIOPS_BUILD_PARALLELISM=1 ./infra/scripts/build-and-push.sh my-release
+AIOPS_BUILD_PARALLELISM=2 ./infra/scripts/build-and-push.sh my-release
+```
+
+CI caches Python package downloads using `pyproject.toml` and `uv.lock` as
+cache keys. Installation and every test/lint/build still run; a cache hit is
+not validation evidence. Keep external release evidence tied to its exact
+commit and command/environment rather than skipping checks on a changed tree.
 
 `AIOPS_BUILD_MODE=local` builds with `docker buildx` and pushes. It only beats
 ACR if the Docker VM is configured for it. Out of the box on an M-series Mac it
