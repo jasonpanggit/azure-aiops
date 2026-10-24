@@ -627,8 +627,20 @@ apply_api_authorization_release() {
 }
 
 publish_governed_remediation_catalog() {
+  # First-run setup must bind apply-time Fabric IDs before publishing.
+  if [[ "${AIOPS_DEFER_CATALOG_PUBLICATION:-false}" == "true" ]]; then
+    echo "deploy: catalog publication explicitly deferred; run setup-platform.py --stage fabric --apply."
+    return 0
+  fi
   if [[ "${AIOPS_SKIP_FABRIC_PUBLISH:-false}" == "true" || "${AIOPS_SKIP_FABRIC_PUBLISH:-false}" == "1" ]]; then
     echo "deploy: skipping governed remediation catalog publication (AIOPS_SKIP_FABRIC_PUBLISH=true)"
+    return 0
+  fi
+  local workspace
+  workspace="$(terraform output -json | python3 -c \
+    'import json,sys; print((json.load(sys.stdin).get("fabric_workspace_id") or {}).get("value") or "")')"
+  if [[ -z "${workspace}" ]]; then
+    echo "deploy: Fabric disabled; no catalog publication is required."
     return 0
   fi
   local python="${AIOPS_PYTHON:-${repo_root}/.venv/bin/python}"
@@ -647,6 +659,7 @@ publish_governed_remediation_catalog() {
   # Keep the value process-local; neither the CLI nor deployment artifacts
   # serialize it.
   export AZURE_CLIENT_SECRET="${ARM_CLIENT_SECRET}"
+  export FABRIC_CLIENT_SECRET="${ARM_CLIENT_SECRET}"
   echo
   echo "deploy: publishing governed remediation catalog..."
   PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}" \
@@ -673,7 +686,11 @@ case "${command}" in
     else
       terraform apply -input=false "$@"
       publish_governed_remediation_catalog
-      report_running_images
+      if [[ "${AIOPS_DEFER_CATALOG_PUBLICATION:-false}" != "true" ]]; then
+        report_running_images
+      else
+        echo "deploy: bootstrap revision verification deferred until the image release."
+      fi
     fi
     ;;
   destroy)

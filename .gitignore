@@ -1,5 +1,6 @@
 # Runtime and generated data
 .venv/
+.azure/setup/
 __pycache__/
 .pytest_cache/
 *.pyc
