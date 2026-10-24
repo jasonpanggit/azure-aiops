@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 # Azure resource types this service will fetch platform metrics for. Limited to
 # compute types with well-known Monitor metric namespaces; unsupported types
@@ -63,6 +63,19 @@ _LAW_RESOURCE_TYPE = "microsoft.operationalinsights/workspaces"
 
 _CPU_WARNING_THRESHOLD = 70.0
 _CPU_CRITICAL_THRESHOLD = 90.0
+
+
+class ResourceHealthNotFound(LookupError):
+    """Retain an internal rejection reason without disclosing it to callers."""
+
+    def __init__(
+        self,
+        reason: Literal[
+            "invalid_identity", "subscription_scope_mismatch", "no_active_connection"
+        ],
+    ) -> None:
+        self.reason = reason
+        super().__init__("Resource health was not found")
 
 
 class MetricsReader(Protocol):
@@ -335,9 +348,10 @@ class ResourceHealthService:
             not row["id"]
             or resource_type not in SUPPORTED_RESOURCE_TYPES
             or not subscription_id
-            or subscription_id.casefold() not in allowed_subscriptions
         ):
-            raise LookupError("Resource health was not found")
+            raise ResourceHealthNotFound("invalid_identity")
+        if subscription_id.casefold() not in allowed_subscriptions:
+            raise ResourceHealthNotFound("subscription_scope_mismatch")
 
         connection = next(
             (
@@ -350,7 +364,7 @@ class ResourceHealthService:
             None,
         )
         if connection is None:
-            raise LookupError("Resource health was not found")
+            raise ResourceHealthNotFound("no_active_connection")
 
         warnings: list[str] = []
         guest_performance = self._guest_performance_for_connection(connection, warnings)

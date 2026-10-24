@@ -7,7 +7,11 @@ from typing import Any
 
 import pytest
 
-from intelligence.health.service import ResourceHealthService, _cpu_status
+from intelligence.health.service import (
+    ResourceHealthNotFound,
+    ResourceHealthService,
+    _cpu_status,
+)
 
 
 def _connection(connection_id="conn-1", subscription_id="sub-1", is_active=True):
@@ -106,17 +110,22 @@ def test_snapshot_resource_normalizes_inventory_row_without_listing_resources():
 
 
 @pytest.mark.parametrize(
-    ("row", "subscription_ids"),
+    ("row", "subscription_ids", "reason"),
     [
         (
             _inventory_vm_row(resource_type="microsoft.network/virtualnetworks"),
             ["sub-1"],
+            "invalid_identity",
         ),
-        (_inventory_vm_row(subscription_id="other-sub"), ["sub-1"]),
+        (
+            _inventory_vm_row(subscription_id="other-sub"),
+            ["sub-1"],
+            "subscription_scope_mismatch",
+        ),
     ],
 )
 def test_snapshot_resource_rejects_unsupported_or_out_of_scope_rows(
-    row, subscription_ids
+    row, subscription_ids, reason,
 ):
     service = ResourceHealthService(
         connections=lambda: [_connection()],
@@ -126,8 +135,9 @@ def test_snapshot_resource_rejects_unsupported_or_out_of_scope_rows(
         ),
     )
 
-    with pytest.raises(LookupError):
+    with pytest.raises(ResourceHealthNotFound, match="^Resource health was not found$") as raised:
         service.snapshot_resource(row, subscription_ids=subscription_ids)
+    assert raised.value.reason == reason
 
 
 def test_snapshot_resource_requires_an_active_matching_connection():
@@ -139,11 +149,12 @@ def test_snapshot_resource_requires_an_active_matching_connection():
         ),
     )
 
-    with pytest.raises(LookupError):
+    with pytest.raises(ResourceHealthNotFound, match="^Resource health was not found$") as raised:
         service.snapshot_resource(
             _inventory_vm_row(),
             subscription_ids=["sub-1"],
         )
+    assert raised.value.reason == "no_active_connection"
 
 
 def test_snapshot_resource_isolates_a_metrics_failure():
