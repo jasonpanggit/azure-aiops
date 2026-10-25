@@ -289,3 +289,43 @@ def test_cli_comparison_report_can_be_reused_as_next_baseline(monkeypatch, capsy
     assert next_report["metadata_delta"]["unchanged"] == [ITEM]
     assert next_report["metadata_delta"]["changed"] == []
     assert next_report["metadata_delta"]["retired"] == []
+
+
+def test_comparison_item_bound_rejected_before_credentials_or_network(monkeypatch, capsys, tmp_path):
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(_baseline()))
+    calls, _, _, http = _setup(monkeypatch, [])
+
+    def forbidden(auth):
+        raise AssertionError("Comparison bounds must fail before credential construction")
+
+    monkeypatch.setattr(catalog_cli, "build_credential", forbidden)
+    try:
+        assert catalog_cli.main(["--baseline", str(path), "--max-items", "1001"]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert json.loads(captured.err) == {
+            "status": "failed", "failure_stage": "configuration",
+        }
+        assert calls == []
+    finally:
+        http.close()
+
+
+@pytest.mark.parametrize("baseline_enabled,max_items", [(True, 1000), (False, 1001)])
+def test_supported_item_bounds_preserve_live_cli_behavior(
+    monkeypatch, capsys, tmp_path, baseline_enabled, max_items,
+):
+    args = ["--max-items", str(max_items)]
+    if baseline_enabled:
+        path = tmp_path / "baseline.json"
+        path.write_text(json.dumps(_baseline()))
+        args.extend(["--baseline", str(path)])
+    calls, _, credential, http = _setup(monkeypatch, _responses())
+    assert catalog_cli.main(args) == 0
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert captured.err == ""
+    assert ("metadata_delta" in report) is baseline_enabled
+    assert len(calls) == 2
+    assert credential.closed and http.is_closed
