@@ -401,7 +401,7 @@ html,
 body {
   min-height: 100%;
   max-width: 100vw;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 body {
@@ -4617,6 +4617,8 @@ textarea:focus-visible {
   display: grid;
   gap: 12px;
   min-width: 0;
+  max-height: calc(100dvh - var(--topbar-height) - 36px);
+  overflow-y: auto;
   padding: 18px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -4679,6 +4681,8 @@ textarea:focus-visible {
 
   .exposure-evidence-rail {
     position: static;
+    max-height: none;
+    overflow-y: visible;
   }
 
   .exposure-key-facts {
