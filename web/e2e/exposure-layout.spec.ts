@@ -150,6 +150,21 @@ for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
       await expect(nav.getByRole("link")).toHaveCount(route.links);
       await expect(page.locator(".state-loading")).toHaveCount(0);
       await expect(page.locator(".copilot-insights")).toHaveCount(1);
+      if (width <= 560) {
+        const captions = page.locator(".exposure-responsive-table caption");
+        if (route.path === "/exposure/patch-priorities") {
+          await expect(captions).not.toHaveCount(0);
+        }
+        for (const caption of await captions.all()) {
+          const geometry = await caption.evaluate(element => ({
+            width: element.getBoundingClientRect().width,
+            height: element.getBoundingClientRect().height,
+            tableWidth: element.closest("table")!.getBoundingClientRect().width,
+          }));
+          expect(geometry.width).toBeGreaterThanOrEqual(geometry.tableWidth * 0.95);
+          expect(geometry.height).toBeLessThanOrEqual(80);
+        }
+      }
       if (route.path === "/exposure") {
         const sections = page.locator(".exposure-landing-sections");
         const container = (await sections.boundingBox())!;

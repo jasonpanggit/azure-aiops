@@ -4800,6 +4800,7 @@ textarea:focus-visible {
   }
 
   .exposure-responsive-table table,
+  .exposure-responsive-table caption,
   .exposure-responsive-table tbody,
   .exposure-responsive-table tr,
   .exposure-responsive-table td {
