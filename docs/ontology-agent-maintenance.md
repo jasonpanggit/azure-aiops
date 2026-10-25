@@ -148,8 +148,12 @@ fields, real JSON booleans, aware timestamps, matching unique catalog/direct
 item identities, workspace/type/endpoint agreement and metadata drift flags.
 Duplicate JSON keys, malformed reports and inputs above 2,000,000 UTF-8 bytes
 are rejected before network access. Comparison supports at most 1,000 items
-per observation. Decoder nesting-limit failures are also rejected as sanitized
-input validation failures, without a traceback or credential construction.
+per observation. When `--baseline` is supplied, `--max-items` must
+not exceed 1,000; incompatible bounds fail before credentials or network
+access, even if the workspace might return fewer items. Without a baseline,
+the existing discovery item limits remain unchanged. Decoder nesting-limit
+failures are also rejected as sanitized input validation failures, without a
+traceback or credential construction.
 A prior report's `metadata_delta` is ignored: only its raw
 verified evidence is baseline input, so comparison output can be reused safely.
 

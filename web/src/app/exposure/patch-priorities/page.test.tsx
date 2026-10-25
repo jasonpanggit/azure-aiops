@@ -425,6 +425,12 @@ describe("Patch priorities", () => {
     render(<PatchPrioritiesPage />);
     await screen.findByText("KB600001");
 
+    expect(
+      screen.getByRole("searchbox", {
+        name: "Search patches and vulnerabilities",
+      }),
+    ).toHaveClass("form-control");
+
     fireEvent.change(
       screen.getByRole("searchbox", {
         name: "Search patches and vulnerabilities",

@@ -47,6 +47,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("Catalog page size exceeds the service limit")
         baseline = None
         if args.baseline:
+            if args.max_items > 1000:
+                raise ValueError("Catalog comparison item limit must not exceed 1000")
             if "://" in args.baseline:
                 raise ValueError("Catalog baseline must be a local file")
             with Path(args.baseline).open("rb") as stream:
