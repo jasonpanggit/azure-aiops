@@ -241,7 +241,7 @@ def test_bad_baseline_fails_before_network(monkeypatch, capsys, tmp_path, mode):
     if mode == "oversized":
         raw = "x" * 2_000_001
     if mode == "deep":
-        raw = "[" * 2000 + "]" * 2000
+        raw = "[" * 10000 + "]" * 10000
     if mode != "missing":
         path.write_text(raw)
     calls, _, _, http = _setup(monkeypatch, [])
