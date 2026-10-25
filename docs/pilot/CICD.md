@@ -4,7 +4,8 @@
 
 | Job | What it validates | Blocking? |
 | --- | --- | --- |
-| `backend` | `ruff check src tests`, `pytest` (full backend suite) | Yes |
+| `backend-tests` (four shards) | `ruff check src tests`, full pytest collection partitioned across four runners | Yes, through `backend` |
+| `backend` | Requires every backend shard to succeed, including when a shard fails or is cancelled | Yes |
 | `frontend` (new) | `next lint`, `vitest run`, `next build` | Yes |
 | `security-scan` (new) | Trivy filesystem scan (`vuln`, `secret`, `misconfig`), SARIF uploaded to the repo Security tab | Advisory (`exit-code: 0`) — surfaces findings without blocking merges while the pilot burns down any existing findings; tighten to blocking once a baseline is clean |
 
@@ -12,6 +13,19 @@ Runs are also deduplicated per ref
 (`concurrency: cancel-in-progress: true`) so a rapid sequence of pushes to the
 same PR doesn't queue redundant, superseded CI runs — important once the
 frontend and security jobs add wall-clock time to every push.
+
+Backend sharding is opt-in: `--ci-shard-index=0 --ci-shard-count=4` selects
+every fourth collected test case, with indices 0 through 3 partitioning the
+entire collection exactly once. Each shard retains collection order and its
+own runner/filesystem. Ordinary `python -m pytest` still runs everything.
+No integration, full-manifest or authorization checks are skipped or weakened.
+The stable required `backend` check fails unless all shards succeed;
+`fail-fast: false` lets the other shards finish collecting failure evidence.
+
+CI prints individual test names, the 30 slowest durations per shard and JUnit
+reports uploaded as `backend-results-0` through `backend-results-3`, including
+on failure. Use those results to distinguish an expensive real-storage test
+from a stalled runner instead of relying on quiet progress percentages.
 
 Before this phase, CI only ran the backend `ruff`/`pytest` job; the frontend
 (`npm run lint` / `npm test` / `npm run build`) was validated manually per
