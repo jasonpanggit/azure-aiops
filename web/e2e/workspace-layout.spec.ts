@@ -235,6 +235,12 @@ for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
     await page.goto("/investigate?type=BusinessService&value=Payments");
     await expect(page.getByRole("heading", { name: "Business service: Payments", exact: true })).toBeVisible();
     await expect(page.getByRole("region", { name: "Recommended actions", exact: true }).getByText("Review payments patch", { exact: true })).toBeVisible();
+    const layoutBox = (await page.locator(".investigation-layout").boundingBox())!;
+    const actionsBox = (await page.locator("#investigation-actions").boundingBox())!;
+    const conclusionBox = (await page.locator("#investigation-conclusion").boundingBox())!;
+    expect(Math.abs(actionsBox.x - layoutBox.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(actionsBox.width - layoutBox.width)).toBeLessThanOrEqual(1);
+    expect(conclusionBox.y).toBeGreaterThanOrEqual(actionsBox.y + actionsBox.height);
     await expect(page.getByRole("combobox", { name: "Entry point", exact: true })).toHaveValue("BusinessService");
     await expect(page.getByRole("combobox", { name: "Entry point", exact: true })).toHaveCSS("min-height", width <= 820 ? "44px" : "40px");
     const executive = page.getByRole("button", { name: "Executive", exact: true });

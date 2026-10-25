@@ -991,7 +991,7 @@ function InvestigationWorkspace({ scope, initialEntryType, initialEntryValue, in
           </div>
         </section>
 
-        <section id="investigation-actions" className="card investigation-panel" aria-labelledby="investigation-actions-heading">
+        <section id="investigation-actions" className="card investigation-panel investigation-panel-wide" aria-labelledby="investigation-actions-heading">
           <div className="card-header"><div><h2 id="investigation-actions-heading">Recommended actions</h2><p>Review advisory candidates. Selection does not approve or execute a change.</p></div><span>{state.remediation?.data.plans?.length ?? 0} candidates</span></div>
           <div className="card-body investigation-list">
             {(state.remediation?.data.plans ?? []).slice(0, 6).map((plan) => (
