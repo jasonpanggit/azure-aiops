@@ -48,6 +48,7 @@ function planListFixture() {
         status: "Draft",
         resource: { id: TARGET, name: "vm-payroll" },
         business_service: "Payroll",
+        remediation_context: { target_id: TARGET, cve_ids: [], patch_ids: ["KB600001", "KB600002"] },
       },
     ],
   };
@@ -109,6 +110,7 @@ function workflowFixture(overrides: Record<string, unknown> = {}) {
       status: "Draft - Approval Required",
       resource: { id: TARGET, name: "vm-payroll" },
       business_service: "Payroll",
+      remediation_context: { target_id: TARGET, cve_ids: [], patch_ids: ["KB600001", "KB600002"] },
       risk_assessment: { overall_risk: { level: "high" } },
       dependencies: { affected_services: ["Payroll"] },
       rollback_plan: { rollback_actions: ["Restore the last known-good image"] },
@@ -223,6 +225,56 @@ test.describe("Phase 03.6 workflow-safety surface (real browser)", () => {
     expect(recordDecisionBox).not.toBeNull();
     if (degradationBox && recordDecisionBox) {
       expect(degradationBox.y).toBeLessThan(recordDecisionBox.y);
+    }
+  });
+
+  test.describe("Exact Exposure patch handoff", () => {
+    for (const width of [375, 1912, 2560]) {
+      test(`keeps an unsupported CVE separate from VM patch plans at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 1080 });
+        let workflowRequests = 0;
+        await page.route("**/api/v1/**", route => route.fulfill({ json: envelope({}) }));
+        await page.route("**/remediation-plans**", route => route.fulfill({ json: envelope(planListFixture()) }));
+        await page.route("**/remediation/plans/*/workflow**", route => {
+          workflowRequests += 1;
+          return route.fulfill({ json: envelope(workflowFixture()) });
+        });
+        await page.goto("/remediation?cve=CVE-2026-102268&generation=origin-gold");
+        await expect(page.getByText("No matching remediation plan", { exact: true })).toBeVisible();
+        await expect(page.getByRole("button", { name: /Patch payroll database/ })).toHaveCount(0);
+        expect(workflowRequests).toBe(0);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await page.screenshot({ path: test.info().outputPath(`unsupported-cve-${width}.png`), fullPage: true });
+      });
+
+      test(`preserves exact KB selection and blocked ownership at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 1080 });
+        const patchQueries: string[][] = [];
+        await page.route("**/api/v1/**", route => route.fulfill({ json: envelope({}) }));
+        await page.route("**/remediation-plans**", route => route.fulfill({ json: envelope(planListFixture()) }));
+        await page.route("**/remediation/plans/*/workflow**", route => {
+          patchQueries.push(new URL(route.request().url()).searchParams.getAll("patch_id"));
+          return route.fulfill({ json: envelope(workflowFixture({
+            business_decision: {
+              ...workflowFixture().business_decision,
+              unknowns: ["Business ownership is unknown for this target."],
+            },
+            availablePatches: [
+              { patch_id: "KB600001", title: "Handed-off update", source: "derived:open-findings", reboot_required: null },
+              { patch_id: "KB600002", title: "Another update", source: "derived:open-findings", reboot_required: null },
+            ],
+          })) });
+        });
+        await page.goto(`/remediation?kb=KB600001&resource_key=${encodeURIComponent(TARGET)}`);
+        await expect(page.getByText("Decision evidence needs review", { exact: true })).toBeVisible();
+        await expect(page.getByRole("button", { name: /3 Approve Blocked/ })).toBeVisible();
+        expect(patchQueries).toEqual([["KB600001"]]);
+        await expect(page.getByRole("checkbox").nth(0)).toBeChecked();
+        await expect(page.getByRole("checkbox").nth(1)).not.toBeChecked();
+        await expect(page.getByRole("button", { name: "Continue to approval", exact: true })).toHaveCount(0);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await page.screenshot({ path: test.info().outputPath(`kb-owner-review-${width}.png`), fullPage: true });
+      });
     }
   });
 

@@ -419,7 +419,7 @@ describe("CVE detail", () => {
     expect(screen.getAllByRole("link", { name: "KB600001" }).length).toBeGreaterThan(0);
   });
 
-  it("renders a healthy-empty no-supported-path state for legacy attack-path 404s", async () => {
+  it("keeps an unsupported attack-path 404 unavailable instead of claiming a healthy empty result", async () => {
     api.attackPath.mockRejectedValueOnce(
       Object.assign(new Error("Not found"), { status: 404 }),
     );
@@ -428,11 +428,11 @@ describe("CVE detail", () => {
 
     const attack = await screen.findByRole("region", { name: "Attack path section" });
     expect(
-      within(attack).getByText(
+      within(attack).queryByText(
         "No supported paths reported by Attack path",
       ),
-    ).toBeInTheDocument();
-    expect(within(attack).queryByText("Attack path is unavailable")).not.toBeInTheDocument();
+    ).not.toBeInTheDocument();
+    expect(within(attack).getByText("Attack path is unavailable")).toBeInTheDocument();
   });
 
   it("keeps genuine attack-path provider failures unavailable", async () => {

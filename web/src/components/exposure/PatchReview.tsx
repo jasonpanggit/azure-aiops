@@ -68,7 +68,7 @@ export function PatchReview({ query, rows, ready, imageOwner = false }: { query:
     <div className="card-header"><div><h2>{imageOwner ? "Prepare an image owner review" : "Prepare a review-only batch"}</h2>
       <p>Select up to 25 findings from this page for a personal immutable review snapshot.</p></div></div>
     <div className="card-body">
-      <p>The server reauthorizes and reads this exact generation and query page again. Selection is not an execution plan, approval, maintenance schedule or verified fix.
+      <p>Optional private review notes; not a required remediation step. The server reauthorizes and reads this exact generation and query page again. Selection is not an execution plan, approval, maintenance schedule or verified fix.
         Owner is a declaration, not a delivered assignment. Up to 20 batches and 256 KiB are retained without automatic eviction.</p>
       {imageOwner && <p>This is the same private Exposure review history used by Patch priorities. Previous batches can include server findings; inspect each retained target kind and identity before review.</p>}
       <button type="button" className="button" disabled={busy} onClick={() => void load(false)}>Reload patch review batches</button>

@@ -560,37 +560,11 @@ function CveDetailBody({ params }: { params: { id: string } }) {
     loaded: rows.length,
     empty: Boolean(findings.data && rows.length === 0),
   });
-  const attackNotFound =
-    typeof attack.error === "object" &&
-    attack.error !== null &&
-    "status" in attack.error &&
-    attack.error.status === 404;
-  const attackState = (() => {
-    const base = presentSection(attack, common, {
+  const attackState = presentSection(attack, common, {
       loaded: attack.data?.edges.length,
       empty: Boolean(attack.data && attack.data.edges.length === 0),
       inheritCommon: !containerOnly,
     });
-
-    if (
-      !containerOnly &&
-      !attack.data &&
-      attackNotFound &&
-      coreState.status !== "unavailable"
-    ) {
-      return {
-        ...base,
-        status: "healthy-empty" as const,
-        error: null,
-        metadata: {
-          ...base.metadata,
-          safeErrorMessage: "",
-        },
-      };
-    }
-
-    return base;
-  })();
   const nvdSource = catalogSource(catalogItem, "nvd");
   const epssSource = catalogSource(catalogItem, "epss");
   const kevSource = catalogSource(catalogItem, "kev");

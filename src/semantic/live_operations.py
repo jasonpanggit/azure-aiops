@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -764,7 +765,7 @@ class LiveRemediationPlanner:
                 # a source-owned evidence timestamp. Including it in the action
                 # version invalidates an unchanged plan on every cache refresh.
                 "observed_at": evidence_observed_at,
-                "freshness": classify_freshness(self.freshness),
+                "freshness": classify_freshness(evidence_observed_at),
             }
             for finding_id in _patch_evidence_source_ids(row.get("finding_ids"))
         ]
@@ -786,8 +787,18 @@ class LiveRemediationPlanner:
             {"deployment_stages": ["Planning"]},
             {"execution_risk": {"score": int(opportunity["risk_score"])}},
         )
+        cve_ids = sorted(
+            value.upper() for value in _strings(row.get("cve_ids"))
+            if re.fullmatch(r"CVE-\d{4}-\d{4,}", value, re.IGNORECASE)
+        )
         return {
             "plan_id": opportunity["opportunity_id"],
+            "remediation_context": {
+                "target_id": target_id,
+                # Target CVEs do not establish a CVE-to-KB fix mapping.
+                "cve_ids": [],
+                "patch_ids": missing_kbs,
+            },
             "action_version": action_version,
             "action_id": action_id,
             "title": f"Patch {opportunity['resource']['name']}",
@@ -812,12 +823,15 @@ class LiveRemediationPlanner:
                 "operational_debt_reduction_percent": 25,
             },
             "approval_requirements": approval_requirements,
-            "rollback_plan": {"reversible": True, "steps": ["Uninstall patch if rollback is required"]},
+            "rollback_plan": {
+                "status": "unverified",
+                "steps": ["Ask the resource owner to verify update-specific recovery support before approval."],
+            },
             "risk_assessment": {
                 "overall_risk": {
                     "level": opportunity["priority"],
                     "drivers": [
-                        f"{row.get('cve_count', 0)} open CVE(s)",
+                        f"{len(cve_ids)} open CVE(s)",
                         f"{row.get('finding_count', 0)} unresolved patch finding(s)",
                     ],
                 }

@@ -262,7 +262,7 @@ describe("Patch priorities", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("link", {
-        name: "Open governed remediation for KB600001",
+        name: "Review matching plans for KB600001",
       }),
     ).toBeInTheDocument();
     expect(
@@ -393,7 +393,7 @@ describe("Patch priorities", () => {
     render(<PatchPrioritiesPage />);
 
     const handoff = await screen.findByRole("link", {
-      name: /Open governed remediation for KB600001/,
+      name: /Review matching plans for KB600001/,
     });
     const url = new URL(handoff.getAttribute("href")!, "https://example.test");
 
@@ -615,7 +615,7 @@ describe("Patch priorities", () => {
         name: "Open governed container review for CVE-2026-0002",
       }),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("No safe container action")).toBeInTheDocument();
+    expect(screen.getByText("Container execution unsupported; review image ownership")).toBeInTheDocument();
     expect(
       screen.queryByRole("link", { name: /execute|rebuild|deploy/i }),
     ).not.toBeInTheDocument();

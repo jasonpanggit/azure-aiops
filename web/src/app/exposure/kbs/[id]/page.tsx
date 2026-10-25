@@ -907,9 +907,7 @@ function KbDetailBody({ params }: { params: { id: string } }) {
                 {data && (
                   <Link
                     className="button button-primary"
-                    href={`/remediation?kb=${encodeURIComponent(data.kb_id)}&cve=${encodeURIComponent(
-                      data.cve_ids[0] || "",
-                    )}&generation=${encodeURIComponent(findingState.generation)}&return_to=${encodeURIComponent(
+                    href={`/remediation?kb=${encodeURIComponent(data.kb_id)}&generation=${encodeURIComponent(findingState.generation)}&return_to=${encodeURIComponent(
                       currentDetailHref,
                     )}`}
                   >
