@@ -233,6 +233,39 @@ non-authoritative. A live-schema positive test proves the verifier is not an
 always-failing stub; its synthetic keys, corpus and “live” receipt fields are
 test schema cases, never retained as actual live acceptance.
 
+### Offline replay of saved Catalog observations
+
+To reproduce a delta without another Fabric read, supply two protected local
+full reports to the separate offline command:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m fabric.catalog_compare_cli \
+  --baseline /protected/local/prior-catalog-report.json \
+  --current /protected/local/subsequent-catalog-report.json
+```
+
+This command does not load runtime configuration, acquire credentials, call
+Fabric or modify either input. It reuses the same closed report validation,
+2,000,000-byte UTF-8 limit per input, 1,000-item observation limit, workspace/
+auth-mode agreement and chronological checks as the live comparison. Both
+inputs must be full successful verified reports, not prior delta summaries.
+Derived `metadata_delta` fields on either input are ignored. Save a genuinely
+subsequent observation: a report's search can precede its own final direct
+verification, so replaying the same report on both sides can fail chronology.
+
+Success emits `status: advisory_metadata_compared`, `mode: offline`,
+`verification_performed: false` and the deterministic `metadata_delta`.
+It does not emit a new `advisory_metadata_verified` report and cannot itself
+be reused as an observation baseline. Input validation failures exit 1 with
+sanitized `failure_stage: saved_report_validation`; incompatible comparisons
+use `catalog_comparison`. Neither failure emits partial success stdout.
+
+Offline replay proves only that the saved evidence yields that advisory delta.
+It establishes neither fresh access nor the authenticity, principal identity
+or freshness of the supplied reports. Missing remains unresolved, `retired`
+remains empty, and schema/steward/publication gates remain unchanged. The
+existing live `fabric.catalog_cli` command is unaffected.
+
 ### Exact Phase13 closeout reconciliation
 
 The required corpus is still **22 numbered plans and summaries**, not21 and
