@@ -86,7 +86,7 @@ export function KbMaintenanceReview({ kbId, scope, generation }: { kbId: string;
   return <section className="exposure-detail-section kb-update-evidence exposure-recovery kb-maintenance-review" aria-label="KB maintenance review">
     <div className="card-header"><h2>Maintenance review</h2></div>
     <div className="card-body">
-      <p>Declare an owner, proposed window and dependency references for private review. This does not schedule work, deliver an assignment,
+      <p>Optional private notes, not a required remediation step. Declare an owner, proposed window and dependency references for private review. This does not schedule work, deliver an assignment,
         verify prerequisites, approve execution or establish a fix. “Reviewed” is only your disposition.</p>
       <p>Each save rereads current authorized Silver metadata. Its generation must match the page; provider clocks remain independent.
         Up to 20 immutable reviews and 256 KiB are retained without eviction.</p>

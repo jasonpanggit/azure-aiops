@@ -1009,11 +1009,13 @@ export const operationsApi = {
   },
   incident: (id: string, scope: ScopeSelection = {}) =>
     apiRequest<IncidentDetail>(`/incidents/${encodeURIComponent(id)}`, { query: scopeToSearchParams(scope) }),
-  remediationPlans: (scope: ScopeSelection = {}, offset = 0, limit = 100, resourceKey = "") => {
+  remediationPlans: (scope: ScopeSelection = {}, offset = 0, limit = 100, resourceKey = "", context?: { cve: string; kb: string }) => {
     const query = scopeToSearchParams(scope);
     query.set("offset", String(offset));
     query.set("limit", String(limit));
     if (resourceKey) query.set("resource_key", resourceKey);
+    if (context?.cve) query.set("cve", context.cve);
+    if (context?.kb) query.set("kb", context.kb);
     return apiRequest<RemediationPlanReport>("/remediation-plans", { query });
   },
   remediationOpportunities: (scope: ScopeSelection = {}, offset = 0, limit = 100) => {
@@ -1054,7 +1056,7 @@ export interface RemediationAvailablePatch {
   classification?: string;
   severity?: string;
   cve_ids?: string[];
-  reboot_required?: boolean;
+  reboot_required?: boolean | null;
   published_at?: string;
   source?: string;
   node_pool?: string;
@@ -1103,6 +1105,7 @@ export type RemediationPlanDetail = Omit<
     action_version?: string;
     action_id?: string;
     opportunity_type?: string;
+    remediation_context?: RemediationPlan["remediation_context"];
     resource?: Record<string, unknown> | string;
     resource_key?: string;
   };

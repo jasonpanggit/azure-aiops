@@ -141,6 +141,7 @@ function workflowFixture(overrides: Record<string, unknown> = {}) {
       resource: { id: TARGET, name: "vm-payroll" },
       business_service: "Payroll",
       risk_assessment: { overall_risk: { level: "high" } },
+      remediation_context: { target_id: TARGET, cve_ids: ["CVE-2026-0001"], patch_ids: ["KB600001", "KB600002"] },
       dependencies: { affected_services: ["Payroll"] },
       rollback_plan: { rollback_actions: ["Restore the last known-good image"] },
       executable: Boolean(overrides.approvalCurrent),
@@ -271,6 +272,7 @@ describe("Governed remediation workflow", () => {
           status: "Draft",
           resource: { id: TARGET, name: "vm-payroll" },
           business_service: "Payroll",
+          remediation_context: { target_id: TARGET, cve_ids: ["CVE-2026-0001"], patch_ids: ["KB600001", "KB600002"] },
         },
       ],
     }));
@@ -1227,6 +1229,103 @@ describe("Governed remediation workflow", () => {
     expect(screen.getByText(/Nothing executes from Exposure/)).toBeInTheDocument();
   });
 
+  it.each([
+    "cve=CVE-2026-102268",
+    "kb=KB999999",
+    "cve=",
+    "kb=%20",
+    `resource_key=${encodeURIComponent(OTHER_TARGET)}&kb=KB600001`,
+    `plan_id=plan-other&resource_key=${encodeURIComponent(TARGET)}&kb=KB600001`,
+  ])("refuses unrelated plans for the exact finding context %s", async query => {
+    searchParams.current = new URLSearchParams(query);
+    renderPage();
+    expect(await screen.findByText("No matching remediation plan")).toBeInTheDocument();
+    expect(workflow).not.toHaveBeenCalled();
+    expect(approve).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit target selection for a broad matching KB handoff", async () => {
+    searchParams.current = new URLSearchParams("kb=KB600001");
+    renderPage();
+    const plan = await screen.findByRole("button", { name: /Patch payroll database/ });
+    expect(remediationPlans).toHaveBeenLastCalledWith({}, 0, 100, "", { cve: "", kb: "KB600001" });
+    expect(workflow).not.toHaveBeenCalled();
+    fireEvent.click(plan);
+    await screen.findByRole("region", { name: "Decision summary" });
+    expect(workflow).toHaveBeenLastCalledWith("plan-1", {}, ["KB600001"]);
+  });
+
+  it("preserves only the handed-off KB even when other updates are available", async () => {
+    searchParams.current = new URLSearchParams({ resource_key: TARGET, kb: "KB600001" });
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      availablePatches: [
+        { patch_id: "KB600001", title: "Selected update" },
+        { patch_id: "KB600002", title: "Unrelated available update" },
+      ],
+    })));
+    renderPage();
+    await screen.findByRole("region", { name: "Decision summary" });
+    expect(workflow).toHaveBeenLastCalledWith("plan-1", {}, ["KB600001"]);
+    expect(screen.getAllByRole("checkbox")[0]).toBeChecked();
+    expect(screen.getAllByRole("checkbox")[1]).not.toBeChecked();
+  });
+
+  it("fails visibly closed when an older API returns no typed plan identity", async () => {
+    remediationPlans.mockResolvedValue(envelope({ plans: [{
+      plan_id: "plan-1", title: "KB600001", resource: TARGET, status: "Draft",
+      defender_mapping: { missing_kbs: ["KB600001"] },
+    }] }));
+    searchParams.current = new URLSearchParams({ resource_key: TARGET, kb: "KB600001" });
+    renderPage();
+    expect(await screen.findByText("No matching remediation plan")).toBeInTheDocument();
+    expect(workflow).not.toHaveBeenCalled();
+  });
+
+  it("rejects a returned workflow for another target", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      plan: { ...workflowFixture().plan, resource: OTHER_TARGET },
+    })));
+    searchParams.current = new URLSearchParams({ resource_key: TARGET, kb: "KB600001" });
+    renderPage();
+    expect(await screen.findByText(/current workflow does not match/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Decision summary" })).not.toBeInTheDocument();
+    expect(approve).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps unknown ownership blocked in the stepper and every next-step control", async () => {
+    workflow.mockResolvedValue(envelope(workflowFixture({
+      business_decision: { ...workflowFixture().business_decision, unknowns: ["Business ownership is unknown for this target."] },
+    })));
+    searchParams.current = new URLSearchParams({ resource_key: TARGET });
+    renderPage();
+    await screen.findByText("Decision evidence needs review");
+    expect(screen.getByRole("button", { name: /2 Review impact Blocked/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /3 Approve Blocked/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue to approval" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review inventory ownership" })).toHaveAttribute("href", "/inventory?");
+    fireEvent.click(screen.getByRole("button", { name: /^3 Approve/ }));
+    expect(screen.getByText("Decision evidence required")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record decision" })).not.toBeInTheDocument();
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it.each(["context", "patches"])("rejects a changed %s binding in the returned workflow", async mismatch => {
+    const current = workflowFixture();
+    workflow.mockResolvedValue(envelope(workflowFixture(mismatch === "context" ? {
+      plan: { ...current.plan, remediation_context: { ...current.plan.remediation_context, target_id: OTHER_TARGET } },
+    } : {
+      preview: { ...current.preview, execution_snapshot: { ...current.preview.execution_snapshot, patch_ids: ["KB600001", "KB600002"] } },
+    })));
+    searchParams.current = new URLSearchParams({ resource_key: TARGET, kb: "KB600001" });
+    renderPage();
+    expect(await screen.findByText(/current workflow does not match/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Decision summary" })).not.toBeInTheDocument();
+    expect(approve).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("rejects an external return target instead of creating an open redirect", async () => {
     searchParams.current = new URLSearchParams(
       `resource_key=${encodeURIComponent(TARGET)}&return_to=${encodeURIComponent("https://evil.example/steal")}`,
@@ -1757,7 +1856,7 @@ describe("Phase 03.6 Plan 04: Blocker Contract, Degradation Contract, and Verify
     supersede.mockResolvedValue(envelope(executionRecord({ status: "queued" })));
   });
 
-  it("suppresses the workflow blockers banner while SHOW_WORKFLOW_BLOCKER_STATUS is temporarily off", async () => {
+  it("shows the workflow blockers instead of hiding unresolved eligibility", async () => {
     workflow.mockResolvedValue(envelope(workflowFixture({
       blockers: [{ code: "not_approved", step: "approve" }],
     })));
@@ -1765,12 +1864,12 @@ describe("Phase 03.6 Plan 04: Blocker Contract, Degradation Contract, and Verify
     renderPage();
     await screen.findAllByText(/KB600001/);
 
-    expect(screen.queryByText("Workflow blockers")).not.toBeInTheDocument();
-    expect(screen.queryByText("Blocked")).not.toBeInTheDocument();
+    expect(screen.getByText("Workflow blockers")).toBeInTheDocument();
+    expect(screen.getAllByText("Blocked").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Approve").length).toBeGreaterThan(0);
   });
 
-  it("suppresses the unrecognized-code fallback and its telemetry while SHOW_WORKFLOW_BLOCKER_STATUS is temporarily off", async () => {
+  it("shows unrecognized blockers and emits their diagnostic warning", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     workflow.mockResolvedValue(envelope(workflowFixture({
       blockers: [{ code: "totally_novel_code", step: "review" }],
@@ -1779,15 +1878,13 @@ describe("Phase 03.6 Plan 04: Blocker Contract, Degradation Contract, and Verify
     renderPage();
     await screen.findAllByText(/KB600001/);
 
-    expect(screen.queryByText("An unrecognized workflow condition (totally_novel_code) is blocking this step.")).not.toBeInTheDocument();
-    expect(warnSpy).not.toHaveBeenCalled();
+    expect(screen.getAllByText("An unrecognized workflow condition (totally_novel_code) is blocking this step.").length).toBeGreaterThan(0);
+    expect(warnSpy).toHaveBeenCalled();
 
-    // Trigger a re-render (switching steps) -- still must never log while
-    // suppressed.
     fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
     fireEvent.click(screen.getByRole("button", { name: /Review impact/ }));
 
-    expect(warnSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 

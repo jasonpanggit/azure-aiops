@@ -23,7 +23,7 @@ import {
   encodeExposureQueryState,
   parseExposureQueryState,
 } from "@/lib/exposure-query-state";
-import { ScopeBookmarkError, scopedBookmark, type ScopeSelection } from "@/lib/scope";
+import { ScopeBookmarkError, scopedBookmark, scopeToSearchParams, type ScopeSelection } from "@/lib/scope";
 import { useScope } from "@/lib/scope-context";
 import {
   isCanonicalAzureResourceId,
@@ -58,6 +58,7 @@ import { CopilotInsights } from "@/components/ui/CopilotInsights";
 import { RemediationVerificationInbox } from "@/components/RemediationVerificationInbox";
 import { RemediationRollouts } from "@/components/RemediationRollouts";
 import { DecisionSummary } from "./DecisionSummary";
+import { matchesRemediationContext, samePatch } from "@/lib/remediation-context";
 
 const COMPLIANCE_FINDING_TYPES = new Set([
   "firewall_bypass",
@@ -240,7 +241,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function stepBlockerEcho(blockers: RemediationBlocker[] | undefined, step: WorkflowStep) {
-  if (!SHOW_WORKFLOW_BLOCKER_STATUS) return null;
   const rows = (blockers ?? []).filter((row) => row.step === step && row.code !== "already_succeeded");
   if (!rows.length) return null;
   return (
@@ -443,6 +443,7 @@ function businessEvidenceReady(workflow: RemediationWorkflow): boolean {
     && isRecord(decision.business_impact)
     && decision.business_impact.status === "known"
     && (decision.urgency_rationale?.evidence_citations?.length ?? 0) > 0
+    && (workflow.evidence?.length ?? 0) > 0
     && (
       Array.isArray(reviewRequirements)
         ? reviewRequirements.length === 0
@@ -642,12 +643,6 @@ function ContainerReviewHandoff({
   );
 }
 
-// TEMPORARY: hides the "Blocked" step label and the workflow-blockers banner
-// while the underlying blocker semantics are being revisited. Does not
-// change any gating/eligibility logic -- purely a display suppression.
-// Remove once the blocker UX is finalized.
-const SHOW_WORKFLOW_BLOCKER_STATUS = false;
-
 /** Five-step, approval-gated remediation workflow. */
 export default function RemediationPage() {
   return (
@@ -695,8 +690,10 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
   const searchParams = useSearchParams();
   const requestedPlanId = searchParams.get("plan_id") ?? "";
   const requestedResource = searchParams.get("resource_key") ?? searchParams.get("resource") ?? "";
-  const fromCve = searchParams.get("cve") ?? "";
-  const fromKb = searchParams.get("kb") ?? "";
+  const fromCve = (searchParams.get("cve") ?? "").trim().toUpperCase();
+  const fromKb = (searchParams.get("kb") ?? "").trim().toUpperCase();
+  const invalidFindingContext = (searchParams.has("cve") && !/^CVE-\d{4}-\d{4,}$/.test(fromCve))
+    || (searchParams.has("kb") && !/^KB\d{4,20}$/.test(fromKb));
   const fromIncident = searchParams.get("incident") ?? "";
   const fromGeneration = searchParams.get("generation") ?? "";
   const requestedHandoff = searchParams.get("handoff") ?? "";
@@ -722,8 +719,10 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
             knowledge_version: "",
             pagination: null,
           })
-        : operationsApi.remediationPlans(effectiveScope, 0, 100, requestedResource),
-    [scopeKey, requestedResource, Boolean(complianceReview)],
+        : fromCve || fromKb
+          ? operationsApi.remediationPlans(effectiveScope, 0, 100, requestedResource, { cve: fromCve, kb: fromKb })
+          : operationsApi.remediationPlans(effectiveScope, 0, 100, requestedResource),
+    [scopeKey, requestedResource, fromCve, fromKb, Boolean(complianceReview)],
   );
   const handoffs = useApi(
     () =>
@@ -796,8 +795,13 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
   const roleSelectionRequired = decision === "approved" && unmetRoleOptions.length > 1;
 
   const planRows = useMemo(
-    () => plans.data?.data.plans ?? [],
-    [plans.data],
+    () => (plans.data?.data.plans ?? []).filter(plan =>
+      !invalidFindingContext
+      && (!(fromCve || fromKb) || !requestedResource || resourceId(plan).toLowerCase() === requestedResource.trim().toLowerCase())
+      && (!(fromCve || fromKb) || !requestedPlanId || plan.plan_id === requestedPlanId)
+      && matchesRemediationContext(plan, fromCve, fromKb)
+      && (!(fromCve || fromKb) || plan.remediation_context?.target_id.toLowerCase() === resourceId(plan).toLowerCase())),
+    [plans.data, requestedResource, requestedPlanId, fromCve, fromKb, invalidFindingContext],
   );
   const filteredPlans = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -830,12 +834,16 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
       return;
     }
     if (selectedPlanId && planRows.some((plan) => plan.plan_id === selectedPlanId)) return;
+    if ((fromCve || fromKb) && !requestedResource) {
+      setSelectedPlanId("");
+      return;
+    }
     const contextual = planRows.find((plan) => resourceMatches(plan, requestedResource));
     setSelectedPlanId((contextual ?? planRows[0]).plan_id);
-  }, [complianceReview, planRows, requestedResource, requestedPlanId, selectedPlanId]);
+  }, [complianceReview, planRows, requestedResource, requestedPlanId, selectedPlanId, fromCve, fromKb]);
 
   useEffect(() => {
-    if (!selectedPlanId) {
+    if (!selectedPlanId || !selectedPlan) {
       setWorkflow(null);
       setWorkflowLoading(false);
       setWorkflowError("");
@@ -850,7 +858,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
     // panel behind a full "Loading workflow" state (which reads as a page
     // reload) and it's debounced so rapid clicks don't fire one request
     // per keystroke.
-    const fetchKey = `${scopeKey}::${selectedPlanId}::${workflowRefresh}`;
+    const fetchKey = `${scopeKey}::${selectedPlanId}::${workflowRefresh}::${fromCve}::${fromKb}`;
     const isPatchSelectionOnlyChange = workflowFetchKeyRef.current === fetchKey;
     workflowFetchKeyRef.current = fetchKey;
 
@@ -863,9 +871,26 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
         setPatchRevalidating(false);
       }
       setWorkflowError("");
-      void remediationApi.workflow(selectedPlanId, effectiveScope, selectedPatchIds ?? [])
+      const handoffPatches = fromKb
+        ? (selectedPlan?.remediation_context?.patch_ids ?? []).filter(id => samePatch(id, fromKb))
+        : [];
+      void remediationApi.workflow(selectedPlanId, effectiveScope, selectedPatchIds ?? handoffPatches)
         .then((response) => {
           if (requestId.current !== currentRequest) return;
+          const snapshot = response.data.preview?.execution_snapshot;
+          if ((fromCve || fromKb) && (
+            response.data.plan.plan_id !== selectedPlanId
+            || !matchesRemediationContext(response.data.plan, fromCve, fromKb)
+            || response.data.plan.remediation_context?.target_id.toLowerCase() !== resourceId(selectedPlan).toLowerCase()
+            || resourceId(response.data.plan).toLowerCase() !== resourceId(selectedPlan).toLowerCase()
+            || (snapshot && (
+              snapshot.target_id.toLowerCase() !== resourceId(selectedPlan).toLowerCase()
+              || (fromKb && selectedPatchIds === null && (
+                snapshot.patch_ids.length !== handoffPatches.length
+                || !snapshot.patch_ids.every(id => handoffPatches.includes(id))
+              ))
+            ))
+          )) throw new Error("The current workflow does not match the finding, target or update handoff. Return to Exposure and review current evidence.");
           setWorkflow(response.data);
         })
         .catch((error) => {
@@ -900,7 +925,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
     };
     // scopeKey intentionally invalidates the request when any scope dimension changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeKey, selectedPlanId, workflowRefresh, selectedPatchIds]);
+  }, [scopeKey, selectedPlanId, workflowRefresh, selectedPatchIds, fromCve, fromKb]);
 
   useEffect(() => {
     submissionId.current += 1;
@@ -916,7 +941,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
     setSelectedPatchIds(null);
     setPatchSelectionRefusal("");
     setSelectedRoleId("");
-  }, [selectedPlanId]);
+  }, [selectedPlanId, fromCve, fromKb]);
 
   useEffect(() => {
     if (
@@ -939,6 +964,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
     ) {
       return;
     }
+    if (fromKb) return;
     const approvedPatchIds = Array.from(new Set(
       approvedSnapshot.patch_ids.map((patchId) => patchId.trim()).filter(Boolean),
     )).sort();
@@ -958,7 +984,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
     }
     setSelectedPatchIds(approvedPatchIds);
     setPatchSelectionRefusal("");
-  }, [selectedPatchIds, workflow]);
+  }, [selectedPatchIds, workflow, fromKb]);
 
   // Patch Selection Safety Contract: "Evidence-refresh reconciliation"
   // (locked). A refreshed available-patches set that shrinks below a
@@ -1254,6 +1280,9 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
     ) ?? null;
   const previewPatchIds = workflow?.preview?.execution_snapshot?.patch_ids ?? [];
   const requestedPatchIds = selectedPatchIds
+    ?? (fromKb && selectedPlan
+      ? selectedPlan.remediation_context?.patch_ids.filter(id => samePatch(id, fromKb))
+      : undefined)
     ?? (workflow?.preview?.execution_snapshot?.rollout
       ? previewPatchIds
       : workflow?.preview?.execution_snapshot?.available_patches?.map(row => row.patch_id));
@@ -1522,7 +1551,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                   {fromCve ? ` ${fromCve}.` : ""}
                   {fromKb ? ` ${fromKb}.` : ""}
                   {requestedResource ? ` Target ${requestedResource}.` : ""}
-                  {fromGeneration ? ` Evidence generation ${fromGeneration}.` : ""}
+                  {fromGeneration ? ` Origin evidence generation ${fromGeneration}. Current plan evidence is revalidated independently.` : ""}
                 </span>
               </>
             )}
@@ -1568,12 +1597,13 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
         <nav className="remediation-workflow-steps" aria-label="Remediation workflow">
           {WORKFLOW_STEPS.map((step) => {
             const projected = workflow?.steps.find((item) => item.id === step.id)?.status;
-            const rawStatus = step.id === "select" ? "complete" : projected ?? "pending";
+            const rawStatus = step.id === "select" ? (selectedPlan ? "complete" : "current")
+              : workflow && !businessEvidenceReady(workflow)
+                && (step.id === "review" || step.id === "approve" || (step.id === "run" && !workflow.execution)) ? "blocked"
+              : projected ?? "pending";
             const stepBlockers = (workflow?.blockers ?? []).filter((row) => row.step === step.id);
-            // Suppress the "Blocked" label (fall back to "current") while
-            // SHOW_WORKFLOW_BLOCKER_STATUS is off; gating itself is untouched.
-            const status = !SHOW_WORKFLOW_BLOCKER_STATUS && rawStatus === "blocked" ? "current" : rawStatus;
-            const blockedSeverityStyle = SHOW_WORKFLOW_BLOCKER_STATUS && status === "blocked"
+            const status = rawStatus;
+            const blockedSeverityStyle = status === "blocked"
               ? {
                   color: stepBlockers.some((row) => (row.severity ?? BLOCKER_VOCABULARY[row.code]?.severity) === "critical")
                     ? "var(--color-critical)"
@@ -1597,7 +1627,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
         </nav>
       )}
 
-      {SHOW_WORKFLOW_BLOCKER_STATUS && workflow && workflow.blockers.length > 0 && (
+      {workflow && workflow.blockers.length > 0 && (
         <WorkflowBlockers blockers={workflow.blockers} activeStep={activeStep} />
       )}
 
@@ -1643,6 +1673,12 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                 {!filteredPlans.length && (
                   planRows.length > 0 ? (
                     <StatePanel title="No fix matches your search" message="Plans exist for this scope but none match the current search text. Clear the search to see them." />
+                  ) : fromCve || fromKb || invalidFindingContext ? (
+                    <StatePanel
+                      title="No matching remediation plan"
+                      message="No server-projected plan matches this exact finding and target context. Missing or invalid identifiers and unsupported CVE-to-update mappings require evidence review. Container findings require workload-owner review; a VM update plan is not a substitute. Return to Exposure to inspect the affected targets and evidence."
+                      action={<Link className="button" href={returnTo}>Back to exposure</Link>}
+                    />
                   ) : requestedResource ? (
                     <StatePanel
                       title="No fix for this resource"
@@ -1675,7 +1711,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                     return `/remediation${query.size ? `?${query}` : ""}`;
                   })()}>Clear exact plan selection</Link>
                 </>
-              ) : <StatePanel title="Select a fix" message="Choose a generated plan to begin." />
+              ) : <StatePanel title="Select a fix" message="Choose an exact matching target and generated plan to begin. No plan has been selected for you from this finding handoff." />
             ) : (
               <>
                 <DecisionSummary
@@ -1709,6 +1745,14 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                   {activeStep === "review" && (
                     <>
                       {stepBlockerEcho(workflow.blockers, "review")}
+                      {!businessEvidenceReady(workflow) && (
+                        <StatePanel
+                          title="Decision evidence needs review"
+                          message={`The resource owner must resolve the current business-impact evidence before approval and execution. ${(workflow.business_decision.unknowns ?? []).join(" ")}`}
+                          tone="partial"
+                          action={<Link className="button" href={`/inventory?${scopeToSearchParams(effectiveScope).toString()}`}>Review inventory ownership</Link>}
+                        />
+                      )}
                       <WorkflowDegradation degradation={workflow.degradation} />
                       <section className="remediation-review-grid">
                         <div className="remediation-review-panel">
@@ -1800,7 +1844,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                             </div>
                             {workflow.preview?.execution_snapshot?.available_patches?.length ? (
                               <StatusBadge
-                                label={`${selectedPatchIds?.length ?? (workflow.preview.execution_snapshot.rollout ? workflow.preview.execution_snapshot.patch_ids.length : workflow.preview.execution_snapshot.available_patches.length)} selected`}
+                                label={`${selectedPatchIds?.length ?? (fromKb || workflow.preview.execution_snapshot.rollout ? workflow.preview.execution_snapshot.patch_ids.length : workflow.preview.execution_snapshot.available_patches.length)} selected`}
                                 tone="info"
                                 compact
                               />
@@ -1811,6 +1855,8 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                               <p className="remediation-patch-mode-line">
                                 {workflow.preview.execution_snapshot.rollout
                                   ? `${workflow.preview.execution_snapshot.patch_ids.length} patches fixed by the immutable rollout. A different selection requires a newly generated plan.`
+                                  : fromKb && selectedPatchIds === null
+                                  ? "Only the update named in the KB handoff is selected."
                                   : selectedPatchIds === null
                                   ? `All ${workflow.preview.execution_snapshot.available_patches.length} eligible patches are selected.`
                                   : `${selectedPatchIds.length} of ${workflow.preview.execution_snapshot.available_patches.length} patches explicitly selected.`}
@@ -1824,7 +1870,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                                 {workflow.preview.execution_snapshot.available_patches.map((patch) => {
                                   const allPatchIds = workflow.preview!.execution_snapshot!.available_patches!.map((p) => p.patch_id);
                                   const checked = selectedPatchIds === null
-                                    ? !workflow.preview!.execution_snapshot!.rollout || workflow.preview!.execution_snapshot!.patch_ids.includes(patch.patch_id)
+                                    ? (!fromKb && !workflow.preview!.execution_snapshot!.rollout) || workflow.preview!.execution_snapshot!.patch_ids.includes(patch.patch_id)
                                     : selectedPatchIds.includes(patch.patch_id);
                                   const classification = patchClassification(patch);
                                   return (
@@ -1835,7 +1881,7 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                                           checked={checked}
                                           disabled={Boolean(workflow.preview?.execution_snapshot?.rollout)}
                                           onChange={(event) => {
-                                            const current = selectedPatchIds === null ? allPatchIds : selectedPatchIds;
+                                            const current = selectedPatchIds === null ? (fromKb ? workflow.preview!.execution_snapshot!.patch_ids : allPatchIds) : selectedPatchIds;
                                             const next = event.target.checked
                                               ? [...current, patch.patch_id]
                                               : current.filter((id) => id !== patch.patch_id);
@@ -1858,6 +1904,9 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                                             <code>{patch.patch_id}</code>
                                             {classification && <StatusBadge label={classification} tone={classification.toLowerCase() === "critical" ? "critical" : "warning"} compact />}
                                             {patch.reboot_required && <StatusBadge label="Reboot required" tone="warning" compact />}
+                                            <span>{patch.reboot_required === false && patch.source && !patch.source.startsWith("derived:")
+                                            ? "Reboot not reported as required" : !patch.reboot_required ? "Reboot requirements unverified" : ""}</span>
+                                            <span>{patch.source?.startsWith("derived:") ? "Derived from open findings; verify current provider applicability" : `Availability source: ${patch.source || "Unreported"}`}</span>
                                           </span>
                                         </span>
                                       </label>
@@ -1902,10 +1951,12 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                           </p>
                         )}
                       </section>
-                      {workflow.action.executable && workflow.preview?.execution_snapshot ? (
+                      {workflow.action.executable && workflow.preview?.execution_snapshot && businessEvidenceReady(workflow) ? (
                         <div className="remediation-review-actions">
                           <button type="button" className="button button-primary" onClick={() => setActiveStep("approve")}>Continue to approval</button>
                         </div>
+                      ) : !businessEvidenceReady(workflow) ? (
+                        <p>Resolve decision evidence above before continuing to approval.</p>
                       ) : !workflow.action.executable ? (
                         <p>This recommendation cannot enter automated approval or execution. Route it to the owning platform team with the evidence above.</p>
                       ) : (
@@ -1918,7 +1969,9 @@ function RemediationWorkspace({ effectiveScope }: { effectiveScope: ScopeSelecti
                     <>
                       {stepBlockerEcho(workflow.blockers, "approve")}
                       <WorkflowDegradation degradation={workflow.degradation} />
-                      {!workflow.action.executable ? (
+                      {!businessEvidenceReady(workflow) ? (
+                        <StatePanel title="Decision evidence required" message="Return to Review impact. Ask the resource owner to resolve the reported ownership, impact or evidence gaps before recording approval." tone="partial" />
+                      ) : !workflow.action.executable ? (
                         <StatePanel title="Manual review only" message={workflow.action.manual_review_reason} />
                       ) : !workflow.preview?.execution_snapshot ? (
                         <StatePanel title="Preview required" message="Return to Review impact and resolve the provider preview before approval." />

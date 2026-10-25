@@ -2637,6 +2637,11 @@ export interface IncidentDetail {
 
 export interface RemediationPlan {
   plan_id: string;
+  remediation_context?: {
+    target_id: string;
+    cve_ids: string[];
+    patch_ids: string[];
+  };
   action_version?: string;
   title: string;
   status: string;
@@ -3721,7 +3726,7 @@ export interface AvailablePatch {
   classification: string;
   severity: string;
   cve_ids: string[];
-  reboot_required: boolean;
+  reboot_required: boolean | null;
   published_at: string;
   /** Provenance of the availability claim, e.g. "derived:open-findings". */
   source: string;

@@ -10,6 +10,7 @@ than returning an empty result that the UI would render as "all clear".
 from __future__ import annotations
 
 import hmac
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -190,7 +191,8 @@ def incident_detail(
 
 @router.get("/remediation-plans", summary="Remediation plans")
 def remediation_plans(
-    context: Context, scope: ReadScope, page: Page, resource_key: str = ""
+    context: Context, scope: ReadScope, page: Page, resource_key: str = "",
+    cve: str = "", kb: str = "",
 ) -> dict[str, Any]:
     planner = _require(context, "remediation_provider", "remediation", scope)
     plans = planner.generate_plans()
@@ -203,6 +205,27 @@ def remediation_plans(
             row
             for row in visible
             if _plan_resource_key(row).casefold() == canonical
+        ]
+    if cve or kb:
+        has_cve, has_kb = bool(cve), bool(kb)
+        cve = cve.strip().upper()
+        kb = kb.strip().upper()
+        if (has_cve and not re.fullmatch(r"CVE-\d{4}-\d{4,}", cve)) or (
+            has_kb and not re.fullmatch(r"KB\d{4,20}", kb)
+        ):
+            raise ApiError(ErrorCode.INVALID_REQUEST, "An exact CVE or KB handoff identifier is required")
+        visible = [
+            row for row in visible
+            if isinstance(binding := row.get("remediation_context"), dict)
+            and isinstance(binding.get("cve_ids"), list)
+            and isinstance(binding.get("patch_ids"), list)
+            and bool(binding.get("target_id"))
+            and str(binding.get("target_id") or "").casefold() == _plan_resource_key(row).casefold()
+            and (not cve or cve in binding.get("cve_ids", []))
+            and (not kb or any(
+                re.sub(r"^KB-?", "", str(value).upper()) == kb[2:]
+                for value in binding.get("patch_ids", [])
+            ))
         ]
     public = {**plans, "plans": visible[page.offset : page.offset + page.limit]}
     if not scope.is_unrestricted():

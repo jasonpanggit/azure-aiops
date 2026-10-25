@@ -528,9 +528,7 @@ def test_configuration_plan_evidence_citation_freshness_is_computed_not_asserted
 
 
 def test_live_plan_evidence_citation_freshness_is_computed_not_asserted() -> None:
-    """Phase 03.6 UI-SPEC: '_plan' must never hardcode 'freshness':
-    'current' -- it must be computed from the service's own freshness
-    timestamp via `classify_freshness`."""
+    """A recent collection cannot supply a missing source observation clock."""
     vulnerability_service = _MutableVulnerabilityService()
     vulnerability_service.freshness = datetime.now(UTC).isoformat()
     planner = LiveRemediationPlanner(vulnerability_service)
@@ -538,5 +536,22 @@ def test_live_plan_evidence_citation_freshness_is_computed_not_asserted() -> Non
     plan = _patch_recovery_plan(planner.generate_plans())
 
     citation = plan["evidence_citations"][0]
-    assert citation["freshness"] == "fresh"
+    assert citation["freshness"] == "unknown"
+    assert citation["observed_at"] == ""
     assert citation["freshness"] != "current"
+
+
+@pytest.mark.parametrize("observed_at, expected", [
+    ("2020-01-01T00:00:00Z", "stale"),
+    (datetime.now(UTC).isoformat(), "fresh"),
+])
+def test_live_plan_freshness_uses_the_source_clock_when_available(observed_at, expected):
+    class ObservedService(_MutableVulnerabilityService):
+        def asset_exposures(self, scope=None):
+            rows = super().asset_exposures(scope)
+            rows[0]["evidence_observed_at"] = observed_at
+            return rows
+
+    plan = _patch_recovery_plan(LiveRemediationPlanner(ObservedService()).generate_plans())
+    assert plan["evidence_citations"][0]["observed_at"] == observed_at
+    assert plan["evidence_citations"][0]["freshness"] == expected

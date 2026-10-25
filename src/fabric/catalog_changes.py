@@ -111,7 +111,10 @@ def validate_catalog_report(raw: str) -> dict[str, Any]:
     """
     if len(raw.encode("utf-8")) > 2_000_000:
         raise ValueError("Catalog baseline exceeds the serialized size limit")
-    value = json.loads(raw, object_pairs_hook=_unique_object)
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_object)
+    except RecursionError as exc:
+        raise ValueError("Catalog baseline JSON nesting exceeds the decoder limit") from exc
     if not isinstance(value, dict):
         raise TypeError("Catalog baseline must be an object")
     # A previous comparison is derived output, never baseline input evidence.

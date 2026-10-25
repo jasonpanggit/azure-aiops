@@ -20,6 +20,7 @@ from intelligence.vulnerability.service import VulnerabilityIntelligenceService
 from onboarding.service import SubscriptionOnboardingService
 from operations.patching import InMemoryPatchRunStore, PatchingService
 from operations.patching.adapters import RecordingPatchExecutionAdapter
+from operations.patching.models import AvailablePatch
 
 ADMIN_TOKEN = "admin-token-0123456789abcdef"
 READER_TOKEN = "reader-token-0123456789abcde"
@@ -27,6 +28,12 @@ READER_TOKEN = "reader-token-0123456789abcde"
 VM_ID = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"
 AKS_ID = "/subscriptions/sub-2/resourceGroups/rg/providers/Microsoft.ContainerService/managedClusters/aks1"
 STORAGE_ID = "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/data"
+
+
+@pytest.mark.parametrize("value, expected", [(None, None), ("false", None), (False, False), (True, True)])
+def test_reboot_requirements_preserve_unknown_instead_of_boolean_coercion(value, expected):
+    patch = AvailablePatch.from_mapping({"patch_id": "2267602", "reboot_required": value})
+    assert patch.reboot_required is expected
 
 
 class FakeSecretWriter:

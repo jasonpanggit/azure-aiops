@@ -99,7 +99,7 @@ class AvailablePatch(_Serializable):
     classification: str = ""
     severity: str = "Unknown"
     cve_ids: tuple[str, ...] = ()
-    reboot_required: bool = False
+    reboot_required: bool | None = None
     published_at: str = ""
     # Where the availability claim comes from (e.g. Update Manager assessment
     # vs. inferred from an open finding), so the UI never presents a derived
@@ -118,7 +118,7 @@ class AvailablePatch(_Serializable):
             classification=_text(row.get("classification")),
             severity=_text(row.get("severity")) or "Unknown",
             cve_ids=_strings(row.get("cve_ids")),
-            reboot_required=bool(row.get("reboot_required")),
+            reboot_required=row.get("reboot_required") if isinstance(row.get("reboot_required"), bool) else None,
             published_at=_text(row.get("published_at")),
             source=_text(row.get("source")),
             node_pool=_text(row.get("node_pool")),

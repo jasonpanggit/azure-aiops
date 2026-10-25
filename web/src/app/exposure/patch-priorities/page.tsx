@@ -988,17 +988,17 @@ export default function PatchPrioritiesPage() {
                           </details>
                         </td>
                         <td data-label="Governed action">
-                          {isServer && item.execution_eligible ? (
+                          {isServer ? (
                             <Link
                               className="button button-primary"
                               href={remediationHref(item, pathname, queryState, view)}
                             >
-                              Open governed remediation for {item.weakness_id}
+                              Review matching plans for {item.weakness_id}
                             </Link>
                           ) : (
                             <span className="table-secondary">
                               {isServer === false
-                                ? "No safe container action"
+                                ? "Container execution unsupported; review image ownership"
                                 : "No safe action available"}
                             </span>
                           )}

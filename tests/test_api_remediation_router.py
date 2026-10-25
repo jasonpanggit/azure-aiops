@@ -250,7 +250,8 @@ def test_workflow_projects_five_governed_steps_for_patch_plan(tmp_path) -> None:
     assert "approve_ineligible_reason" in workflow["approval"]
     assert workflow["approval"]["status"] == "none"
     assert workflow["preview"]["execution_snapshot"]["patch_ids"]
-    assert workflow["recommended_step"] == "approve"
+    assert workflow["recommended_step"] == "review"
+    assert {"code": "disposition_not_executable", "step": "review"} in workflow["blockers"]
     assert workflow["audit"] == {"decisions": [], "executions": []}
 
 
@@ -547,6 +548,80 @@ def test_live_planner_generates_one_unique_plan_per_patch_target() -> None:
     assert plan["evidence_citations"]
     assert plan["business_decision"]["business_impact"]["status"] == "known"
     assert planner.repository.get(plan["plan_id"]) == plan
+    assert plan["remediation_context"] == {
+        "target_id": LIVE_VM_PAYMENTS_ID,
+        "cve_ids": [],
+        "patch_ids": ["KB600001"],
+    }
+    assert plan["rollback_plan"]["status"] == "unverified"
+    assert "reversible" not in plan["rollback_plan"]
+    assert plan["evidence_citations"][0]["observed_at"] == ""
+    assert plan["evidence_citations"][0]["freshness"] != "fresh"
+
+
+def test_handoff_filters_are_exact_and_applied_before_pagination(tmp_path) -> None:
+    planner = LiveRemediationPlanner(_LiveVulnerabilityService(), repository=PlanRepository())
+    generate = planner.generate_plans
+
+    def unrelated_first():
+        result = generate()
+        unrelated = {
+            **result["plans"][0], "plan_id": "unrelated",
+            "remediation_context": {"target_id": LIVE_VM_PAYMENTS_ID, "cve_ids": [], "patch_ids": ["KB999999"]},
+        }
+        return {**result, "plans": [unrelated, *result["plans"]]}
+
+    planner.generate_plans = unrelated_first
+    client = _client(tmp_path, planner=planner)
+    matched = client.get("/api/v1/remediation-plans", headers=_auth(), params={
+        "kb": "KB600001", "resource_key": LIVE_VM_PAYMENTS_ID.upper(), "limit": 1,
+    })
+    assert matched.status_code == 200, matched.text
+    assert len(matched.json()["data"]["plans"]) == 1
+    assert matched.json()["data"]["plans"][0]["plan_id"] != "unrelated"
+    for params in (
+        {"kb": "KB888888"},
+        {"kb": "KB600001", "resource_key": VM_PAYMENTS_ID},
+        {"cve": "CVE-2026-0001"},
+    ):
+        response = client.get("/api/v1/remediation-plans", headers=_auth(), params=params)
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["plans"] == []
+    response = client.get("/api/v1/remediation-plans", headers=_auth(SCOPED_READER_TOKEN), params={"kb": "KB600001"})
+    assert response.json()["data"]["plans"] == []
+
+
+def test_handoff_rejects_noncanonical_weakness_identifiers(tmp_path) -> None:
+    client = _client(tmp_path)
+    for params in ({"cve": "KB600001"}, {"kb": "600001"}, {"cve": "CVE-1"}, {"kb": " "}):
+        response = client.get("/api/v1/remediation-plans", headers=_auth(), params=params)
+        assert response.status_code == 400, response.text
+
+
+def test_workflow_recommends_review_for_unknown_business_evidence(tmp_path) -> None:
+    planner = remediation_planner()
+    generate = planner.generate_plans
+
+    def unknown_business():
+        result = generate()
+        for row in result["plans"]:
+            row["business_decision"]["disposition"] = "schedule"
+            row["business_decision"]["business_impact"] = {"status": "known"}
+            row["business_decision"]["review_requirements"] = []
+            row["business_decision"]["unknowns"] = ["Business ownership is unknown for this target."]
+        planner.repository.replace_generation(result["plans"])
+        return result
+
+    planner.generate_plans = unknown_business
+    client = _client(tmp_path, planner=planner)
+    plan = _patch_recovery_plan(client)
+    response = client.get(f"/api/v1/remediation/plans/{plan['plan_id']}/workflow", headers=_auth())
+    assert response.status_code == 200, response.text
+    workflow = response.json()["data"]
+    assert workflow["recommended_step"] == "review"
+    assert {row["id"]: row["status"] for row in workflow["steps"]}["review"] == "blocked"
+    assert {row["id"]: row["status"] for row in workflow["steps"]}["approve"] == "blocked"
+    assert {"code": "decision_unknowns_present", "step": "review"} in workflow["blockers"]
 
 
 def test_live_planner_collapses_duplicate_asset_rows_for_same_patch_target() -> None:

@@ -37,7 +37,10 @@ from intelligence.remediation.approval_gate import (
     policy_version_for,
     requirement_satisfaction,
 )
-from intelligence.remediation.execution_service import RemediationExecutionError
+from intelligence.remediation.execution_service import (
+    RemediationExecutionError,
+    validate_business_eligibility,
+)
 from intelligence.remediation.execution_store import execution_scope_attributes
 from intelligence.remediation.rollout import RolloutError, RolloutMember, RolloutTerms
 from intelligence.vulnerability.exposure_contracts import (
@@ -941,12 +944,17 @@ def plan_workflow(
             or not latest_requires_reconciliation
         )
     )
+    business_blocker = ""
+    try:
+        validate_business_eligibility(plan)
+    except RemediationExecutionError as exc:
+        business_blocker = exc.reason
     if not action.executable:
         recommended_step = "manual_review"
-    elif preview is None:
-        recommended_step = "review"
     elif latest_execution is not None:
         recommended_step = "verify"
+    elif preview is None or business_blocker:
+        recommended_step = "review"
     elif approval_current:
         recommended_step = "run"
     else:
@@ -956,7 +964,7 @@ def plan_workflow(
         {
             "id": "review",
             "label": "Review impact",
-            "status": "complete" if preview is not None else "blocked",
+            "status": "complete" if preview is not None and not business_blocker else "blocked",
         },
         {
             "id": "approve",
@@ -965,7 +973,7 @@ def plan_workflow(
                 "blocked"
                 if not action.executable
                 else "blocked"
-                if preview is None
+                if preview is None or business_blocker
                 else "complete"
                 if approval_current
                 else "current"
@@ -979,6 +987,8 @@ def plan_workflow(
                 if not action.executable
                 else "complete"
                 if latest_execution is not None
+                else "blocked"
+                if business_blocker
                 else "current"
                 if approval_current
                 else "pending"
@@ -1006,6 +1016,8 @@ def plan_workflow(
         action_executable=action.executable,
         latest_execution=latest_execution,
     )
+    if business_blocker and not any(row["code"] == business_blocker for row in blockers):
+        blockers.append({"code": business_blocker, "step": "review"})
     degradation = _collect_degradation(context, plan)
     return envelope(
         {
