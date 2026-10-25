@@ -755,6 +755,7 @@ export default function PatchPrioritiesPage() {
               <span>{viewCopy.searchLabel}</span>
               <input
                 id="patch-exposure-search"
+                className="form-control"
                 type="search"
                 value={searchDraft}
                 onChange={(event) => {
