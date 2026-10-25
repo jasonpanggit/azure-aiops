@@ -117,6 +117,27 @@ const routes = [
   { path: "/exposure/kbs/KB600001", nav: "KB detail sections", links: 3 },
 ];
 
+async function assertStickyEvidenceRail(page: Page) {
+  const viewport = page.viewportSize()!;
+  const layout = page.locator(".exposure-detail-layout");
+  const rail = page.locator(".exposure-evidence-rail");
+  await layout.evaluate(element => {
+    window.scrollTo(0, element.getBoundingClientRect().top + window.scrollY + 400);
+  });
+  const top = await rail.evaluate(element => parseFloat(getComputedStyle(element).top));
+  await expect.poll(async () => Math.abs((await rail.boundingBox())!.y - top)).toBeLessThanOrEqual(1);
+  const railBox = (await rail.boundingBox())!;
+  expect(railBox.y + railBox.height).toBeLessThanOrEqual(viewport.height - 17);
+  const retry = rail.getByRole("button").last();
+  if (await retry.count()) {
+    await retry.focus();
+    const buttonBox = (await retry.boundingBox())!;
+    expect(buttonBox.y).toBeGreaterThanOrEqual(top);
+    expect(buttonBox.y + buttonBox.height).toBeLessThanOrEqual(viewport.height - 17);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width + 1);
+}
+
 for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
   for (const route of routes) {
     test(`${route.path} has task-first sections and one insight at ${width}px`, async ({ page }, testInfo) => {
@@ -201,7 +222,34 @@ for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
           expect(brokenWord).toBe(false);
         }
       }
+      if (width > 1040 && (route.path.includes("/cves/") || route.path.includes("/kbs/"))) {
+        await assertStickyEvidenceRail(page);
+        if (width === 1912) {
+          await page.screenshot({ path: testInfo.outputPath(`evidence-rail-${width}.png`) });
+        }
+      } else if (route.path.includes("/cves/") || route.path.includes("/kbs/")) {
+        const rail = page.locator(".exposure-evidence-rail");
+        await expect(rail).toHaveCSS("position", "static");
+        await expect(rail).toHaveCSS("max-height", "none");
+        await expect(rail).toHaveCSS("overflow-y", "visible");
+      }
       expect(pageErrors).toEqual([]);
+    });
+  }
+
+}
+
+for (const width of [1912, 2560]) {
+  for (const route of routes.filter(route => route.path.includes("/cves/") || route.path.includes("/kbs/"))) {
+    test(`${route.path} keeps the evidence rail reachable in a short desktop viewport at ${width}px`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width, height: 600 });
+      await mockExposureLayout(page);
+      await page.goto(route.path);
+      await expect(page.locator(".state-loading")).toHaveCount(0);
+      await assertStickyEvidenceRail(page);
+      if (width === 1912) {
+        await page.screenshot({ path: testInfo.outputPath("evidence-rail-short.png") });
+      }
     });
   }
 }
