@@ -185,4 +185,6 @@ def test_search_only_fetch_still_makes_no_direct_requests():
     evidence = source.fetch().to_dict()
     assert evidence["requires_direct_verification"] is True
     assert len(calls) == 1
-    assert json.loads(calls[0].content)["filter"] == f"WorkspaceId eq '{WORKSPACE}'"
+    assert json.loads(calls[0].content)["filter"] == (
+        f"WorkspaceId eq '{WORKSPACE}' and Type ne 'Workspace'"
+    )

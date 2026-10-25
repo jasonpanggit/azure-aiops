@@ -122,8 +122,10 @@ Successful stdout contains one JSON advisory report with the configured auth
 mode and verified evidence. This is metadata qualification, not full ontology
 maintenance acceptance. A caught configuration, authentication, transport or
 metadata failure returns exit code 1, emits a sanitized failure stage on stderr
-and emits no partial stdout. Exceptions, credentials and provider bodies are
-not included in failure reports. Store successful output only in an
+and emits no partial stdout. HTTP status failures additionally include only
+the numeric `http_status`; non-HTTP failures do not invent a status or cause.
+Exceptions, credentials, request URLs and provider bodies are not included in
+failure reports. Store successful output only in an
 appropriately protected operator evidence location; item metadata can be
 sensitive. HTTP retries and per-request timeouts use the existing Fabric
 transport; page/item bounds are not a whole-command wall-clock deadline.
@@ -133,8 +135,13 @@ deployed image and existing workload identity before any scheduler integration.
 A local fixture pass or signed-in-user test cannot establish managed-identity
 access or prove that this command ran in a deployed workload.
 
-Use `POST /v1/catalog/search` with an explicit allowlisted `WorkspaceId` filter
-and bounded page size (the API permits 1..1000). Page using the returned
+Use `POST /v1/catalog/search` with the explicit item-only filter
+`WorkspaceId eq '<configured-workspace-id>' and Type ne 'Workspace'`
+and bounded page size (the API permits 1..1000). A workspace-only filter can
+also return a valid Workspace entry without item hierarchy, which cannot be
+verified with Core Get Item. Exclude it in the request rather than silently
+discarding response rows; a non-item or out-of-scope entry returned despite
+the filter still fails the whole observation. Page using the returned
 `continuationToken` alone: it carries the initial filter, search and page size,
 and must not be combined with a new filter or search. Enforce total page/item
 limits and reject malformed, repeated-token or out-of-scope responses rather
