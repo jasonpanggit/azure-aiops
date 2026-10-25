@@ -150,10 +150,16 @@ def test_baseline_input_size_and_shape_are_bounded():
     for raw in [
         '{"x":"' + "x" * 2_000_000 + '"}', "[]", "not-json",
         '{"status":"failed","status":"advisory_metadata_verified"}',
-        "[" * 2000 + "]" * 2000,
     ]:
         with pytest.raises((TypeError, ValueError)):
             validate_catalog_report(raw)
+
+
+def test_decoder_recursion_is_normalized_to_validation_error():
+    raw = "[" * 10000 + "]" * 10000
+    with pytest.raises(ValueError) as exc:
+        validate_catalog_report(raw)
+    assert isinstance(exc.value.__cause__, RecursionError)
 
 
 def test_exact_item_limit_is_preserved_and_overflow_rejected():
