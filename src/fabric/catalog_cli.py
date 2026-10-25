@@ -60,6 +60,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         print(json.dumps(report, sort_keys=True))
         return 0
+    except httpx.HTTPStatusError as exc:
+        print(
+            json.dumps({
+                "status": "failed", "failure_stage": stage,
+                "http_status": exc.response.status_code,
+            }),
+            file=sys.stderr,
+        )
+        return 1
     except (AzureError, httpx.HTTPError, OSError, ValueError, TypeError, yaml.YAMLError):
         print(
             json.dumps({"status": "failed", "failure_stage": stage}),

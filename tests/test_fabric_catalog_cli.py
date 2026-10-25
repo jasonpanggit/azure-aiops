@@ -84,6 +84,9 @@ def test_cli_runs_real_bounded_verification_and_closes_resources(monkeypatch, ca
     assert report["evidence"]["verified_items"][0]["current"]["display_name"] == "Current"
     assert loaded == ["approved.yaml"]
     assert [request.method for request in calls] == ["POST", "GET"]
+    assert json.loads(calls[0].content)["filter"] == (
+        f"WorkspaceId eq '{WORKSPACE}' and Type ne 'Workspace'"
+    )
     assert all(request.headers["x-ms-fabric-skill"] == "onelake-catalog-govern-cli" for request in calls)
     assert "never-print-this-token" not in captured.out + captured.err
     assert credential.closed and http.is_closed
@@ -126,10 +129,32 @@ def test_later_failure_never_prints_partial_or_sensitive_details(monkeypatch, ca
     assert catalog_cli.main([]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert json.loads(captured.err) == {
+    expected = {
         "status": "failed", "failure_stage": "catalog_verification",
     }
+    if isinstance(failure, int):
+        expected["http_status"] = failure
+    assert json.loads(captured.err) == expected
     assert credential.closed and http.is_closed
+
+
+def test_http_failure_reports_status_but_no_sensitive_response_or_request(monkeypatch, capsys):
+    request = httpx.Request(
+        "POST", "https://api.fabric.microsoft.com/v1/catalog/search?private-query",
+        headers={"Authorization": "Bearer private-token"},
+    )
+    response = httpx.Response(
+        403, request=request,
+        json={"errorCode": "Forbidden", "message": "private-service-body"},
+    )
+    failure = httpx.HTTPStatusError("private-exception-message", request=request, response=response)
+    _setup(monkeypatch, [failure])
+    assert catalog_cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "status": "failed", "failure_stage": "catalog_verification", "http_status": 403,
+    }
 
 
 def test_credential_failure_is_sanitized(monkeypatch, capsys):

@@ -128,7 +128,7 @@ class FabricCatalogSource:
         caller-scoped. This method never creates graph rows or retirements.
         """
         body: dict[str, object] = {
-            "filter": f"WorkspaceId eq '{self.workspace_id}'",
+            "filter": f"WorkspaceId eq '{self.workspace_id}' and Type ne 'Workspace'",
             "pageSize": self.page_size,
         }
         rows: dict[str, CatalogCandidate] = {}

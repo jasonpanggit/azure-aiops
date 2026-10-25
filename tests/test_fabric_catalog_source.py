@@ -62,8 +62,8 @@ def test_catalog_pages_with_token_only_and_retries_with_telemetry():
     observation = source.fetch()
     bodies = [json.loads(request.content) for request in calls]
     assert bodies == [
-        {"filter": f"WorkspaceId eq '{WORKSPACE}'", "pageSize": 1},
-        {"filter": f"WorkspaceId eq '{WORKSPACE}'", "pageSize": 1},
+        {"filter": f"WorkspaceId eq '{WORKSPACE}' and Type ne 'Workspace'", "pageSize": 1},
+        {"filter": f"WorkspaceId eq '{WORKSPACE}' and Type ne 'Workspace'", "pageSize": 1},
         {"continuationToken": "opaque-token"},
     ]
     for request in calls:
@@ -79,6 +79,41 @@ def test_catalog_pages_with_token_only_and_retries_with_telemetry():
     assert evidence["pages_fetched"] == 2
     assert evidence["observed_at"] == NOW.isoformat()
     assert {row["item_id"] for row in evidence["candidates"]} == {ITEM, SECOND_ITEM}
+
+
+def test_search_excludes_workspace_entries_instead_of_discarding_them():
+    workspace = {
+        "id": WORKSPACE, "type": "Workspace", "catalogEntryType": "Workspace",
+        "displayName": "Workspace without item hierarchy",
+    }
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        body = json.loads(request.content)
+        assert f"WorkspaceId eq '{WORKSPACE}'" in body["filter"]
+        rows = [_item()]
+        if "Type ne 'Workspace'" not in body["filter"]:
+            rows.append(workspace)
+        return httpx.Response(200, json={"value": rows})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        source = FabricCatalogSource(
+            FabricClient(Credential(), http_client=http),
+            workspace_id=WORKSPACE, clock=lambda: NOW,
+        )
+        observation = source.fetch()
+    assert [row.item_id for row in observation.candidates] == [ITEM]
+    assert len(calls) == 1
+
+
+def test_workspace_returned_despite_item_filter_still_fails_closed():
+    source, _ = _source([{"value": [{
+        "id": WORKSPACE, "type": "Workspace", "catalogEntryType": "Workspace",
+        "displayName": "Workspace without item hierarchy",
+    }]}])
+    with pytest.raises(ValueError, match="non-item entry"):
+        source.fetch()
 
 
 def test_empty_catalog_is_non_authoritative():
