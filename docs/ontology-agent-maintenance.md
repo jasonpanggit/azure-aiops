@@ -148,7 +148,9 @@ fields, real JSON booleans, aware timestamps, matching unique catalog/direct
 item identities, workspace/type/endpoint agreement and metadata drift flags.
 Duplicate JSON keys, malformed reports and inputs above 2,000,000 UTF-8 bytes
 are rejected before network access. Comparison supports at most 1,000 items
-per observation. A prior report's `metadata_delta` is ignored: only its raw
+per observation. Decoder nesting-limit failures are also rejected as sanitized
+input validation failures, without a traceback or credential construction.
+A prior report's `metadata_delta` is ignored: only its raw
 verified evidence is baseline input, so comparison output can be reused safely.
 
 The successful report adds `metadata_delta`, containing deterministically

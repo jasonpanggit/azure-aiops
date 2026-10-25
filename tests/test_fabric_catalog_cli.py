@@ -228,7 +228,7 @@ def test_cli_baseline_produces_advisory_delta_without_writing_it(monkeypatch, ca
 
 
 @pytest.mark.parametrize("mode", [
-    "invalid", "scope", "auth", "missing", "oversized", "remote",
+    "invalid", "scope", "auth", "missing", "oversized", "remote", "deep",
 ])
 def test_bad_baseline_fails_before_network(monkeypatch, capsys, tmp_path, mode):
     path = tmp_path / "baseline.json"
@@ -240,9 +240,15 @@ def test_bad_baseline_fails_before_network(monkeypatch, capsys, tmp_path, mode):
     raw = "invalid" if mode == "invalid" else json.dumps(baseline)
     if mode == "oversized":
         raw = "x" * 2_000_001
+    if mode == "deep":
+        raw = "[" * 2000 + "]" * 2000
     if mode != "missing":
         path.write_text(raw)
     calls, _, _, http = _setup(monkeypatch, [])
+    def forbid_credential(auth):
+        raise AssertionError("Invalid baseline must fail before credential construction")
+
+    monkeypatch.setattr(catalog_cli, "build_credential", forbid_credential)
     argument = "https://not-a-local-baseline" if mode == "remote" else str(path)
     assert catalog_cli.main(["--baseline", argument]) == 1
     captured = capsys.readouterr()
