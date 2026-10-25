@@ -88,7 +88,9 @@ item type. Current names and descriptions are retained separately from indexed
 metadata, with an endpoint, timezone-aware verification time and a metadata
 change flag. Empty or malformed responses, access/deletion errors, unsupported
 item APIs, identity/type drift and invalid clocks fail the whole call without
-partial success output. They do not trigger retries outside the existing
+partial success output. Sequential direct-verification timestamps must not
+move backward, even when both remain after the search observation; equal
+timestamps are allowed. They do not trigger retries outside the existing
 transport policy, source fallback or retirement.
 
 The resulting evidence retains the original `catalog` observation and adds

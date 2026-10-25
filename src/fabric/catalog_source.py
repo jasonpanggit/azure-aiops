@@ -177,6 +177,7 @@ class FabricCatalogSource:
         """
         catalog = self.fetch()
         verified: list[VerifiedCatalogItem] = []
+        previous_verified_at = catalog.observed_at
         for candidate in catalog.candidates:
             endpoint = (
                 f"/workspaces/{self.workspace_id}/items/{candidate.item_id}"
@@ -203,6 +204,9 @@ class FabricCatalogSource:
                 raise ValueError("Catalog verification time must be timezone-aware")
             if verified_at < catalog.observed_at:
                 raise ValueError("Catalog verification time precedes search observation")
+            if verified_at < previous_verified_at:
+                raise ValueError("Catalog verification time precedes previous item verification")
+            previous_verified_at = verified_at
             verified.append(VerifiedCatalogItem(
                 current=current, endpoint=endpoint, verified_at=verified_at,
                 catalog_metadata_changed=current != candidate,
