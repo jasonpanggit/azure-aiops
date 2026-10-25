@@ -192,3 +192,94 @@ def test_cli_uses_existing_config_environment(monkeypatch, capsys):
     assert catalog_cli.main([]) == 0
     assert loaded == ["runtime.yaml"]
     assert json.loads(capsys.readouterr().out)["evidence"]["coverage"] == "partial"
+
+
+def _baseline():
+    return {
+        "status": "advisory_metadata_verified", "authentication_mode": "managed_identity",
+        "evidence": {
+            "source": "onelake_catalog_verified_items",
+            "coverage": "partial", "authoritative": False,
+            "verification_scope": "item_metadata_only",
+            "requires_direct_verification": False, "requires_schema_verification": True,
+            "verified_items": [],
+            "catalog": {
+                "source": "onelake_catalog", "workspace_id": WORKSPACE,
+                "observed_at": "2020-01-01T00:00:00Z", "pages_fetched": 1,
+                "search_complete": True, "coverage": "partial", "authoritative": False,
+                "requires_direct_verification": True, "candidates": [],
+            },
+        },
+    }
+
+
+def test_cli_baseline_produces_advisory_delta_without_writing_it(monkeypatch, capsys, tmp_path):
+    path = tmp_path / "baseline.json"
+    raw = json.dumps(_baseline())
+    path.write_text(raw)
+    _setup(monkeypatch, _responses())
+    assert catalog_cli.main(["--baseline", str(path)]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["metadata_delta"]["added"][0]["item_id"] == ITEM
+    assert report["metadata_delta"]["retired"] == []
+    assert report["metadata_delta"]["authoritative"] is False
+    assert path.read_text() == raw
+    assert "metadata_delta" not in report["evidence"]
+
+
+@pytest.mark.parametrize("mode", [
+    "invalid", "scope", "auth", "missing", "oversized", "remote",
+])
+def test_bad_baseline_fails_before_network(monkeypatch, capsys, tmp_path, mode):
+    path = tmp_path / "baseline.json"
+    baseline = _baseline()
+    if mode == "scope":
+        baseline["evidence"]["catalog"]["workspace_id"] = ITEM
+    if mode == "auth":
+        baseline["authentication_mode"] = "service_principal"
+    raw = "invalid" if mode == "invalid" else json.dumps(baseline)
+    if mode == "oversized":
+        raw = "x" * 2_000_001
+    if mode != "missing":
+        path.write_text(raw)
+    calls, _, _, http = _setup(monkeypatch, [])
+    argument = "https://not-a-local-baseline" if mode == "remote" else str(path)
+    assert catalog_cli.main(["--baseline", argument]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"status": "failed", "failure_stage": "configuration"}
+    assert calls == []
+    http.close()
+
+
+def test_comparison_failure_emits_no_partial_success(monkeypatch, capsys, tmp_path):
+    baseline = _baseline()
+    baseline["evidence"]["catalog"]["observed_at"] = "2099-01-01T00:00:00Z"
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(baseline))
+    calls, _, credential, http = _setup(monkeypatch, _responses())
+    assert catalog_cli.main(["--baseline", str(path)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "status": "failed", "failure_stage": "catalog_comparison",
+    }
+    assert len(calls) == 2
+    assert credential.closed and http.is_closed
+
+
+def test_cli_comparison_report_can_be_reused_as_next_baseline(monkeypatch, capsys, tmp_path):
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(_baseline()))
+    with monkeypatch.context() as first:
+        _setup(first, _responses())
+        assert catalog_cli.main(["--baseline", str(path)]) == 0
+    report = json.loads(capsys.readouterr().out)
+    path.write_text(json.dumps(report))
+    with monkeypatch.context() as second:
+        _setup(second, _responses())
+        assert catalog_cli.main(["--baseline", str(path)]) == 0
+    next_report = json.loads(capsys.readouterr().out)
+    assert next_report["metadata_delta"]["unchanged"] == [ITEM]
+    assert next_report["metadata_delta"]["changed"] == []
+    assert next_report["metadata_delta"]["retired"] == []

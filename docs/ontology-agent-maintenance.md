@@ -135,6 +135,41 @@ deployed image and existing workload identity before any scheduler integration.
 A local fixture pass or signed-in-user test cannot establish managed-identity
 access or prove that this command ran in a deployed workload.
 
+### Advisory metadata maintenance deltas
+
+Supply `--baseline /protected/local/prior-catalog-report.json` to compare a prior
+successful CLI report with a new directly verified observation. Without that
+option the existing command and report shape are unchanged. The baseline is
+read-only: the CLI does not create or overwrite a baseline file.
+
+The saved report must be a successful, structurally consistent verified
+observation for the configured workspace and auth mode. Parsing checks closed
+fields, real JSON booleans, aware timestamps, matching unique catalog/direct
+item identities, workspace/type/endpoint agreement and metadata drift flags.
+Duplicate JSON keys, malformed reports and inputs above 2,000,000 UTF-8 bytes
+are rejected before network access. Comparison supports at most 1,000 items
+per observation. A prior report's `metadata_delta` is ignored: only its raw
+verified evidence is baseline input, so comparison output can be reused safely.
+
+The successful report adds `metadata_delta`, containing deterministically
+ordered `added`, `changed`, `unchanged` and `unresolved` items, explicit
+before/after metadata and changed field names. Comparison uses direct item
+metadata, not potentially stale indexed descriptions. `retired` is always
+empty: an unseen item has reason `not_observed`, never presumed deletion.
+Type changes are advisory review evidence, not automatic schema migrations.
+The current search cannot predate the prior item's latest verification time.
+Canonical SHA256 digests bind both observations, independent of item ordering;
+they provide integrity references, not signatures or approval.
+
+This is a local advisory baseline, not an authenticated provenance attestation.
+Equal auth modes do not prove equal principals or permissions; differing
+caller visibility remains a reason not to retire missing items. Metadata is
+untrusted content and must not be executed or treated as instructions. The
+CLI generates no ontology proposals or stable-ID mappings and grants no
+publication authority. Schema/lineage inspection and steward/release gates
+remain required. A comparison error emits no partial success stdout and has
+sanitized failure stage `catalog_comparison`.
+
 Use `POST /v1/catalog/search` with the explicit item-only filter
 `WorkspaceId eq '<configured-workspace-id>' and Type ne 'Workspace'`
 and bounded page size (the API permits 1..1000). A workspace-only filter can

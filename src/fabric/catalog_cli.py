@@ -7,6 +7,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from uuid import UUID
 
 import httpx
@@ -14,6 +15,7 @@ import yaml
 from azure.core.exceptions import AzureError
 
 from .auth import build_credential
+from .catalog_changes import compare_catalog_reports, validate_catalog_report
 from .catalog_source import FabricCatalogSource
 from .config import FabricRuntimeConfig
 from .fabric_client import FabricClient
@@ -32,6 +34,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--page-size", type=int, default=100)
     parser.add_argument("--max-pages", type=int, default=10)
     parser.add_argument("--max-items", type=int, default=1000)
+    parser.add_argument("--baseline", help="Local prior successful Catalog report (advisory only)")
     args = parser.parse_args(argv)
     stage = "configuration"
     try:
@@ -42,6 +45,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ValueError("Catalog bounds must be positive")
         if args.page_size > 1000:
             raise ValueError("Catalog page size exceeds the service limit")
+        baseline = None
+        if args.baseline:
+            if "://" in args.baseline:
+                raise ValueError("Catalog baseline must be a local file")
+            with Path(args.baseline).open("rb") as stream:
+                baseline = validate_catalog_report(stream.read(2_000_001).decode("utf-8"))
+            if (
+                baseline["evidence"]["catalog"]["workspace_id"] != workspace_id
+                or baseline["authentication_mode"] != config.auth.mode
+            ):
+                raise ValueError("Catalog baseline scope or authentication mode changed")
         stage = "authentication"
         with build_credential(config.auth) as credential, httpx.Client(timeout=60) as http:
             source = FabricCatalogSource(
@@ -58,6 +72,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "authentication_mode": config.auth.mode,
             "evidence": evidence,
         }
+        if baseline is not None:
+            stage = "catalog_comparison"
+            report["metadata_delta"] = compare_catalog_reports(baseline, report)
         print(json.dumps(report, sort_keys=True))
         return 0
     except httpx.HTTPStatusError as exc:
