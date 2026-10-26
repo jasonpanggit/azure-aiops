@@ -1494,7 +1494,7 @@ describe("Connections page Fabric Medallion tab", () => {
     const fabricPanel = await screen.findByRole("tabpanel", { name: "Fabric Medallion" });
     expect(within(fabricPanel).getAllByText("gold_operational_context").length).toBeGreaterThan(0);
     expect(screen.getByText("Gold tables")).toBeInTheDocument();
-    expect(within(fabricPanel).getAllByText("1/1").length).toBeGreaterThan(0);
+    expect(within(fabricPanel).getAllByText("1 healthy / 1 registered").length).toBeGreaterThan(0);
   });
 
   it("distinguishes healthy-empty zero rows from unavailable datasets", async () => {
