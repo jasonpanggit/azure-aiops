@@ -14,6 +14,45 @@ or that connection-attributed publication metadata is available.
 Do not remove connection filters or attribute subscription-wide metadata to a
 connection to make its health counts appear populated.
 
+## Exploring Gold products and the Ontology Agent
+
+The layers API also returns `gold_declarations`: source-schema names and their
+registry version, separate from scope-filtered `tables` and healthy/registered
+counts. The page exposes these under **Explore declared Gold products**.
+`physical_inventory: not_collected` is intentional: a declared schema is not
+proof of a deployed table, accepted generation, validated schema or fresh data.
+Declarations do not make dataset status or contract reads available for
+unregistered tables, and do not trigger additional data-plane reads.
+
+The existing registry declares eight Gold products:
+
+| Product family | Declared tables |
+| --- | --- |
+| Exposure analytics | `gold_exposure_facts`, `gold_exposure_dimensions`, `gold_exposure_facets`, `gold_exposure_summaries`, `gold_exposure_evidence` |
+| Current exposure | `gold_exposure_current`, `gold_container_exposure_current`, `gold_container_exposure_coverage` |
+
+Reuse the existing `FabricSyncService` and `ExposureGoldFabricPublisher` rather
+than creating parallel empty tables to populate the dashboard. The producer
+uses normalized Silver observations and container/workload inputs, writes
+generation-qualified Gold products, reconciles persisted output, completes
+finalization, and activates the readable-generation pointer. The sync checks
+that the new pointer is observable. Derived snapshots are excluded from generic
+source-status receipts; missing generic Gold health entries therefore do not
+establish physical absence.
+
+Before authorizing live creation or recovery, qualify the exact target,
+producer configuration, authorized identity, scoped input quality/freshness,
+persisted product reconciliation and readable-generation pointer. Then qualify
+the consumer's actual schema/readback separately. Never mark products healthy
+from declarations, a Job's process success, or staging alone.
+
+The Ontology Agent's role is governed semantic evolution: propose entity types,
+relationships and mappings grounded in observed sources. It does not perform
+the Gold transformation or replace publication acceptance. Discovering or
+creating Gold products does not unblock ontology lifecycle recovery or qualify
+unattended agent writes. No schedule or freshness policy is changed by this
+discovery feature.
+
 ```mermaid
 sequenceDiagram
     participant Agent as AIOps Agent / CLI

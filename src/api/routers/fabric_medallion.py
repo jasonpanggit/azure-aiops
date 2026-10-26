@@ -15,6 +15,7 @@ from fabric.config import FabricRuntimeConfig
 from fabric.data_access_roles import list_roles
 from fabric.lineage import entity_lineage_summary, native_lineage_url
 from fabric.medallion_health import _latest_per_scope, dataset_contract, dataset_status
+from fabric.schema_registry import SCHEMA_VERSION, SCHEMAS
 from fabric.table_maintenance import last_maintenance_status
 from ontology.publication_state import PublicationAttemptRecord
 from operations.gold_grounding_specialist import gold_grounding_configured
@@ -634,6 +635,7 @@ def _layer_for_table(table_name: str) -> str:
 
 @router.get("/layers", summary="Fabric medallion layer summary")
 def medallion_layers(context: Context, scope: ReadScope) -> dict[str, Any]:
+    """Keep static Gold declarations separate from scope-qualified health metadata."""
     rows = _scoped_source_rows(context, scope)
     layers = {
         "bronze": {"healthy": 0, "total": 0},
@@ -653,7 +655,16 @@ def medallion_layers(context: Context, scope: ReadScope) -> dict[str, Any]:
         if str(status.get("availability") or "") in {"healthy", "healthy-empty"}:
             layers[layer]["healthy"] += 1
     return envelope(
-        {"layers": layers, "tables": tables},
+        {
+            "layers": layers,
+            "tables": tables,
+            "gold_declarations": {
+                "source": "fabric.schema_registry",
+                "version": SCHEMA_VERSION,
+                "tables": sorted(name for name in SCHEMAS if name.startswith("gold_")),
+                "physical_inventory": "not_collected",
+            },
+        },
         evidence=_evidence(
             source_engine=SOURCE_ENGINE,
             source_table=SOURCE_TABLE,
