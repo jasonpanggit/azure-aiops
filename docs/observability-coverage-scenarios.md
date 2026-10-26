@@ -34,11 +34,18 @@ Missing direct resource rules are reported as direct-only gaps and do not prove
 that broader log-query coverage is absent. Configured settings or action
 references alone do not prove telemetry or notification delivery.
 
-This source-only implementation deliberately adds no Azure provider, policy
-store, grant, deployment pin, or mutation path. The current runtime configures
-no `observability_read_port`, so production calls remain `unavailable`. Enabling
-one requires a separately reviewed, read-only implementation of the typed
-contract with qualified workload policy/categories/destinations,
-Diagnostic Settings, alert rules, and Action Group references. Tests include
+The runtime wires an ARG-backed reader through the existing connection-scoped
+live resource provider; it adds no credentials, policy store, grant, deployment
+pin, or mutation path. Alert rules and Action Groups are queried only for
+enforceable subscription scopes. Unsupported scope dimensions, incomplete or
+stale collections, and unknown enabled states cannot produce evaluated findings.
+Missing groups are classified invalid only in a complete, fresh authorized
+collection. Scheduled-query rules are never treated as direct-resource coverage.
+
+Diagnostic Settings and workload logging policy still have no governed reader,
+so diagnostic coverage remains `unavailable`. Alert results remain at most
+`partial` while inventory freshness and live-estate completeness are unqualified;
+ARG configuration does not prove delivery. Live ARG schema and connection
+behavior have not been qualified by the offline tests. Tests include
 expected-output fixtures for evaluated positive/negative supplied evidence and
 default-unavailable behavior; they are not deployed/live acceptance evidence.
