@@ -1544,6 +1544,22 @@ def _tool_defender_secure_score(tool_context: ToolContext, args: Mapping[str, An
 
 
 def _tool_incidents(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    from operations.observability_scenarios import (
+        OBSERVABILITY_SCENARIOS,
+    )
+    from operations.observability_scenarios import (
+        validate_parameters as validate_observability_parameters,
+    )
+
+    if args.get("scenario") in OBSERVABILITY_SCENARIOS:
+        try:
+            scenario = validate_observability_parameters(args)
+        except (TypeError, ValueError):
+            return ToolResult(
+                status=STATUS_DENIED,
+                warning="Observability coverage requires one supported scenario name and no caller-supplied evidence.",
+            )
+        return _tool_observability_scenario(tool_context, scenario)
     if set(args) & {"scenario", "resource_id", "since", "until"}:
         return _tool_incident_scenario(tool_context, args)
     incident_id = str(args.get("incident_id") or "").strip()
@@ -1590,6 +1606,223 @@ def _tool_incidents(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolR
         )
 
     return _provider_result(tool_context, "incidents", run)
+
+
+def _tool_observability_scenario(
+    tool_context: ToolContext,
+    scenario: str,
+) -> ToolResult:
+    from operations.observability_scenarios import (
+        ALERT_DELIVERY_COVERAGE,
+        AlertDeliveryEvidence,
+        DiagnosticSettingsEvidence,
+        evaluate_alert_delivery,
+        evaluate_diagnostic_settings,
+        unavailable_assessment,
+    )
+
+    def run(port: Any) -> ToolResult:
+        try:
+            inventory = port.list_resources(
+                tool_context.scope,
+                offset=0,
+                limit=None,
+            )
+        except PermissionError:
+            return ToolResult(
+                status=STATUS_DENIED,
+                data={
+                    "assessment": unavailable_assessment(
+                        scenario,
+                        inventory_issue="Scoped inventory access was denied.",
+                    )
+                },
+                warning="Observability assessment was denied because inventory access was not authorized.",
+            )
+        except (
+            ApiError,
+            LookupError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            _LOGGER.warning("observability_inventory_failed error=%s", exc)
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                data={
+                    "assessment": unavailable_assessment(
+                        scenario,
+                        inventory_issue="Scoped inventory evidence is unavailable.",
+                    )
+                },
+                warning="Observability coverage is unavailable.",
+            )
+
+        assessment = unavailable_assessment(scenario, inventory=inventory)
+        citations = (
+            Evidence(
+                source_engine="intelligence.inventory.InventoryReadPort",
+                source_table="inventory/resource_observations",
+                timestamp=str(inventory.get("observed_at") or ""),
+                confidence=(
+                    CONFIDENCE_HIGH
+                    if inventory.get("observed_at")
+                    else CONFIDENCE_MEDIUM
+                ),
+            ),
+        ) if assessment["inventory"]["status"] != "unavailable" else ()
+        resolver = getattr(tool_context.context, "resolve_provider", None)
+        resolution_failed = False
+        try:
+            observability_port = (
+                resolver("observability_read_port", optional=True)
+                if callable(resolver)
+                else None
+            )
+        except (
+            ApiError,
+            AttributeError,
+            LookupError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            _LOGGER.warning("observability_provider_resolution_failed error=%s", exc)
+            observability_port = None
+            resolution_failed = True
+        if observability_port is None:
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                data={"assessment": assessment},
+                evidence=citations,
+                warning=(
+                    "The observability reader could not be resolved."
+                    if resolution_failed
+                    else "Policy, Diagnostic Settings, alert-rule, and Action Group "
+                    "evidence is unavailable because no qualified reader is configured."
+                ),
+            )
+        source: Any = None
+        try:
+            if scenario == ALERT_DELIVERY_COVERAGE:
+                source = observability_port.read_alert_delivery(tool_context.scope)
+                if not isinstance(source, AlertDeliveryEvidence):
+                    raise TypeError("Alert reader returned an unsupported evidence contract")
+                citations += (
+                    Evidence(
+                        source_engine="operations.ObservabilityReadPort",
+                        source_table="azure_monitor/alert_rules",
+                        timestamp=source.rules_observed_at,
+                        confidence=CONFIDENCE_MEDIUM,
+                    ),
+                    Evidence(
+                        source_engine="operations.ObservabilityReadPort",
+                        source_table="azure_monitor/action_group_references",
+                        timestamp=source.action_groups_observed_at,
+                        confidence=CONFIDENCE_MEDIUM,
+                    ),
+                )
+                assessment = evaluate_alert_delivery(
+                    inventory,
+                    source,
+                    scope=tool_context.scope,
+                )
+            else:
+                source = observability_port.read_diagnostic_settings(tool_context.scope)
+                if not isinstance(source, DiagnosticSettingsEvidence):
+                    raise TypeError("Diagnostic reader returned an unsupported evidence contract")
+                citations += (
+                    Evidence(
+                        source_engine="operations.ObservabilityReadPort",
+                        source_table="workload/logging_policy",
+                        timestamp=source.policy_observed_at,
+                        confidence=CONFIDENCE_MEDIUM,
+                    ),
+                    Evidence(
+                        source_engine="operations.ObservabilityReadPort",
+                        source_table="azure_monitor/diagnostic_settings",
+                        timestamp=source.settings_observed_at,
+                        confidence=CONFIDENCE_MEDIUM,
+                    ),
+                )
+                assessment = evaluate_diagnostic_settings(
+                    inventory,
+                    source,
+                    scope=tool_context.scope,
+                )
+        except PermissionError as exc:
+            _LOGGER.warning("observability_evidence_scope_denied error=%s", exc)
+            return ToolResult(
+                status=STATUS_DENIED,
+                data={
+                    "assessment": unavailable_assessment(
+                        scenario,
+                        inventory=inventory,
+                        inventory_issue="Observability evidence was not bound to the effective authorized scope.",
+                    )
+                },
+                warning="Observability evidence scope did not match the authorized request.",
+            )
+        except (
+            ApiError,
+            AttributeError,
+            LookupError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            _LOGGER.warning("observability_evidence_unavailable error=%s", exc)
+            return ToolResult(
+                status=STATUS_UNAVAILABLE,
+                data={
+                    "assessment": unavailable_assessment(
+                        scenario,
+                        inventory=inventory,
+                        inventory_issue="Policy or monitoring configuration evidence was incomplete or unavailable.",
+                        evidence=(
+                            source
+                            if isinstance(
+                                source,
+                                (AlertDeliveryEvidence, DiagnosticSettingsEvidence),
+                            )
+                            else None
+                        ),
+                    )
+                },
+                evidence=citations,
+                warning="Observability coverage could not be fully evaluated.",
+            )
+        return ToolResult(
+            status=(
+                STATUS_OK
+                if assessment["status"] == "evaluated"
+                else STATUS_UNAVAILABLE
+            ),
+            data={"assessment": assessment},
+            evidence=citations,
+            warning=(
+                ""
+                if assessment["status"] == "evaluated"
+                else "Configuration findings are limited to the observed inventory snapshot; live-estate completeness is unqualified and inventory freshness is unknown."
+            ),
+        )
+
+    result = _provider_result(tool_context, "inventory_read_port", run)
+    if result.status == STATUS_UNAVAILABLE and result.data is None:
+        return ToolResult(
+            status=STATUS_UNAVAILABLE,
+            data={
+                "assessment": unavailable_assessment(
+                    scenario,
+                    inventory_issue="Scoped inventory evidence is unavailable.",
+                )
+            },
+            warning=result.warning or "Observability coverage is unavailable.",
+        )
+    return result
 
 
 def _tool_incident_scenario(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
@@ -2254,10 +2487,10 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         ),
         ToolSpec(
             name="incidents",
-            description="Correlated incident detail, or an explicit bounded resource/window change or impact investigation. Temporal proximity is not causality.",
+            description="Correlated incident detail, bounded resource/window investigation, or a Resource Health observability coverage scenario.",
             parameters={
                 "incident_id": "Optional incident id for full detail",
-                "scenario": "Optional recent_change or incident_impact; requires resource_id, since and until",
+                "scenario": "Optional recent_change, incident_impact, diagnostic_settings_coverage, or alert_delivery_coverage",
                 "resource_id": "Selected inventory-authorized ARM resource id",
                 "since": "Inclusive ISO timestamp with explicit timezone",
                 "until": "Inclusive ISO timestamp; after since and at most seven days later",

@@ -210,9 +210,19 @@ def validate_tool_arguments(
     if require_required and missing:
         raise ValueError(f"missing required arguments: {', '.join(missing)}")
     if name == "incidents" and set(args) & {"scenario", "resource_id", "since", "until"}:
-        from operations.incident_scenarios import validate_parameters
+        from operations.observability_scenarios import (
+            OBSERVABILITY_SCENARIOS,
+        )
+        from operations.observability_scenarios import (
+            validate_parameters as validate_observability_parameters,
+        )
 
-        validate_parameters(args)
+        if args.get("scenario") in OBSERVABILITY_SCENARIOS:
+            validate_observability_parameters(args)
+        else:
+            from operations.incident_scenarios import validate_parameters
+
+            validate_parameters(args)
     return args, missing
 
 
@@ -317,6 +327,15 @@ class MCPServer:
             )
         except ValueError:
             return _tool_error("Invalid tool arguments")
+
+        if name == "incidents":
+            from operations.observability_scenarios import OBSERVABILITY_SCENARIOS
+
+            if (
+                args.get("scenario") in OBSERVABILITY_SCENARIOS
+                and specialist_id != "resource_health_observability"
+            ):
+                return _tool_error("Unknown or unauthorized tool")
 
         if missing:
             # A missing required argument is a normal outcome, not an error.

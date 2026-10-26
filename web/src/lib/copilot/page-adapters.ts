@@ -3190,6 +3190,18 @@ const RESOURCE_HEALTH_STARTERS: CoreCopilotStarterQuestion[] = [
     toolArguments: {},
   },
   {
+    label: "Check diagnostic settings against workload logging policy.",
+    specialistId: "resource_health_observability",
+    tool: "incidents",
+    toolArguments: { scenario: "diagnostic_settings_coverage" },
+  },
+  {
+    label: "Check alert rules and Action Group references.",
+    specialistId: "resource_health_observability",
+    tool: "incidents",
+    toolArguments: { scenario: "alert_delivery_coverage" },
+  },
+  {
     label: "Which services are impacted by resource pressure?",
     specialistId: "resource_health_observability",
     tool: "search",

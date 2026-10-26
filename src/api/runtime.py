@@ -140,6 +140,7 @@ from operations.maf_orchestrator import (
     MODE_MAF,
     maf_mode_enabled,
 )
+from operations.observability_arg_reader import ArgObservabilityReader
 from operations.patching import (
     InMemoryPatchRunStore,
     PatchExecutionUnavailable,
@@ -5886,6 +5887,10 @@ def build_context() -> ApiContext:
         inventory_provider=lambda: providers.get("inventory", optional=True),
         inventory_read_port_provider=lambda: providers.get(
             "inventory_read_port", optional=True
+        ),
+        observability_read_port_provider=lambda: ArgObservabilityReader(
+            live_resources,
+            lambda: onboarding.registry.list(include_disabled=False),
         ),
         exposure_query_provider=lambda: providers.get(
             "exposure_query", optional=True

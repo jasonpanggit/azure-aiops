@@ -1,0 +1,177 @@
+{
+  "version": "1",
+  "inventory": {
+    "resources": [
+      {
+        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        "resource_type": "Microsoft.Compute/virtualMachines",
+        "subscription_id": "sub-a"
+      },
+      {
+        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.App/containerApps/app-1",
+        "resource_type": "Microsoft.App/containerApps",
+        "subscription_id": "sub-a"
+      },
+      {
+        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-2",
+        "resource_type": "Microsoft.Compute/virtualMachines",
+        "subscription_id": "sub-a"
+      },
+      {
+        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/data1",
+        "resource_type": "Microsoft.Storage/storageAccounts",
+        "subscription_id": "sub-a"
+      }
+    ],
+    "total": 4,
+    "scope_qualification": {
+      "status": "supported",
+      "unsupported_dimensions": []
+    },
+    "observed_at": "2026-10-26T09:00:00Z",
+    "query_version": "inventory-v1",
+    "warnings": []
+  },
+  "expected": {
+    "status": "unavailable",
+    "inventory_status": "observed",
+    "observed_inventory_count": 4,
+    "authorized_scope_inventory_count": 4,
+    "inventory_complete": false,
+    "inventory_freshness": "unknown",
+    "supported_resource_types": [],
+    "type_support_status": "not_qualified",
+    "unsupported_resource_count": null,
+    "unreadable_observed_resource_count": null,
+    "unknown_observed_resource_count": 4,
+    "policy_status": "unavailable",
+    "policy_exception_count": null,
+    "required_log_categories": null,
+    "required_destinations": null,
+    "diagnostic_settings_status": "unavailable",
+    "alert_rule_status": "unavailable",
+    "disabled_rule_count": null,
+    "missing_action_group_reference_count": null,
+    "invalid_action_group_reference_count": null,
+    "direct_resource_rule_coverage": "not_assessed",
+    "indirect_log_query_rule_coverage": "not_assessed",
+    "delivery_status": "not_proven",
+    "findings_status": "not_evaluated",
+    "finding_count": null
+  },
+  "evaluated_diagnostic": {
+    "policy_version": "logging-policy-7",
+    "scope_binding": {
+      "subscription": ["sub-a"]
+    },
+    "supported_resource_types": [
+      "Microsoft.Compute/virtualMachines",
+      "Microsoft.App/containerApps"
+    ],
+    "required_categories": {
+      "Microsoft.Compute/virtualMachines": ["Audit", "Metrics"],
+      "Microsoft.App/containerApps": ["Console", "System"]
+    },
+    "required_destinations": {
+      "Microsoft.Compute/virtualMachines": ["law-main", "storage-archive"],
+      "Microsoft.App/containerApps": ["law-main"]
+    },
+    "exceptions": [
+      {
+        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        "categories": ["Metrics"],
+        "destinations": [],
+        "expires_at": "2026-11-01T00:00:00Z"
+      },
+      {
+        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.App/containerApps/app-1",
+        "categories": ["System"],
+        "destinations": [],
+        "expires_at": "2026-01-01T00:00:00Z"
+      }
+    ],
+    "settings": [
+      {
+        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        "categories": ["Audit"],
+        "destinations": ["law-main"]
+      },
+      {
+        "resource_id": "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.App/containerApps/app-1",
+        "categories": ["Console", "System"],
+        "destinations": ["law-main"]
+      }
+    ],
+    "expected": {
+      "status": "partial",
+      "finding_status": "evaluated",
+      "supported_resource_count": 3,
+      "excluded_resource_count": 1,
+      "active_exception_count": 1,
+      "expired_exception_count": 1,
+      "missing_category_count": 2,
+      "missing_destination_count": 3,
+      "outcome": "gaps_found"
+    }
+  },
+  "evaluated_alert": {
+    "scope_binding": {
+      "subscription": ["sub-a"]
+    },
+    "supported_resource_types": [
+      "Microsoft.Compute/virtualMachines",
+      "Microsoft.App/containerApps"
+    ],
+    "rules": [
+      {
+        "rule_id": "vm-direct",
+        "enabled": true,
+        "scope_kind": "direct_resource",
+        "resource_ids": [
+          "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1"
+        ],
+        "action_group_ids": ["ag-valid"]
+      },
+      {
+        "rule_id": "app-direct",
+        "enabled": true,
+        "scope_kind": "direct_resource",
+        "resource_ids": [
+          "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.App/containerApps/app-1"
+        ],
+        "action_group_ids": []
+      },
+      {
+        "rule_id": "workspace-query",
+        "enabled": true,
+        "scope_kind": "log_query",
+        "resource_ids": [],
+        "action_group_ids": ["ag-invalid"]
+      },
+      {
+        "rule_id": "disabled-rule",
+        "enabled": false,
+        "scope_kind": "direct_resource",
+        "resource_ids": [],
+        "action_group_ids": []
+      }
+    ],
+    "action_groups": [
+      {"action_group_id": "ag-valid", "status": "valid"},
+      {"action_group_id": "ag-invalid", "status": "invalid"}
+    ],
+    "expected": {
+      "status": "partial",
+      "finding_status": "evaluated",
+      "enabled_rule_count": 3,
+      "disabled_rule_count": 1,
+      "missing_action_group_reference_count": 2,
+      "invalid_action_group_reference_count": 1,
+      "direct_covered_resource_count": 2,
+      "direct_missing_resource_count": 1,
+      "indirect_log_query_rule_count": 1,
+      "indirect_status": "present_not_resource_attributed",
+      "delivery_status": "not_proven"
+    }
+  }
+}

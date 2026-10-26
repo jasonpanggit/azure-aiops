@@ -4419,6 +4419,18 @@ describe("identity, FinOps, and resource-health Copilot page adapters", () => {
         toolArguments: {},
       }),
       expect.objectContaining({
+        label: "Check diagnostic settings against workload logging policy.",
+        specialistId: "resource_health_observability",
+        tool: "incidents",
+        toolArguments: { scenario: "diagnostic_settings_coverage" },
+      }),
+      expect.objectContaining({
+        label: "Check alert rules and Action Group references.",
+        specialistId: "resource_health_observability",
+        tool: "incidents",
+        toolArguments: { scenario: "alert_delivery_coverage" },
+      }),
+      expect.objectContaining({
         label: "Which services are impacted by resource pressure?",
         tool: "search",
         toolArguments: { query: "resource pressure service impact" },
