@@ -28,6 +28,8 @@ class PolicyException:
     categories: tuple[str, ...]
     destinations: tuple[str, ...]
     expires_at: str
+    approved_by: str = ""
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,10 @@ class DiagnosticSettingsEvidence:
     unreadable_resource_ids: tuple[str, ...] = ()
     unknown_resource_ids: tuple[str, ...] = ()
     excluded_resource_ids: tuple[str, ...] = ()
+    policy_id: str = ""
+    policy_approved_by: str = ""
+    policy_approved_at: str = ""
+    policy_revision: int | None = None
 
 
 @dataclass(frozen=True)
@@ -103,7 +109,9 @@ class AlertDeliveryEvidence:
 class ObservabilityReadPort(Protocol):
     """Optional, provider-neutral configuration reader; never acquires data itself."""
 
-    def read_diagnostic_settings(self, scope: Any) -> DiagnosticSettingsEvidence: ...
+    def read_diagnostic_settings(
+        self, scope: Any, inventory: Mapping[str, Any]
+    ) -> DiagnosticSettingsEvidence: ...
 
     def read_alert_delivery(self, scope: Any) -> AlertDeliveryEvidence: ...
 
@@ -405,6 +413,7 @@ def evaluate_diagnostic_settings(
             scoped.append((resource_id.casefold(), resource_type))
 
     setting_by_resource: dict[str, tuple[set[str], set[str]]] = {}
+    categories_by_destination: dict[str, dict[str, set[str]]] = {}
     for setting in evidence.settings:
         if not isinstance(setting, DiagnosticSetting) or not isinstance(
             setting.resource_id, str
@@ -420,6 +429,11 @@ def evaluate_diagnostic_settings(
         categories, destinations = setting_by_resource.setdefault(key, (set(), set()))
         categories.update(_normalized_values(setting.categories))
         destinations.update(_normalized_values(setting.destinations))
+        routes = categories_by_destination.setdefault(key, {})
+        for destination in _normalized_values(setting.destinations):
+            routes.setdefault(destination, set()).update(
+                _normalized_values(setting.categories)
+            )
 
     unreadable = {
         value.strip().casefold() for value in evidence.unreadable_resource_ids
@@ -481,7 +495,22 @@ def evaluate_diagnostic_settings(
             _policy_values(evidence.required_destinations, resource_type)
             - exempt_destinations
         )
-        missing_categories = sorted(required_categories - configured_categories)
+        missing_routes = {
+            destination: sorted(
+                required_categories
+                - categories_by_destination.get(resource_id, {}).get(destination, set())
+            )
+            for destination in required_destinations & configured_destinations
+        }
+        missing_routes = {
+            destination: categories
+            for destination, categories in missing_routes.items()
+            if categories
+        }
+        missing_categories = sorted(
+            (required_categories - configured_categories)
+            | {category for categories in missing_routes.values() for category in categories}
+        )
         missing_destinations = sorted(required_destinations - configured_destinations)
         category_gaps += len(missing_categories)
         destination_gaps += len(missing_destinations)
@@ -493,6 +522,7 @@ def evaluate_diagnostic_settings(
                     "missing_destination_count": len(missing_destinations),
                     "missing_categories": missing_categories,
                     "missing_destinations": missing_destinations,
+                    "missing_categories_by_destination": missing_routes,
                 }
             )
 
@@ -518,7 +548,11 @@ def evaluate_diagnostic_settings(
         "status": "evaluated" if complete else "partial",
         "policy": {
             "status": "evaluated",
+            "policy_id": evidence.policy_id or None,
             "version": evidence.policy_version,
+            "revision": evidence.policy_revision,
+            "approved_by": evidence.policy_approved_by or None,
+            "approved_at": evidence.policy_approved_at or None,
             "required_log_categories": _display_policy(evidence.required_categories),
             "required_destinations": _display_policy(evidence.required_destinations),
             "exception_count": len(evidence.exceptions),
@@ -568,6 +602,7 @@ def evaluate_diagnostic_settings(
         "limitations": [
             "Observed configuration does not prove telemetry is being emitted or delivered.",
             "Inventory freshness remains unknown because the current InventoryReadPort does not qualify source age.",
+            "The current inventory contract does not qualify workload ownership, so findings are not attributed to an owner.",
         ],
     }
 
@@ -791,6 +826,7 @@ def evaluate_alert_delivery(
             "Configured alert rules and Action Group references do not prove telemetry or notification delivery.",
             "A missing direct resource rule does not establish absence of broader log-query coverage.",
             "Inventory freshness remains unknown because the current InventoryReadPort does not qualify source age.",
+            "The current inventory contract does not qualify workload ownership, so findings are not attributed to an owner.",
         ],
     }
 

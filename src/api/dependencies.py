@@ -179,19 +179,20 @@ class ApiContext:
     # Scope-enforced durable ontology lifecycle facade. The API-facing value
     # intentionally has no DatasetStore publisher adapter or credential.
     ontology_discovery_provider: Callable[[], Any] | None = None
-    # Optional provider-neutral, scope-bound policy/monitor configuration
-    # reader. No collector is configured by the current runtime.
+    # Optional provider-neutral, scope-bound policy/monitor configuration reader.
     observability_read_port_provider: Callable[[], Any] | None = None
+    # Optional, exact-resource/window ARM history on existing connection identities.
+    incident_history_read_port_provider: Callable[[], Any] | None = None
 
     def resolve_provider(self, name: str, *, optional: bool = False) -> Any:
         """Resolve a provider through the managed runtime or legacy callable."""
-        if name == "observability_read_port":
-            provider = self.observability_read_port_provider
+        if name in {"observability_read_port", "incident_history_read_port"}:
+            provider = getattr(self, f"{name}_provider")
             value = provider() if callable(provider) else None
             if value is None and not optional:
                 raise ApiError(
                     ErrorCode.PROVIDER_UNAVAILABLE,
-                    "The observability_read_port provider is not configured",
+                    f"The {name} provider is not configured",
                     {
                         "capability": name,
                         "provider_state": "unavailable",

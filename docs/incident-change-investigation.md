@@ -37,10 +37,18 @@ The Change adapter reads normalized independent `ChangeIntelligence.changes`.
 The Incident adapter accepts normalized `IncidentEngine` snapshots or the existing
 `LiveIncidentEngine` Azure Monitor alert projection. The latter requires an
 actual target resource and source event timestamp: it never substitutes the
-alert id or query observation time. No new Azure activity-log read is wired.
+alert id or query observation time.
 
-Historical resource-health events/metrics are **unavailable** through these
-adapters. Current alert projections are not complete alert lifecycle history.
+The optional `incident_history_read_port_provider` reads historical control-plane
+Activity Log operations and Resource Health availability transitions through the
+existing registered connection identity. Inventory authorization and parameter
+validation precede acquisition; ambiguous, missing, disabled or out-of-scope
+connections fail closed, without credential fallback. No new inventory pipeline,
+credential, permission grant or configuration is introduced.
+
+Historical metrics remain **unavailable**. Current alert projections are not
+complete alert lifecycle history, and the native history adapter does not widen
+that coverage.
 Projection acquisition does not prove complete logs, provider read permission,
 freshness across the requested window or successful deployed execution. Every
 family reports coverage explicitly; missing projections produce unavailable
@@ -69,6 +77,65 @@ facts, safe closed statuses, authorized identities and timestamps reach the
 drawer/ledger. This intentionally conservative projection avoids leaking secrets
 through free text as well as configuration values.
 
+### Native history source contract
+
+The adapter uses read-only HTTPS ARM GET operations documented by Microsoft:
+
+- [Activity Logs List, 2015-04-01](https://learn.microsoft.com/en-us/rest/api/monitor/activity-logs/list?view=rest-monitor-2015-04-01):
+  subscription management events with an exact `resourceUri` and inclusive
+  `eventTimestamp` bounds. `$select` omits callers, claims, free text and
+  configuration. Only successful `write`/`delete` operations become change
+  candidates; failed/started/action operations remain activity observations.
+- [Availability Statuses List, 2025-05-01](https://learn.microsoft.com/en-us/rest/api/resourcehealth/availability-statuses/list?view=rest-resourcehealth-2025-05-01):
+  single-resource historical availability transitions. The documented operation
+  does not specify supported time-filter syntax, so no invented filter is sent;
+  returned transitions are locally restricted to the requested window. Only
+  `occurredTime` is an event time; `reportedTime` remains separate provenance.
+  Missing/invalid timestamps and foreign identities are excluded, not replaced
+  with query time. `Unknown` is not a symptom or proof of health.
+
+Each family attempts at most three pages and inspects at most 200 raw rows,
+with at most one retry per page for 429/500/502/503/504, a fixed one-second
+backoff and ten-second request timeout. Redirects are not followed. Continuations
+must retain the same HTTPS ARM host and exact resource endpoint; original
+query bindings are preserved and conflicting filters/versions are rejected.
+There is no history cache or last-known-good fallback. UI cancellation still
+fences late admission rather than promising interruption of synchronous reads.
+
+The adapter conservatively declines windows outside
+[Activity Log's 90-day retention](https://learn.microsoft.com/en-us/azure/azure-monitor/fundamentals/activity-log)
+or Resource Health's documented
+[30-day health-history horizon](https://learn.microsoft.com/en-us/azure/service-health/resource-health-overview#history-information).
+The latter is an application query bound, not a guarantee that the REST
+endpoint returns every portal history event. Neither source is an archival
+backfill service. Future windows are not queried.
+Boundaries use UTC normalization, including minimum/maximum year overflow
+rejection before any provider acquisition.
+
+Receipts distinguish source/API version, requested window, collection time,
+provider-reported time, pagination exhaustion, inspected/invalid/excluded rows,
+truncation, stale collection and sanitized failure codes. Permission denial,
+unsupported resources, throttling, malformed data and transport errors are never
+reported as healthy-empty. Activity ingestion may lag by 3-20 minutes; exhausted
+pagination still does not establish full control-plane history. Every family
+remains partial at best, including an empty successful response.
+
+Activity Log and health receipts stay separate from snapshot changes and alerts.
+Health availability observations can support or oppose low-confidence hypotheses,
+but neither recovery nor temporal proximity establishes a cause or full-window
+health. Only the selected resource gets historical reads. Dependency impact still
+uses existing authorized direct projections; missing live dependency projection
+remains unavailable, not an inferred complete topology.
+
+**Operator prerequisites, not performed:** the existing connection identity needs
+`Microsoft.Insights/eventtypes/values/read` and
+`Microsoft.ResourceHealth/availabilityStatuses/read` at the selected resource's
+applicable scopes (the Activity Log endpoint is subscription-scoped). Resource
+Health must support the resource type and provide usable event timestamps.
+No roles, credentials, pins or policies are changed here. Actual permissions,
+live ARM schemas/completeness and authenticated deployed acceptance must be
+qualified separately by the operator. Offline source tests are not live proof.
+
 Scenario answers are deterministic and evidence-preserving even without Foundry;
 they do not claim successful agent narration. Detailed timeline, hypotheses,
 counterevidence, impact, unknowns and next checks remain visible alongside the
@@ -84,3 +151,7 @@ resources, bounded/cyclic dependencies, and canonical API owner/citation/thread
 wiring. `CopilotDrawer.test.tsx` covers exact scenario hints, detailed evidence
 with synthesis, invalid windows and cancellation/stale completion after resource,
 time-window and scope changes. These are offline fixtures, not live acceptance.
+`tests/test_incident_history_reader.py` adds positive native ARM response fixtures,
+exact resource/window and connection binding, retention and UTC-boundary controls,
+bounded retries/pagination, denied/malformed/stale/truncated coverage, redaction,
+source-specific partial failures, and governed tool/API integration.

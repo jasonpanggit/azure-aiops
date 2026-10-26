@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -64,6 +65,12 @@ def validate_parameters(args: Mapping[str, Any]) -> tuple[str, datetime, datetim
         or not parts[4]
         or parts[5].casefold() != "providers"
         or any(not part for part in parts[6:])
+        or len(parts) % 2 != 1
+        or len(resource_id) > 2048
+        or any(
+            not re.fullmatch(r"[A-Za-z0-9_.() -]+", part) or part in {".", ".."}
+            for part in parts[1:]
+        )
     ):
         raise ValueError("Investigation requires a resource ARM id")
     start, end = instant(args.get("since")), instant(args.get("until"))
@@ -112,7 +119,7 @@ def scenario_summary(investigation: Mapping[str, Any]) -> str:
         f"{len(investigation['hypotheses'])} low-confidence change hypotheses, "
         f"{len(investigation['impact'])} known direct dependencies evaluated. "
         f"{coverage}; temporal proximity is not causality. "
-        "Historical health/activity completeness is unavailable. "
+        "History may contain bounded provider observations; completeness is not established. "
         "See the collected evidence for supporting/counterevidence, unknowns and next checks."
     )
 
@@ -211,6 +218,7 @@ def investigate(
     changes: Mapping[str, Any] | None,
     incidents: Mapping[str, Any] | None,
     authorize: Any,
+    history: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Join one collected evidence bundle with bounded, independently authorized neighbors."""
     resource, start, end = validate_parameters(args)
@@ -218,7 +226,7 @@ def investigate(
     root = resource.casefold()
     unknowns = [
         "Temporal proximity is not causality; no causal root cause is established.",
-        "Historical resource-health metrics/events are unavailable through this scenario's adapters.",
+        "Historical metrics and full alert lifecycle remain unavailable; availability transitions do not establish application health.",
         "Activity-log completeness and provider read access are not qualified by projection availability.",
     ]
     coverage = {}
@@ -234,7 +242,27 @@ def investigate(
             unknowns.append(
                 f"{family.capitalize()} projection unavailable; empty evidence is not proof of absence."
             )
-    coverage["health"] = {"status": "unavailable", "complete": False}
+    health = history.get("health") if history else None
+    activity = history.get("changes") if history else None
+    # Keep snapshot change/alert receipts distinct from native ARM history.
+    for family, projection in (("activity_log", activity), ("health", health)):
+        coverage[family] = {
+            key: value
+            for key, value in (projection or {}).items()
+            if key != "rows"
+        }
+        coverage[family].update(
+            status=str((projection or {}).get("status") or "unavailable"),
+            complete=False,
+        )
+        if coverage[family]["status"] == "unavailable":
+            unknowns.append(f"{family} history unavailable; no absence or health claim is supported.")
+        elif projection and (
+            projection.get("error_code")
+            or projection.get("invalid_rows")
+            or not projection.get("pagination_exhausted")
+        ):
+            unknowns.append(f"{family} history is incomplete, stale, malformed or truncated; inspect its coverage receipt.")
     dependencies = []
     impact_requested = args["scenario"] == "incident_impact"
     contexts = incidents.get("contexts") if incidents and impact_requested else None
@@ -297,7 +325,10 @@ def investigate(
     allowed = {root, *(row["resource_id"].casefold() for row in dependencies)}
     timeline = []
     invalid_rows = 0
-    for family, projection in (("changes", changes), ("alerts", incidents)):
+    for family, projection in (
+        ("changes", changes), ("alerts", incidents),
+        ("activity_log", activity), ("health", health),
+    ):
         if projection is None:
             continue
         invalid_rows += int(projection.get("invalid_rows") or 0)
@@ -336,12 +367,24 @@ def investigate(
                         "healthy",
                         "degraded",
                         "unhealthy",
+                        "succeeded",
+                        "failed",
+                        "started",
+                        "accepted",
+                        "canceled",
                     }
                     else "unknown",
                     **(
                         {"configuration": row["configuration"]}
                         if "configuration" in row
                         else {}
+                    ),
+                    **(
+                        {
+                            "source": row["source"],
+                            "reported_at": row["reported_at"],
+                        }
+                        if family in {"activity_log", "health"} else {}
                     ),
                 }
             )
@@ -358,8 +401,8 @@ def investigate(
     symptoms = [
         row
         for row in timeline
-        if row["kind"] in {"incident", "alert"}
-        and row["status"] not in {"resolved", "closed", "healthy"}
+        if row["kind"] in {"incident", "alert", "health"}
+        and row["status"] in {"fired", "active", "degraded", "unhealthy"}
     ]
     counter = [
         row["evidence_ref"]
@@ -442,6 +485,10 @@ def investigate(
         "window": {"since": start.isoformat(), "until": end.isoformat()},
         "status": "partial"
         if changes is not None or incidents is not None
+        or any(
+            projection and projection.get("status") == "partial"
+            for projection in (activity, health)
+        )
         else "unavailable",
         "coverage": coverage,
         "timeline": timeline,

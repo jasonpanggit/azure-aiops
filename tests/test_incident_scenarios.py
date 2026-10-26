@@ -368,6 +368,7 @@ def test_boundary_overflow_api_rejected_before_evidence_access(
     context.inventory_read_port_provider = lambda: acquired.append("inventory")
     context.change_provider = lambda: acquired.append("change")
     context.hybrid_incident_provider = lambda _: acquired.append("incidents")
+    context.incident_history_read_port_provider = lambda: acquired.append("history")
     response = TestClient(create_app(context), raise_server_exceptions=False).post(
         "/api/v1/copilot/investigations?subscription=sub-a",
         headers=HEADERS,
