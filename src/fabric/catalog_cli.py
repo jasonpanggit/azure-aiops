@@ -88,7 +88,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    except (AzureError, httpx.HTTPError, OSError, ValueError, TypeError, yaml.YAMLError):
+    except (
+        AzureError, httpx.HTTPError, OSError, ValueError, TypeError,
+        RecursionError, yaml.YAMLError,
+    ):
         print(
             json.dumps({"status": "failed", "failure_stage": stage}),
             file=sys.stderr,

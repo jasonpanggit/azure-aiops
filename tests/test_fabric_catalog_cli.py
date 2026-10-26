@@ -48,6 +48,8 @@ def _setup(monkeypatch, responses, *, workspace_id=WORKSPACE):
             raise result
         if isinstance(result, int):
             return httpx.Response(result)
+        if isinstance(result, httpx.Response):
+            return result
         return httpx.Response(200, json=result)
 
     http = httpx.Client(transport=httpx.MockTransport(handler))
@@ -155,6 +157,35 @@ def test_http_failure_reports_status_but_no_sensitive_response_or_request(monkey
     assert json.loads(captured.err) == {
         "status": "failed", "failure_stage": "catalog_verification", "http_status": 403,
     }
+
+
+@pytest.mark.parametrize("phase", ["search", "later_search", "direct", "later_direct"])
+def test_deep_provider_json_is_sanitized_without_partial_output(monkeypatch, capsys, phase):
+    raw = '{"private-service-body":' + "[" * 10000 + "0" + "]" * 10000 + "}"
+    with pytest.raises(RecursionError):
+        json.loads(raw)
+    failure = httpx.Response(200, content=raw, headers={"Content-Type": "application/json"})
+    responses = _responses()
+    if phase == "search":
+        responses = [failure]
+    elif phase == "later_search":
+        responses[0]["continuationToken"] = "private-continuation-token"
+        responses = [responses[0], failure]
+    elif phase == "direct":
+        responses[1] = failure
+    else:
+        second = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+        responses[0]["value"].append({**responses[0]["value"][0], "id": second})
+        responses.append(failure)
+    calls, _, credential, http = _setup(monkeypatch, responses)
+    assert catalog_cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "status": "failed", "failure_stage": "catalog_verification",
+    }
+    assert len(calls) == len(responses)
+    assert credential.closed and http.is_closed
 
 
 def test_credential_failure_is_sanitized(monkeypatch, capsys):

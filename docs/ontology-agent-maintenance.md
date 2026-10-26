@@ -126,6 +126,9 @@ maintenance acceptance. A caught configuration, authentication, transport or
 metadata failure returns exit code 1, emits a sanitized failure stage on stderr
 and emits no partial stdout. HTTP status failures additionally include only
 the numeric `http_status`; non-HTTP failures do not invent a status or cause.
+Provider JSON exceeding the decoder nesting limit follows the same sanitized
+`catalog_verification` failure path, including on later search pages or item
+reads; it emits no partial evidence and adds no retry or fallback.
 Exceptions, credentials, request URLs and provider bodies are not included in
 failure reports. Store successful output only in an
 appropriately protected operator evidence location; item metadata can be
