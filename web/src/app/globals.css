@@ -11484,6 +11484,13 @@ body.topology-fullscreen-open {
     flex-direction: column;
     gap: 8px;
   }
+
+  .saved-views .card-header > div:first-child,
+  .network-review-context .card-header > div:first-child,
+  .predeploy-artifact .card-header > div:first-child,
+  .predeploy-history .card-header > div:first-child {
+    flex-basis: auto;
+  }
 }
 .governance-retained {
   margin-top: 2rem;
