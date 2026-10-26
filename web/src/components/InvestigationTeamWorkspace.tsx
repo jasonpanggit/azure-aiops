@@ -103,7 +103,7 @@ export function InvestigationTeamWorkspacePanel({ scope, view, initialId = "", i
       <div className="card-body">
         <p>Save navigation and operator explanations for explicit collaborators. These are not provider evidence or Copilot answers. Explicit source retention below is separate. Membership does not grant platform access.</p>
         <div className="investigation-team-controls">
-          <label>Workspace identity<input value={workspaceId} maxLength={36} placeholder="wrk- followed by 32 lowercase hex characters" disabled={busy} onChange={event => {
+          <label>Workspace identity<input className="form-control" value={workspaceId} maxLength={36} placeholder="wrk- followed by 32 lowercase hex characters" disabled={busy} onChange={event => {
             setWorkspaceId(event.target.value.trim());
             setWorkspace(null);
             setRevision("");
@@ -112,7 +112,7 @@ export function InvestigationTeamWorkspacePanel({ scope, view, initialId = "", i
             setWorkspace(null);
             void run(workspaceId, signal => investigationWorkspacesApi.read(workspaceId, scope, undefined, signal));
           }}>Open latest workspace</button>
-          <label>Workspace title<input value={title} maxLength={120} disabled={busy} onChange={event => setTitle(event.target.value)} /></label>
+          <label>Workspace title<input className="form-control" value={title} maxLength={120} disabled={busy} onChange={event => setTitle(event.target.value)} /></label>
           {!workspace && <button className="button button-secondary" type="button" disabled={busy || !viewValid || Boolean(workspaceId && !validId(workspaceId))} onClick={create}>Create private workspace</button>}
         </div>
         {busy && <p role="status">Waiting for workspace storage. Stopping the browser wait does not confirm a write outcome.</p>}

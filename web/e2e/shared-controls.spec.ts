@@ -4,6 +4,66 @@ import { expect, test } from "@playwright/test";
 
 const styles = readFileSync(resolve(process.cwd(), "src/app/globals.css"), "utf8");
 
+for (const width of [375, 820, 821, 1912]) {
+  test(`sizes remaining audited controls without changing adjacent surfaces at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1080 });
+    await page.setContent(`
+      <main class="page-container">
+        <div class="change-filters">
+          <label>Subscription<select><option>All subscriptions</option></select></label>
+          <label>Resource group<input value="resource-group"></label>
+          <label>Resource ID<input value="/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"></label>
+          <label>Change type<select><option>All types</option></select></label>
+          <label>From<input type="datetime-local" value="2026-10-26T00:00"></label>
+          <label>To<input type="datetime-local" value="2026-10-26T01:00"></label>
+        </div>
+        <div class="compliance-domain-filter"><label>Domain<select><option>All domains</option></select></label></div>
+        <div class="compliance-policy-grid">
+          <label>Policy name<input value="Audit policy"></label>
+          <label>Expiry<input type="date" value="2026-10-27"></label>
+          <label>Notes<textarea>Evidence remains partial</textarea></label>
+          <label><input type="checkbox" checked>Enabled</label>
+        </div>
+        <div class="investigation-team-controls">
+          <label>Workspace identity<input class="form-control" value="wrk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"></label>
+          <label>Workspace title<input class="form-control" value="Bounded investigation"></label>
+        </div>
+        <label class="remediation-search-field">Search fixes<input type="search" value="review"></label>
+        <article class="exposure-source-item"><button class="button button-secondary" type="button">Retry source</button></article>
+        <div class="service-brief"><label>Unchanged service input<input value="service"></label></div>
+        <div class="remediation-approval-form"><label>Unchanged approval<input value="approval"></label></div>
+      </main>
+    `);
+    await page.addStyleTag({ content: styles });
+    const controls = page.locator([
+      ".change-filters input", ".change-filters select",
+      ".compliance-domain-filter select", '.compliance-policy-grid input:not([type="checkbox"])',
+      ".compliance-policy-grid textarea", ".investigation-team-controls input",
+      ".remediation-search-field input",
+    ].join(","));
+    await expect(controls).toHaveCount(13);
+    for (const control of await controls.all()) {
+      const value = await control.inputValue();
+      await control.focus();
+      await expect(control).toBeFocused();
+      await expect(control).toHaveValue(value);
+      const box = (await control.boundingBox())!;
+      expect(box.height).toBeGreaterThanOrEqual(width <= 820 ? 44 : 40);
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+    }
+    await expect(page.locator(".service-brief input")).toHaveCSS("min-height", "36px");
+    const retry = page.getByRole("button", { name: "Retry source" });
+    await retry.focus();
+    await expect(retry).toBeFocused();
+    expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(width <= 820 ? 44 : 40);
+    await expect(page.locator(".remediation-approval-form input")).toHaveCSS("min-height", "38px");
+    await expect(page.getByRole("checkbox", { name: "Enabled" })).toBeChecked();
+    await expect(page.getByRole("checkbox", { name: "Enabled" })).toHaveCSS("min-height", "38px");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   await page.setContent(`
     <main class="page-container">

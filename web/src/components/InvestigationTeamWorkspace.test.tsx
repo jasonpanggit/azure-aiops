@@ -52,6 +52,9 @@ describe("team Investigation navigation", () => {
   it("does not read, write or restore anything from the unselected initial surface", () => {
     const restore = vi.fn();
     render(<InvestigationTeamWorkspacePanel scope={SCOPE} view={VIEW} onRestore={restore} />);
+    openDetails();
+    expect(screen.getByRole("textbox", { name: "Workspace identity" })).toHaveClass("form-control");
+    expect(screen.getByRole("textbox", { name: "Workspace title" })).toHaveClass("form-control");
     for (const method of Object.values(api)) expect(method).not.toHaveBeenCalled();
     expect(restore).not.toHaveBeenCalled();
   });
