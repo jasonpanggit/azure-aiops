@@ -5,6 +5,7 @@ export async function expectFullWidthProse(paragraphs: Locator) {
   expect(await paragraphs.count()).toBeGreaterThan(0);
   for (const paragraph of await paragraphs.all()) {
     await expect(paragraph).toHaveCSS("max-width", "none");
+    await expect(paragraph).toHaveCSS("max-inline-size", "none");
     const geometry = await paragraph.evaluate(element => {
       const parent = element.parentElement!;
       const style = getComputedStyle(parent);

@@ -415,7 +415,7 @@ body {
 }
 
 :where(.page-container, .page-shell, .copilot-drawer) p {
-  max-inline-size: 75ch;
+  max-inline-size: none;
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -900,7 +900,7 @@ textarea:focus-visible {
 }
 
 .command-center-copy h2 {
-  max-width: 680px;
+  max-width: none;
   margin-top: 15px;
   font-size: clamp(30px, 4vw, 48px);
   font-weight: 400;
@@ -917,7 +917,7 @@ textarea:focus-visible {
 .command-center-warning .command-center-copy h2 strong { color: #ffd36b; }
 
 .command-center-copy p {
-  max-width: 630px;
+  max-width: none;
   margin-top: 14px;
   color: #d3e1eb;
   font-size: 14px;
@@ -1091,7 +1091,7 @@ textarea:focus-visible {
 .page-header-copy {
   flex: 1 1 32rem;
   min-width: 0;
-  max-width: 800px;
+  max-width: none;
 }
 
 .page-header h1 {
@@ -1101,7 +1101,7 @@ textarea:focus-visible {
 }
 
 .page-header p {
-  max-width: 760px;
+  max-width: none;
   margin-top: 7px;
   color: var(--color-text-secondary);
 }
@@ -1775,6 +1775,7 @@ textarea:focus-visible {
 
 .state-panel p {
   max-width: none;
+  justify-self: stretch;
   margin-top: 5px;
   color: var(--color-text-secondary);
 }
@@ -1833,8 +1834,12 @@ textarea:focus-visible {
   gap: 12px;
   width: 100%;
   min-width: 0;
-  max-width: 720px;
+  max-width: none;
   text-align: left;
+}
+
+.source-recovery-actions > p {
+  justify-self: stretch;
 }
 
 .source-recovery-actions p {
@@ -3635,7 +3640,7 @@ textarea:focus-visible {
 }
 
 .flow-verdict p {
-  max-width: 720px;
+  max-width: none;
   margin-top: 5px;
   color: var(--color-text-secondary);
 }
@@ -7883,7 +7888,8 @@ body.topology-fullscreen-open {
 }
 
 .copilot-welcome > p {
-  max-width: 540px;
+  max-width: none;
+  justify-self: stretch;
   margin-top: 5px;
   color: var(--color-text-secondary);
 }
@@ -10114,7 +10120,7 @@ body.topology-fullscreen-open {
 }
 
 .remediation-handoff-copy > p {
-  max-width: 62rem;
+  max-width: none;
 }
 
 .compliance-review-card .card-header {
@@ -10135,7 +10141,7 @@ body.topology-fullscreen-open {
 }
 
 .compliance-review-heading p {
-  max-width: 48rem;
+  max-width: none;
   color: var(--color-text-secondary);
 }
 
@@ -11594,7 +11600,7 @@ body.topology-fullscreen-open {
 }
 
 :where(.page-container, .page-shell, .copilot-drawer) p + :is(ul, ol):not([class]) {
-  max-inline-size: 75ch;
+  max-inline-size: none;
   margin-block: 12px;
   padding-inline-start: 24px;
   line-height: 1.6;
