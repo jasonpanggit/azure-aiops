@@ -264,6 +264,13 @@ existing in-scope Application membership; telemetry labels alone cannot create
 identity. Application entity inputs may be single-pass iterables; the projector
 retains them for both identity resolution and emitted entities so linked batches
 preserve the same entities, pairs and citations as list inputs.
+Source timestamps and their computed expiry must be representable in UTC.
+Out-of-range UTC conversions or expiry arithmetic abstain rather than crash
+the projection or clamp a timestamp; independent valid source facts remain.
+Unrepresentable inventory times or source expiry use
+`source_observation_stale_or_timestamp_invalid`; unrepresentable Monitor
+observation times retain `dependency_observation_timestamp_missing`.
+Representable stale/future observations retain their existing unsupported facts.
 Malformed, non-time-valued or timezone-naive inventory dependency timestamps abstain with
 `source_observation_stale_or_timestamp_invalid` uncertainty. They do not create
 inventory support, invent a replacement time or discard independently valid

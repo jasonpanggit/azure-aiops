@@ -173,7 +173,8 @@ def project_application_dependency_evidence(
                 row.get("source_generation_id") or inventory_generation
             ).strip()
             timestamp = _inventory_timestamp(row, inventory_time)
-            if timestamp is None:
+            expires_at = _expiry(timestamp, max_age)
+            if timestamp is None or expires_at is None:
                 uncertainties.add("source_observation_stale_or_timestamp_invalid")
                 continue
             fresh = _fresh(timestamp, observed_at, max_age)
@@ -188,7 +189,7 @@ def project_application_dependency_evidence(
                 origin_fingerprint=fingerprint,
                 original_source_generation_id=source_generation,
                 observed_at=timestamp,
-                expires_at=timestamp + max_age,
+                expires_at=expires_at,
                 supports=bool(generation_binding_verified and fresh and valid_generation),
                 uncertainty=(
                     ""
@@ -224,6 +225,10 @@ def project_application_dependency_evidence(
             monitor_time = _timestamp(row.get("TimeGenerated"), None)
             if monitor_time is None:
                 uncertainties.add("dependency_observation_timestamp_missing")
+                continue
+            expires_at = _expiry(monitor_time, max_age)
+            if expires_at is None:
+                uncertainties.add("source_observation_stale_or_timestamp_invalid")
                 continue
             emitter_resource = _identity(row.get("_ResourceId"))
             if not emitter_resource or emitter_resource not in monitor_inventory_ids:
@@ -295,7 +300,7 @@ def project_application_dependency_evidence(
                 origin_fingerprint=fingerprint,
                 original_source_generation_id=original_generation,
                 observed_at=monitor_time,
-                expires_at=monitor_time + max_age,
+                expires_at=expires_at,
                 supports=bool(
                     generation_binding_verified and fresh and valid_generation
                 ),
@@ -510,9 +515,23 @@ def _timestamp(value: object, default: datetime | None) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(str(value))
-    except ValueError:
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        parsed.astimezone(UTC)
+    except (ValueError, OverflowError):
         return None
-    return parsed if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+    return parsed
+
+
+def _expiry(timestamp: datetime | None, max_age: timedelta) -> datetime | None:
+    if timestamp is None:
+        return None
+    try:
+        expires_at = timestamp + max_age
+        expires_at.astimezone(UTC)
+    except OverflowError:
+        return None
+    return expires_at
 
 
 def _fresh(

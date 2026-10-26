@@ -534,6 +534,78 @@ def test_unambiguous_case_variant_dependency_tags_retain_support(tag_names: list
     }
 
 
+@pytest.mark.parametrize("timestamp", [
+    "9999-12-31T00:00:00+00:00",
+    "9999-12-31T23:59:59.999999+00:00",
+    "9999-12-30T23:59:59.999999-01:00",
+    "9999-12-31T23:59:59-01:00",
+    "0001-01-01T00:00:00+01:00",
+])
+@pytest.mark.parametrize("source", ["inventory", "monitor"])
+def test_unrepresentable_dependency_times_abstain_without_losing_other_source(
+    timestamp: str, source: str,
+) -> None:
+    rows = _inventory_with_timestamp("observed_at", timestamp if source == "inventory" else NOW)
+    monitor = _monitor()
+    monitor["TimeGenerated"] = timestamp if source == "monitor" else NOW.isoformat()
+    before = deepcopy((rows, monitor))
+    projection = _fixture(
+        inventory_records=rows, monitor_rows=[monitor],
+        bindings={"frontend-role": FRONTEND_ASSET, "backend-role": BACKEND_ASSET},
+    )
+    assert (rows, monitor) == before
+    assert projection["coverage"] == "degraded"
+    expected_uncertainty = (
+        "dependency_observation_timestamp_missing"
+        if source == "monitor" and timestamp in {
+            "9999-12-31T23:59:59-01:00", "0001-01-01T00:00:00+01:00",
+        }
+        else "source_observation_stale_or_timestamp_invalid"
+    )
+    assert expected_uncertainty in projection["uncertainties"]
+    expected_source = (
+        "azure-monitor:AppDependencies" if source == "inventory"
+        else "azure-resource-graph:dependency-tag"
+    )
+    assert len(projection["evidence_records"]) == 1
+    assert projection["evidence_records"][0]["source"] == expected_source
+    assert projection["evidence_records"][0]["supports"] is True
+    assert len(projection["changed_entities"]) == 2
+    assert len(projection["candidate_pairs"]) == 1
+    assert projection["candidate_pairs"][0]["evidence_ids"] == [
+        projection["evidence_records"][0]["evidence_id"],
+    ]
+
+
+@pytest.mark.parametrize("timestamp", [
+    "9999-12-30T23:59:59.999999+00:00",
+    "0001-01-01T00:00:00+00:00",
+    NOW.isoformat(),
+])
+@pytest.mark.parametrize("source", ["inventory", "monitor"])
+def test_representable_dependency_expiry_retains_existing_facts(
+    timestamp: str, source: str,
+) -> None:
+    monitor = _monitor()
+    monitor["TimeGenerated"] = timestamp if source == "monitor" else NOW.isoformat()
+    projection = _fixture(
+        inventory_records=_inventory_with_timestamp(
+            "observed_at", timestamp if source == "inventory" else NOW,
+        ),
+        monitor_rows=[monitor],
+        bindings={"frontend-role": FRONTEND_ASSET, "backend-role": BACKEND_ASSET},
+    )
+    assert len(projection["evidence_records"]) == 2
+    selected = next(row for row in projection["evidence_records"] if row["source"] == (
+        "azure-resource-graph:dependency-tag" if source == "inventory"
+        else "azure-monitor:AppDependencies"
+    ))
+    assert datetime.fromisoformat(selected["expires_at"]) == (
+        datetime.fromisoformat(timestamp) + timedelta(hours=24)
+    )
+    assert selected["supports"] is (timestamp == NOW.isoformat())
+
+
 def test_ambiguous_monitor_binding_is_not_resolved_by_label() -> None:
     projection = _fixture(
         monitor_rows=[_monitor()],
