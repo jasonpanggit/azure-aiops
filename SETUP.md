@@ -9,12 +9,23 @@ Use a privileged **deployment SPN** for setup and a separate, read-only
 **connection SPN for each onboarded subscription**. Production containers use
 managed identities, not the deployment SPN's secret.
 
+**Operator access assumption:** you cannot create SPNs, manage Entra
+applications/groups, assign Entra app roles or grant tenant consent. You can
+assign Azure RBAC permissions on the subscriptions you administer. All SPNs
+must therefore be **pre-created and supplied by the identity team**. Sections
+3, 4 and the directory changes in section 7 are requests to the relevant
+administrators, not steps you are expected to execute yourself.
+
+Subscription RBAC cannot replace these tenant prerequisites. If they are not
+provided, stop at the affected gate; a supplied deployment SPN plus subscription
+Owner does not by itself enable full platform setup and user sign-in.
+
 ## 1. Setup sequence and automation
 
 | Order | Task | Automated? |
 | --- | --- | --- |
 | 1 | Approve subscription RBAC, Fabric/AI region and quota, network access, tenant settings | **Manual administrator gate** (sections 2-3) |
-| 2 | Create the Entra SPA/API registration, scope, v2 tokens, app roles and user assignments | **Manual administrator gate**, with an existing role-assignment helper (section 4) |
+| 2 | Receive pre-created deployment/connection SPNs and administrator-configured SPA/API registration, scopes, roles and assignments | **External identity-team prerequisite** (sections 2, 4 and 8) |
 | 3 | Install dependencies and prepare protected credentials/non-secret Terraform settings | **Manual operator input** (section 5) |
 | 4 | SPN login, Terraform init/validate/apply, Fabric config, catalog and supported OneLake roles | **Automated** (section 6) |
 | 5 | Build and verify four images; deploy the same image tag | **Automated** (section 6) |
@@ -30,28 +41,120 @@ An offline preview is not a Terraform plan or proof of effective permissions.
 Running setup never approves native unattended ontology maintenance or clears
 the deferred evidence gates recorded in `.planning/STATE.md`.
 
-## 2. Deployment SPN and Azure permissions (manual administrator)
+## 2. Pre-created deployment SPN and subscription RBAC (operator)
 
-Use an administrator already authorized to create Entra applications and grant
-subscription access. A deployment SPN cannot grant itself its initial rights.
-Creating the app requires the tenant's app-registration permission (or an
-appropriate Entra application role); granting Azure roles requires Owner,
-User Access Administrator, or an authorized RBAC administrator at the scope.
+Request an existing deployment SPN from the identity team. Obtain these values
+through the approved secure handoff, without querying the directory yourself:
+
+| Supplied value | Purpose |
+| --- | --- |
+| Tenant ID | Directory issuing the SPN's tokens |
+| Application/client ID | SPN login and Terraform authentication |
+| Service principal object ID in that tenant | Azure role assignments and Fabric capacity administration |
+| Valid client secret, expiry and rotation contact | Current setup scripts use client-secret authentication |
+
+The object ID must be the **enterprise application's service principal object
+ID**, not the app-registration object ID or application/client ID. The identity
+team owns creation, credential issuance and rotation; this guide does not ask
+the operator to run `az ad sp create-for-rbac` or perform directory lookups.
+
+Sign in using your existing operator identity and assign the supplied SPN
+Azure RBAC. You need role-assignment authority at the subscription (for example
+Owner or an appropriately authorized User Access Administrator). Use
+`--assignee-object-id` and `--assignee-principal-type` to avoid a Microsoft
+Graph lookup:
 
 ```bash
 az login --tenant <tenant-id>
 az account set --subscription <platform-subscription-id>
-az ad sp create-for-rbac \
-  --name aiops-deployer \
+az role assignment create \
+  --assignee-object-id <supplied-deployment-SPN-object-id> \
+  --assignee-principal-type ServicePrincipal \
   --role Owner \
-  --scopes /subscriptions/<platform-subscription-id>
-az ad sp show --id <returned-appId> --query id -o tsv
+  --scope /subscriptions/<platform-subscription-id>
 ```
 
-Store the returned secret in your approved secret store. Record the application
-ID, tenant ID and **service principal object ID**; application and object IDs
-are not interchangeable. Do not paste command output containing the secret into
-logs, tickets or source control.
+Store the supplied secret in your approved secret store. Set
+`AIOPS_DEPLOYER_OBJECT_ID` to the supplied service principal object ID in the
+setup environment file; the setup runner exports it to `deploy.sh`, bypassing
+that script's optional `az ad sp show` lookup. When invoking `deploy.sh`
+directly, export `AIOPS_DEPLOYER_OBJECT_ID` explicitly as well: it does not read
+that value from the environment file itself. Do not paste secrets into logs,
+tickets or source control.
+
+### RBAC assignment checklist by pre-created SPN
+
+This is the operator's assignment checklist. Use each SPN's supplied
+**service principal object ID** as the assignee, not its client ID. The
+deployment and connection SPNs must remain separate.
+
+| Pre-created SPN | Azure RBAC role | Exact scope | When / who assigns |
+| --- | --- | --- | --- |
+| Deployment SPN | `Owner` **or** both `Contributor` and `User Access Administrator` | `/subscriptions/<platform-subscription-id>` | Required before provisioning. The subscription RBAC operator assigns one of these alternatives, not all three roles. |
+| Deployment SPN | `Reader` **and** `User Access Administrator` | `/subscriptions/<additional-onboarded-subscription-id>` | Only where Terraform must grant the MCP identities access outside the platform subscription. That subscription's RBAC operator assigns both. Existing Owner is sufficient instead; do not add redundant roles. |
+| Deployment SPN | `Key Vault Secrets Officer` | Platform Key Vault resource ID | Terraform assigns after creating the vault. Do not grant at the entire subscription just to bootstrap. |
+| Deployment SPN | `Search Index Data Contributor` and `Search Service Contributor` | Platform Search service resource ID | Terraform assigns when knowledge search is enabled. |
+| Deployment SPN | `Cognitive Services OpenAI User` and `Cognitive Services User` | Corresponding platform Foundry/Cognitive Services account resource ID | Terraform assigns for the configured deployment data-plane operations. |
+| Deployment SPN | `Foundry Project Manager` | Platform Foundry project resource ID | Terraform assigns for agent provisioning. |
+| Connection SPN, **one per subscription** | `Reader` | `/subscriptions/<that-connection-subscription-id>` | Required before onboarding; target subscription RBAC operator assigns. No platform-subscription assignment is needed unless it is that connection's target. |
+| Connection SPN | `Cost Management Reader` | `/subscriptions/<that-connection-subscription-id>` | Optional explicit cost-read grant, only if required by the enabled billing integration/offer; Reader may already cover it. |
+| Connection SPN | No additional Azure RBAC on Key Vault, ACR, Foundry or Fabric capacity | None | The connection SPN reads target inventory; the runtime identity, not the connection SPN, resolves its secret reference. |
+| Workbench SPA/API application service principal | No Azure resource RBAC for browser sign-in | None | Identity team configures Entra scopes, consent and user app roles separately. Do not grant Azure Contributor/Owner to enable sign-in. |
+
+The deployment role alternative must permit role-assignment creation/deletion
+and, when enabled, custom-role management. Conditions, deny assignments or
+restricted delegation can prevent this even if the role name appears correct.
+If your organization disallows granting the deployment SPN those permissions,
+the RBAC operator must arrange a separately reviewed pre-provisioning workflow;
+the current full Terraform setup cannot manage its assignments with
+Contributor alone.
+
+To use the two-role alternative on the platform subscription, run instead of
+the Owner assignment above:
+
+```bash
+az role assignment create \
+  --assignee-object-id <supplied-deployment-SPN-object-id> \
+  --assignee-principal-type ServicePrincipal \
+  --role Contributor --scope /subscriptions/<platform-subscription-id>
+az role assignment create \
+  --assignee-object-id <supplied-deployment-SPN-object-id> \
+  --assignee-principal-type ServicePrincipal \
+  --role "User Access Administrator" --scope /subscriptions/<platform-subscription-id>
+```
+
+For each **additional** subscription listed in `onboarded_subscriptions`,
+assign the deployment SPN these roles only if it will manage that
+subscription's MCP grants:
+
+```bash
+az role assignment create \
+  --assignee-object-id <supplied-deployment-SPN-object-id> \
+  --assignee-principal-type ServicePrincipal \
+  --role Reader --scope /subscriptions/<additional-onboarded-subscription-id>
+az role assignment create \
+  --assignee-object-id <supplied-deployment-SPN-object-id> \
+  --assignee-principal-type ServicePrincipal \
+  --role "User Access Administrator" --scope /subscriptions/<additional-onboarded-subscription-id>
+```
+
+Verify assignments without resolving principals through Microsoft Graph:
+
+```bash
+az role assignment list \
+  --scope /subscriptions/<subscription-id> --include-inherited \
+  --fill-principal-name false \
+  --query "[?principalId=='<supplied-SPN-object-id>'].{role:roleDefinitionName,scope:scope}" \
+  --output table
+```
+
+Repeat for the deployment SPN and every connection SPN at their respective
+subscription scopes. Resource-level grants can be inspected using their
+resource ID as `--scope` after Terraform creates them. Role propagation may
+take time; assignment visibility is not proof that an actual data-plane call
+is already authorized.
+
+### Deployment permissions and provisioning details
 
 | Deployment SPN permission | Scope | Reason / provisioning |
 | --- | --- | --- |
@@ -81,6 +184,9 @@ Azure, Fabric and OneLake endpoints, including any approved private endpoints.
 
 ## 3. Fabric tenant permissions (manual Fabric administrator)
 
+**External prerequisite:** send this checklist to the Fabric/identity teams.
+The subscription operator cannot perform these tenant/group changes.
+
 In **Fabric portal > Settings > Admin portal > Tenant settings**, search for
 the following settings (labels and preview availability can vary by tenant):
 
@@ -103,8 +209,9 @@ the following settings (labels and preview availability can vary by tenant):
    managed identities, add their service principal object IDs to the same
    approved groups as applicable (section 7).
 
-An Entra group administrator can add an approved principal without giving the
-deployment SPN Graph rights:
+The identity team can add an approved principal without giving the deployment
+SPN Graph rights. The following command is **administrator-only**, not an
+operator setup command:
 
 ```bash
 az ad group member add --group <allowed-security-group-id> \
@@ -126,8 +233,10 @@ script does not broaden them.
 
 ## 4. Entra sign-in configuration (manual application administrator)
 
-Do this with an authorized human/application administrator, **not** the
-deployment or connection SPN:
+**External prerequisite:** ask the identity/application team to configure and
+hand over the following. The subscription operator does not run these steps
+or the Graph-based helper. Neither the deployment nor connection SPN needs
+directory-write permissions for the operator workflow.
 
 1. In **Entra admin center > App registrations > New registration**, create a
    single-tenant app for the Workbench/API, and record its client ID.
@@ -170,6 +279,11 @@ directory reads required to resolve users), in addition to any required
 directory role. App ownership alone does not authorize all assignments.
 This setup deliberately leaves those privileges off the deployment SPN.
 Set `AIOPS_DEPLOYER_OBJECT_ID` below to avoid its optional Graph object-ID lookup.
+
+The handoff must include the SPA/API client IDs, tenant ID, exact API audience,
+delegated scope, authorized operator app-role assignments and a contact for
+the final redirect-URI update. Without this preconfiguration the operator can
+provision some Azure resources but cannot complete authenticated platform access.
 
 ## 5. Local dependencies and configuration (manual operator)
 
@@ -326,6 +440,7 @@ chmod 0700 "$AZURE_CONFIG_DIR"
 az login --service-principal --username <deployment-SPN-client-id> \
   --password "$DEPLOY_SECRET" --tenant <tenant-id> --output none
 az account set --subscription <platform-subscription-id>
+export AIOPS_DEPLOYER_OBJECT_ID=<supplied-deployment-SPN-object-id>
 bash infra/scripts/deploy.sh plan
 AIOPS_DEFER_CATALOG_PUBLICATION=true bash infra/scripts/deploy.sh apply
 uv run --no-sync python infra/scripts/setup-platform.py --stage fabric --apply
@@ -343,6 +458,11 @@ and unset `AZURE_CONFIG_DIR` and `DEPLOY_SECRET`; the setup orchestrator handles
 its own temporary directory automatically.
 
 ## 7. Finish sign-in and managed identity access (manual administrator)
+
+**External post-provisioning gate:** the operator supplies the resulting URLs
+and managed-identity object IDs to the identity/Fabric administrators. They
+perform the redirect-URI and allowed-group updates below. Azure RBAC assignment
+rights alone do not authorize either change.
 
 Get `web_url`, `api_url`, `fabric_workspace_id` and `fabric_lakehouse_id`
 from Terraform outputs. Add `web_url` as an SPA redirect URI in the app
@@ -376,13 +496,23 @@ alone is not evidence that a capacity is paused.
 
 ### Permissions and who grants them
 
-An authorized administrator in the **target subscription's tenant** creates
-one SPN per subscription and assigns its read permission:
+Request one **pre-created connection SPN per subscription** from the identity
+team in the target tenant. Obtain its tenant ID, client ID, service principal
+object ID, valid secret and rotation contact through a secure channel. Do not
+reuse the privileged deployment SPN. Using only your subscription RBAC
+authority, assign the supplied connection SPN Reader:
 
 ```bash
-az ad sp create-for-rbac --name aiops-conn-prod-core \
-  --role Reader --scopes /subscriptions/<target-subscription-id>
+az role assignment create \
+  --assignee-object-id <supplied-connection-SPN-object-id> \
+  --assignee-principal-type ServicePrincipal \
+  --role Reader --scope /subscriptions/<target-subscription-id>
 ```
+
+This uses the supplied object ID and does not require an Entra directory
+lookup. For a target subscription you do not administer, ask its RBAC owner
+to perform the assignment; directory access is not a substitute for that
+subscription permission. Credential renewal remains the identity team's task.
 
 | Principal / capability | Required permission and scope |
 | --- | --- |
@@ -397,6 +527,20 @@ az ad sp create-for-rbac --name aiops-conn-prod-core \
 
 No Owner, Contributor, User Access Administrator, Fabric role or tenant-wide
 Graph permission is required by the **connection SPN**.
+
+If explicitly required for billed-spend access, the target subscription RBAC
+operator can add the optional role to that same connection SPN:
+
+```bash
+az role assignment create \
+  --assignee-object-id <supplied-connection-SPN-object-id> \
+  --assignee-principal-type ServicePrincipal \
+  --role "Cost Management Reader" --scope /subscriptions/<target-subscription-id>
+```
+
+Management-group permissions are outside the assumed subscription-only
+operator authority. Leave management-group discovery unconfigured unless the
+management-group owner supplies the required Reader access.
 
 ### Store the credential and register the connection
 
