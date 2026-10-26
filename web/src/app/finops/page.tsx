@@ -1101,7 +1101,8 @@ export default function FinOpsPage() {
                   totalCount={rows.length}
                 />
                 <div className="table-scroll" tabIndex={0} role="region" aria-label="Savings opportunity records">
-                  <table className="operations-table">
+                  <table className="operations-table finops-opportunities-table">
+                    <colgroup><col /><col /><col /><col /><col /><col /><col /></colgroup>
                     <thead>
                       <tr>
                         <th>Scenario A</th>

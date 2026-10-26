@@ -539,6 +539,19 @@ describe("Connections page Ontology automation tab", () => {
     mockOntologyAutomation();
   });
 
+  it("keeps explicit registry columns and actions within the local scroller", async () => {
+    renderConnectionsPageWithScope(connection.subscription_id);
+    const registry = await screen.findByRole("region", { name: "Connection registry records" });
+    const table = within(registry).getByRole("table");
+    expect(table).toHaveClass("connections-registry-table");
+    expect(table.querySelectorAll(":scope > colgroup > col")).toHaveLength(6);
+    expect(within(table).getByRole("columnheader", { name: "Business context" })).toBeVisible();
+    expect(within(table).getByRole("columnheader", { name: "Last successful sync" })).toBeVisible();
+    expect(within(table).getByRole("button", { name: "Sync now" })).toBeVisible();
+    expect(within(table).getByRole("button", { name: "Delete" })).toBeVisible();
+    expect(sync).not.toHaveBeenCalled();
+  });
+
   it("defaults to native interactive without reading or invoking Foundry discovery", async () => {
     renderConnectionsPageWithScope(connection.subscription_id);
     fireEvent.click(await screen.findByRole("tab", { name: "Ontology automation" }));

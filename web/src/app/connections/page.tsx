@@ -746,7 +746,8 @@ function ConnectionsPageContent() {
               totalCount={rows.length}
             />
             <div className="table-scroll" tabIndex={0} role="region" aria-label="Connection registry records">
-              <table className="operations-table">
+              <table className="operations-table connections-registry-table">
+                <colgroup><col /><col /><col /><col /><col /><col /></colgroup>
                 <thead><tr><th>Connection</th><th>Business context</th><th>Health</th><th>Sync</th><th>Last successful sync</th><th>Actions</th></tr></thead>
                 <tbody>
                   {rowsPaging.pageRows.map((connection) => (

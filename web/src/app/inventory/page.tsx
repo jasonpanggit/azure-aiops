@@ -1548,7 +1548,8 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
           {filteredAzureGroups.length > 0 && (
             <section aria-label="Azure inventory groups" className="inventory-groups">
               <div className="data-table-wrap table-scroll" tabIndex={0} role="region" aria-label="Azure group table">
-              <table className="data-table">
+              <table className="data-table inventory-azure-groups-table">
+                <colgroup><col /><col /><col /><col /><col /></colgroup>
                 <thead>
                   <tr>
                     <th>Resource type</th>
@@ -1601,7 +1602,8 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
                                 </div>
                               </div>
                               <div className="table-scroll" role="region" tabIndex={0} aria-label="Azure resource detail table">
-                                <table className="detail-table">
+                                <table className="detail-table inventory-azure-detail-table">
+                                  <colgroup><col /><col /><col /><col /><col /><col /></colgroup>
                                   <thead>
                                     <tr>
                                       <th>Resource</th>
