@@ -599,6 +599,26 @@ def _tool_firewall_nsg_gaps(tool_context: ToolContext, args: Mapping[str, Any]) 
 
     def run(network: Any) -> ToolResult:
         service = network.scoped(_tool_network_scope(tool_context))
+        if category == "design_review":
+            from network.scenarios import review_network_design
+
+            payload = review_network_design(service)
+            return ToolResult(
+                status=STATUS_OK,
+                data=_bound(payload),
+                evidence=(
+                    Evidence(
+                        source_engine="network.design_review.v1",
+                        source_table="ontology_entities",
+                        timestamp=service.snapshot.observed_at,
+                        confidence=CONFIDENCE_MEDIUM,
+                    ),
+                ),
+                warning=" ".join(filter(None, (
+                    "Acquisition completeness is unqualified; observations are not live acceptance.",
+                    _bound_disclosure(payload),
+                ))),
+            )
         analysis = service.analyze()
         gaps = [
             gap.to_dict()
@@ -631,7 +651,14 @@ def _tool_firewall_nsg_gaps(tool_context: ToolContext, args: Mapping[str, Any]) 
             warning=_bound_disclosure(payload),
         )
 
-    return _provider_result(tool_context, "network", run)
+    result = _provider_result(tool_context, "network", run)
+    if category == "design_review" and result.status == STATUS_EMPTY:
+        _LOGGER.warning("network_design_review_unavailable reason=%s", result.warning)
+        return ToolResult(
+            status=STATUS_UNAVAILABLE,
+            warning=result.warning or "Network design review evidence is unavailable",
+        )
+    return result
 
 
 def _exposure_query_filter(value: object) -> ExposureFilter | None:

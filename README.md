@@ -137,6 +137,10 @@ Inspect `data.synthesis.executive` for that result; a
 `provider_error_reason=response_contract` indicates failed response validation,
 not necessarily a provider outage.
 
+Network Copilot also offers **Review network design**, an explicit-policy,
+read-only review of public access, peering integrity and NSG configured risk.
+See the [scenario contract and offline acceptance boundaries](docs/network-design-review.md).
+
 ## Prerequisites
 
 - Python **3.11+** and [`uv`](https://docs.astral.sh/uv/).

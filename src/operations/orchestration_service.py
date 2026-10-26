@@ -1240,6 +1240,15 @@ def deterministic_network_claims(
                 f"Network evidence reports **{len(gaps)} {gap_label}** and "
                 f"**{len(findings)} {finding_label}**."
             )
+        design_review = data.get("design_review")
+        if isinstance(design_review, Mapping):
+            summary = str(design_review.get("summary") or "Network design review evidence is incomplete.")
+            highlights = [
+                f"- **{row.get('resource_name') or row.get('resource_id') or 'Scope'}**: "
+                f"{row.get('title') or row.get('check_id')} ({row.get('severity') or 'unknown'}); "
+                f"policy `{row.get('policy_id')}`, check `{row.get('check_id')}`."
+                for row in rows[:5]
+            ]
         if highlights:
             summary += "\n\n" + "\n".join(highlights)
         uncertainty = (
@@ -1247,6 +1256,10 @@ def deterministic_network_claims(
             if snapshot.coverage.complete
             else ["Visible page coverage is incomplete."]
         )
+        if isinstance(design_review, Mapping):
+            uncertainty.append(
+                "Network acquisition completeness is unqualified; review unknown checks, freshness and exceptions in the cited evidence."
+            )
         network_claim = {
                 "finding_id": (
                     "network:"
@@ -1257,9 +1270,18 @@ def deterministic_network_claims(
                 "summary": summary[:1000],
                 "evidence_refs": evidence_refs,
                 "confidence": (
-                    "high" if snapshot.coverage.complete else "medium"
+                    "high"
+                    if snapshot.coverage.complete and not isinstance(design_review, Mapping)
+                    else "medium"
                 ),
-                "freshness": snapshot_claim_freshness(snapshot),
+                "freshness": (
+                    (
+                        "partial" if design_review.get("freshness") == "aging"
+                        else str(design_review.get("freshness") or "unknown")
+                    )
+                    if isinstance(design_review, Mapping)
+                    else snapshot_claim_freshness(snapshot)
+                ),
                 "uncertainty": uncertainty,
                 "actionable": False,
                 "next_check": (
@@ -2511,6 +2533,17 @@ class OrchestrationService:
             snapshot=snapshot,
             retained_evidence=current_retained_evidence,
         )
+        design_reviews = [
+            dict(result["data"]["design_review"])
+            for result in tool_results
+            if result.get("tool") == "firewall_nsg_gaps"
+            and result.get("status") == STATUS_OK
+            and isinstance(result.get("data"), Mapping)
+            and isinstance(result["data"].get("design_review"), Mapping)
+        ]
+        if design_reviews:
+            # Older page heuristics are not the explicit policy opt-in result.
+            network_page_claims = []
         remediation_claims = self._deterministic_remediation_claims(
             question,
             snapshot=snapshot,
@@ -2985,6 +3018,16 @@ class OrchestrationService:
             findings,
             retained_evidence=retained_evidence,
         )
+        if design_reviews:
+            synthesis_input["network_design_review"] = design_reviews
+            synthesis_input["network_design_review_constraints"] = (
+                "Explain and prioritize only these deterministic assessments. "
+                "Do not invent policy/check IDs, recompute rules or infer authorization. "
+                "Keep unknown acquisition coverage, freshness and exception references. "
+                "Endpoint existence does not disable public access or prove DNS resolution. "
+                "Gateway flags are complementary, not symmetric. "
+                "NSG findings describe configured risk, not proven reachability."
+            )
         evidence_refs = {
             ref
             for finding in synthesis_input["findings"]
@@ -3130,6 +3173,8 @@ class OrchestrationService:
                 provider_usage=measured_usage,
             )
         else:
+            if design_reviews:
+                claims = [*deterministic_claims, *claims][:8]
             used_refs = {
                 str(ref)
                 for claim in claims

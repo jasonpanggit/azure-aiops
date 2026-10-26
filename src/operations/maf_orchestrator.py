@@ -588,11 +588,15 @@ def build_deterministic_fallback(
             tools.insert(0, "kb_detail")
         if "firewall_nsg_gaps" in tools and any(
             marker in lowered_question
-            for marker in ("bypass", "inspection", "firewall gap", "nsg gap")
+            for marker in ("bypass", "inspection", "firewall gap", "nsg gap", "review network design")
         ):
             tools.remove("firewall_nsg_gaps")
             tools.insert(0, "firewall_nsg_gaps")
-            if "bypass" in lowered_question or "inspection" in lowered_question:
+            if "review network design" in lowered_question and page_kind == "network":
+                preferred_arguments["firewall_nsg_gaps"] = {
+                    "category": "design_review"
+                }
+            elif "bypass" in lowered_question or "inspection" in lowered_question:
                 preferred_arguments["firewall_nsg_gaps"] = {
                     "category": "firewall_bypass"
                 }

@@ -177,6 +177,10 @@ def normalize_vnet(base: dict, row: dict, observed: str) -> tuple[dict, list[dic
                 "allowForwardedTraffic": bool(peer_props.get("allowForwardedTraffic")),
                 "allowGatewayTransit": bool(peer_props.get("allowGatewayTransit")),
                 "useRemoteGateways": bool(peer_props.get("useRemoteGateways")),
+                "gatewayFlagsObserved": all(
+                    isinstance(peer_props.get(key), bool)
+                    for key in ("allowGatewayTransit", "useRemoteGateways")
+                ),
                 "allowVirtualNetworkAccess": bool(peer_props.get("allowVirtualNetworkAccess", True)),
                 "properties": peer_props,
             }
@@ -236,6 +240,18 @@ def normalize_nsg(base: dict, row: dict, observed: str) -> tuple[dict, list[dict
                     "destinationPort": ",".join(dest_ports),
                     "description": _text(rule_props.get("description")),
                     "isDefault": is_default,
+                    "configurationObserved": (
+                        all(rule_props.get(key) not in (None, "") for key in ("priority", "direction", "access", "protocol"))
+                        and all(
+                            bool(rule_props.get(single) or rule_props.get(multiple))
+                            for single, multiple in (
+                                ("sourceAddressPrefix", "sourceAddressPrefixes"),
+                                ("destinationAddressPrefix", "destinationAddressPrefixes"),
+                                ("sourcePortRange", "sourcePortRanges"),
+                                ("destinationPortRange", "destinationPortRanges"),
+                            )
+                        )
+                    ),
                     "properties": rule_props,
                 }
             )

@@ -277,6 +277,7 @@ class NetworkSecurityRule(NetworkResource):
     destination_port: str = "*"
     description: str = ""
     is_default: bool = False
+    configuration_observed: bool = field(default=True, kw_only=True)
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -520,6 +521,7 @@ class VNetPeering(NetworkResource):
     allow_gateway_transit: bool = False
     use_remote_gateways: bool = False
     allow_virtual_network_access: bool = True
+    gateway_flags_observed: bool = field(default=True, kw_only=True)
 
     def __post_init__(self) -> None:
         super().__post_init__()

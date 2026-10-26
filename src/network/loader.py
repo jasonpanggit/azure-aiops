@@ -338,8 +338,20 @@ class NetworkSnapshotLoader:
 
     def _nsg_rule(self, row: Mapping[str, Any]) -> NetworkSecurityRule:
         payload = _payload(row)
+        # Legacy property-bearing rows may contain normalized defaults, not observations.
         return NetworkSecurityRule(
             **_common(row),
+            configuration_observed=_bool(_get(
+                row, payload, "configurationObserved", "configuration_observed",
+                default=not isinstance(payload.get("properties"), dict) and all(
+                    _get(row, payload, *keys) is not None for keys in (
+                        ("priority",), ("direction",), ("access",), ("protocol",),
+                        ("sourceAddress", "source_address"),
+                        ("destinationAddress", "destination_address"),
+                        ("sourcePort", "source_port"), ("destinationPort", "destination_port"),
+                    )
+                ),
+            )),
             nsg_id=_get(row, payload, "nsgId", "nsg_id", default=""),
             priority=_int(_get(row, payload, "priority", default=0)),
             direction=_get(row, payload, "direction", default="Inbound"),
@@ -402,6 +414,15 @@ class NetworkSnapshotLoader:
             local_vnet_id=_get(row, payload, "localVnetId", "local_vnet_id", default=""),
             remote_vnet_id=_get(row, payload, "remoteVnetId", "remote_vnet_id", default=""),
             peering_state=_get(row, payload, "peeringState", "peering_state", default=""),
+            gateway_flags_observed=_bool(_get(
+                row, payload, "gatewayFlagsObserved", "gateway_flags_observed",
+                default=not isinstance(payload.get("properties"), dict) and all(
+                    isinstance(_get(row, payload, *keys), bool) for keys in (
+                        ("allowGatewayTransit", "allow_gateway_transit"),
+                        ("useRemoteGateways", "use_remote_gateways"),
+                    )
+                ),
+            )),
             allow_forwarded_traffic=_bool(
                 _get(row, payload, "allowForwardedTraffic", "allow_forwarded_traffic")
             ),
@@ -567,7 +588,7 @@ class NetworkSnapshotLoader:
                     payload,
                     "publicNetworkAccess",
                     "public_network_access",
-                    default="",
+                    default=common["properties"].get("publicNetworkAccess", ""),
                 )
                 or ""
             ),
