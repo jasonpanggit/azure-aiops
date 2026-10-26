@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { healthApi, type HealthResponse } from "../lib/services";
 import { AccountMenu } from "./AccountMenu";
 import { ScopeSelector } from "./ScopeSelector";
@@ -70,7 +70,22 @@ function NavigationLink({
 export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const navigationId = useId();
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const [runtimeHealth, setRuntimeHealth] = useState<HealthResponse | null>(null);
+
+  const dismissNavigation = () => {
+    setOpen(false);
+    menuButtonRef.current?.focus();
+  };
+
+  const handleNavigationKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (!open || event.key !== "Escape" || event.defaultPrevented) return;
+    if (!menuButtonRef.current || window.getComputedStyle(menuButtonRef.current).display === "none") return;
+    event.preventDefault();
+    event.stopPropagation();
+    dismissNavigation();
+  };
 
   useEffect(() => {
     let active = true;
@@ -108,10 +123,13 @@ export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
     <div className="workbench-shell">
       <header className="shell-topbar">
         <button
+          ref={menuButtonRef}
           type="button"
           className="shell-menu-button"
           aria-label="Toggle navigation"
           aria-expanded={open}
+          aria-controls={navigationId}
+          onKeyDown={handleNavigationKeyDown}
           onClick={() => setOpen((value) => !value)}
         >
           <span />
@@ -138,7 +156,7 @@ export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
         <AccountMenu />
       </header>
 
-      <aside className={`shell-sidebar${open ? " shell-sidebar-open" : ""}`} aria-label="Primary navigation">
+      <aside id={navigationId} className={`shell-sidebar${open ? " shell-sidebar-open" : ""}`} aria-label="Primary navigation" onKeyDown={handleNavigationKeyDown}>
         <nav>
           <div className="shell-nav-label">Operate</div>
           {PRIMARY_NAV.map((item) => (
@@ -172,7 +190,7 @@ export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
         </div>
       </aside>
 
-      {open && <button className="shell-backdrop" aria-label="Close navigation" onClick={() => setOpen(false)} />}
+      {open && <button type="button" className="shell-backdrop" aria-label="Close navigation" onClick={dismissNavigation} onKeyDown={handleNavigationKeyDown} />}
       <main className="shell-main"><RouteScopeBoundary>{children}</RouteScopeBoundary></main>
     </div>
   );
