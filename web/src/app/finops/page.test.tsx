@@ -301,6 +301,9 @@ describe("FinOps currency normalization", () => {
     expect(within(charts).queryByRole("list")).not.toBeInTheDocument();
     expect(within(charts).getByText(/3 unquantified or invalid amounts/)).toBeVisible();
     expect(screen.getByRole("region", { name: "Savings opportunity records" }).querySelectorAll("tbody tr")).toHaveLength(3);
+    const opportunityTable = within(screen.getByRole("region", { name: "Savings opportunity records" })).getByRole("table");
+    expect(opportunityTable).toHaveClass("finops-opportunities-table");
+    expect(opportunityTable.querySelectorAll(":scope > colgroup > col")).toHaveLength(7);
   });
 
   it("keeps mixed and unreported currencies separate instead of summing them", async () => {

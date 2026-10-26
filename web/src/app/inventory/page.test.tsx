@@ -719,10 +719,16 @@ describe("Inventory OS tracer", () => {
 
     expect(await screen.findAllByText("Container Apps")).not.toHaveLength(0);
     expect(screen.getByText("microsoft.app/containerapps")).toBeInTheDocument();
+    const groupsTable = within(screen.getByRole("region", { name: "Azure group table" })).getByRole("table");
+    expect(groupsTable).toHaveClass("inventory-azure-groups-table");
+    expect(groupsTable.querySelectorAll(":scope > colgroup > col")).toHaveLength(5);
 
     fireEvent.click(await screen.findByRole("button", { name: /View resources for Container Apps/ }));
 
     expect(await screen.findByText("app-1")).toBeInTheDocument();
+    const detailTable = within(screen.getByRole("region", { name: "Azure resource detail table" })).getByRole("table");
+    expect(detailTable).toHaveClass("inventory-azure-detail-table");
+    expect(detailTable.querySelectorAll(":scope > colgroup > col")).toHaveLength(6);
     expect(screen.getByText("australiaeast")).toBeInTheDocument();
     expect(screen.getByText("Succeeded")).toBeInTheDocument();
     expect(paasGroup).toHaveBeenCalledWith(

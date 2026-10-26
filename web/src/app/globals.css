@@ -2340,6 +2340,17 @@ textarea:focus-visible {
   text-align: left;
 }
 
+.connections-registry-table {
+  min-width: 1280px;
+  table-layout: fixed;
+}
+
+.connections-registry-table > colgroup > col:nth-child(2) { width: 280px; }
+.connections-registry-table > colgroup > col:nth-child(3) { width: 120px; }
+.connections-registry-table > colgroup > col:nth-child(4) { width: 180px; }
+.connections-registry-table > colgroup > col:nth-child(5) { width: 240px; }
+.connections-registry-table > colgroup > col:nth-child(6) { width: 200px; }
+
 .operations-table th {
   padding: 12px 20px;
   font-size: 11px;
@@ -6059,6 +6070,24 @@ body.topology-fullscreen-open {
 .identity-workspace .operations-table td,
 .governance-workspace .operations-table td {
   min-width: 100px;
+}
+
+.finops-workspace .finops-opportunities-table {
+  min-width: 1400px;
+  table-layout: fixed;
+}
+
+.finops-opportunities-table > colgroup > col:nth-child(1),
+.finops-opportunities-table > colgroup > col:nth-child(2) { width: 80px; }
+.finops-opportunities-table > colgroup > col:nth-child(4) { width: 100px; }
+.finops-opportunities-table > colgroup > col:nth-child(5) { width: 140px; }
+.finops-opportunities-table > colgroup > col:nth-child(6) { width: 240px; }
+.finops-opportunities-table > colgroup > col:nth-child(7) { width: 280px; }
+
+.finops-workspace .finops-opportunities-table > thead > tr > th:nth-child(-n+2),
+.finops-workspace .finops-opportunities-table > tbody > tr > td:nth-child(-n+2) {
+  min-width: 0;
+  padding-inline: 12px;
 }
 
 .identity-workspace .operations-table td:first-child {
@@ -10025,6 +10054,27 @@ body.topology-fullscreen-open {
   min-width: 840px;
   table-layout: fixed;
 }
+
+.inventory-page .data-table.inventory-azure-groups-table {
+  min-width: 1000px;
+}
+
+.inventory-azure-groups-table > colgroup > col:nth-child(1) { width: 34%; }
+.inventory-azure-groups-table > colgroup > col:nth-child(2) { width: 22%; }
+.inventory-azure-groups-table > colgroup > col:nth-child(3) { width: 18%; }
+.inventory-azure-groups-table > colgroup > col:nth-child(4) { width: 10%; }
+.inventory-azure-groups-table > colgroup > col:nth-child(5) { width: 16%; }
+
+.inventory-page .inventory-azure-detail-table {
+  min-width: 1200px;
+}
+
+.inventory-azure-detail-table > colgroup > col:nth-child(1) { width: 32%; }
+.inventory-azure-detail-table > colgroup > col:nth-child(2) { width: 18%; }
+.inventory-azure-detail-table > colgroup > col:nth-child(3) { width: 12%; }
+.inventory-azure-detail-table > colgroup > col:nth-child(4) { width: 12%; }
+.inventory-azure-detail-table > colgroup > col:nth-child(5) { width: 10%; }
+.inventory-azure-detail-table > colgroup > col:nth-child(6) { width: 16%; }
 
 .inventory-page .data-table td {
   overflow-wrap: anywhere;
