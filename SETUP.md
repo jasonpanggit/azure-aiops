@@ -1,5 +1,45 @@
 # Platform setup with service principals
 
+## Quick start: run platform setup
+
+Use a pre-created **deployment SPN with Owner on the target subscription**.
+You do not need to run Terraform, configure individual Azure services or
+assign the platform's resource-level roles yourself.
+
+On a machine with Git, Azure CLI, Terraform and `uv` installed, open a current
+platform checkout and run:
+
+```bash
+uv run --locked --extra api --extra test python infra/scripts/setup-platform.py \
+  --apply --env-file /secure/platform-setup.env
+```
+
+`/secure/platform-setup.env` is the protected setup file supplied by your
+platform administrator, containing the SPN credentials and approved platform
+settings. Keep it outside source control. The administrator prepares the
+deployment settings and tenant prerequisites using the reference below.
+The script handles SPN login, infrastructure provisioning, configured Fabric
+resources, supported permission assignments and application image deployment.
+This includes creating and attaching all configured user-assigned and
+system-assigned managed identities, and assigning their Terraform-managed
+Azure RBAC and Fabric workspace access. You do not create these identities
+or copy the deployment SPN's credentials into runtime containers.
+Running with `--apply` creates billable resources.
+
+To preview the sequence without making changes, omit `--apply`. A preview
+does not validate cloud permissions. If setup reports a missing permission
+or tenant prerequisite, have the relevant administrator resolve it before
+rerunning; do not treat partial provisioning as a completed platform.
+
+**Current limitation:** the script still requires the administrator-supplied
+configuration and Entra/Fabric tenant approvals. Subscription Owner and SPN
+credentials alone cannot grant these approvals.
+
+## Administrator reference
+
+The remaining sections are for administrators preparing the setup package,
+resolving prerequisite failures or onboarding additional subscriptions.
+
 This guide separates **automated provisioning** from **manual administrator
 gates**. Azure RBAC, Entra application permissions, Fabric tenant settings,
 Fabric workspace roles and OneLake permissions are different authorization
@@ -458,6 +498,37 @@ and unset `AZURE_CONFIG_DIR` and `DEPLOY_SECRET`; the setup orchestrator handles
 its own temporary directory automatically.
 
 ## 7. Finish sign-in and managed identity access (manual administrator)
+
+### Managed identities included in platform setup
+
+The setup script applies Terraform's identity resources and attaches them to
+their applications, jobs and services. The deployment SPN is used only for
+provisioning; runtime workloads use the identities below. No separate
+managed-identity creation commands are required.
+
+This inventory describes the current-main deployment. Optional resources and
+grants follow the selected feature flags; keep role-assignment management
+enabled for a fresh Owner-SPN setup. Disabling it requires administrator-
+provisioned equivalent grants, not a successful but unauthorized runtime.
+
+| Managed identity | Created and attached automatically | Permissions managed by setup |
+| --- | --- | --- |
+| Application runtime (`apps`, user-assigned) | Platform Container Apps and configured jobs | `AcrPull` on the platform registry; `Key Vault Secrets Officer` on the platform vault; Foundry `Foundry Agent Consumer` and `Foundry Project Runtime User`, plus configured custom prompt/response runtime roles at project/account scopes; Fabric capacity `Reader` and operational workspace `Contributor`. Ontology command access is Contributor; state/publication access is Viewer. VM execution uses `Virtual Machine Contributor` only on the platform resource group; the optional custom Defender pricing role is subscription-scoped. |
+| Operations MCP relay (`mcp_server`, user-assigned) | Operations MCP Container App | `AcrPull` on the registry, `Key Vault Secrets User` on the platform vault, and `Reader` on explicitly configured subscriptions. |
+| Azure MCP (`azure_mcp`, user-assigned) | Azure MCP Container App and configured evidence job | `AcrPull` on the registry; `Reader` and `Monitoring Reader` on explicitly configured subscriptions. Applicable OneLake evidence-read roles are reconciled from the deployment contract, not inferred from subscription Reader. |
+| Ontology coordinator (`ontology_coordinator`, user-assigned) | Discovery coordinator and configured preparation/cleanup jobs | `AcrPull` on the registry and `Key Vault Secrets User` on the vault; Contributor on configured operational, state, command and dispatch workspaces. Validation-mode subscription `Reader`/`Monitoring Reader` grants are conditional; this identity is not the authoritative publisher. |
+| Ontology publisher (`ontology_publisher`, user-assigned) | Publisher job | `AcrPull` on the registry; Contributor on configured operational, command, dispatch, publication and RBAC-validation workspaces. Identity provisioning does not approve publication or enable deferred native-authoring capabilities. |
+| Foundry account (system-assigned) | Foundry account creation | `Search Index Data Contributor` and `Search Service Contributor` on the optional knowledge Search service. |
+| Foundry project (system-assigned) | Foundry project creation | The same scoped Search roles when knowledge search is enabled. Application-level APIM/MCP caller authorization is a separate grant-map step below, not Azure RBAC. |
+| Knowledge Search (system-assigned, optional) | Knowledge Search service creation | `Cognitive Services OpenAI User` on the Foundry account for configured model calls. |
+
+Azure subscription Owner authorizes Azure identity/resource creation and role
+assignment. It does **not** authorize adding the resulting identities to
+Entra security groups or changing Fabric tenant allowlists. Those external
+approvals remain administrator tasks below; Fabric workspace roles and
+OneLake access also require the applicable Fabric permissions.
+
+### External administrator completion
 
 **External post-provisioning gate:** the operator supplies the resulting URLs
 and managed-identity object IDs to the identity/Fabric administrators. They
