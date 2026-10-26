@@ -21,7 +21,7 @@ import { buildConnectionsCopilotContext } from "@/lib/copilot/page-adapters";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useScope } from "@/lib/scope-context";
 import { scopeToSearchParams } from "@/lib/scope";
-import { handleTabListKeyDown } from "@/lib/tab-list";
+import { handleTabListKeyDown, useSelectedTabVisibility } from "@/lib/tab-list";
 import { connectionsApi, ontologyAutomationApi } from "@/lib/services";
 import { ApiError, type ConnectionCreateRequest, type ConnectionPreflightReport, type SubscriptionConnection, type SyncState } from "@/lib/types";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
@@ -125,6 +125,7 @@ function ConnectionsPageContent() {
   const [runningAction, setRunningAction] = useState("");
   const [syncProgress, setSyncProgress] = useState<{ connectionId: string; state: SyncState } | null>(null);
   const [tab, setTab] = useState<"subscriptions" | "fabric-medallion" | "ontology-automation">(urlTab);
+  const tabListRef = useSelectedTabVisibility(tab);
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [fabricRefreshKey, setFabricRefreshKey] = useState(0);
   const [ontologyRefreshKey, setOntologyRefreshKey] = useState(0);
@@ -601,7 +602,7 @@ function ConnectionsPageContent() {
         }
       />
 
-      <div role="tablist" aria-label="Data & integrations views" className="tab-list" onKeyDown={handleTabListKeyDown}>
+      <div ref={tabListRef} role="tablist" aria-label="Data & integrations views" className="tab-list" onKeyDown={handleTabListKeyDown}>
         <button
           id="subscriptions-tab"
           type="button"

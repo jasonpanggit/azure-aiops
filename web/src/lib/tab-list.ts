@@ -1,4 +1,30 @@
-import type { KeyboardEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent } from "react";
+
+/** Keeps the selected or keyboard-focused tab visible without moving document scroll or focus. */
+export function useSelectedTabVisibility(selected: string) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const list = ref.current;
+    if (!list) return;
+    const reveal = () => {
+      const focused = document.activeElement;
+      const tab = focused instanceof HTMLButtonElement && focused.getAttribute("role") === "tab" && list.contains(focused)
+        ? focused
+        : list.querySelector<HTMLButtonElement>('button[role="tab"][aria-selected="true"]');
+      if (!tab) return;
+      const bounds = list.getBoundingClientRect();
+      const left = bounds.left + list.clientLeft;
+      const right = left + list.clientWidth;
+      const rect = tab.getBoundingClientRect();
+      if (rect.left < left) list.scrollLeft += rect.left - left;
+      else if (rect.right > right) list.scrollLeft += rect.right - right;
+    };
+    reveal();
+    window.addEventListener("resize", reveal);
+    return () => window.removeEventListener("resize", reveal);
+  }, [selected]);
+  return ref;
+}
 
 /** Activates enabled tabs with arrow/Home/End keys while preserving native Tab navigation. */
 export function handleTabListKeyDown(event: KeyboardEvent<HTMLElement>): void {

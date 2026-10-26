@@ -23,7 +23,7 @@ import {
 } from "@/lib/copilot/page-adapters";
 import { useScope } from "@/lib/scope-context";
 import { scopeToSearchParams } from "@/lib/scope";
-import { handleTabListKeyDown } from "@/lib/tab-list";
+import { handleTabListKeyDown, useSelectedTabVisibility } from "@/lib/tab-list";
 import { inventoryApi } from "@/lib/services";
 import { ApiError } from "@/lib/types";
 import { inventoryViewQuery, parseInventoryView, type InventoryView } from "@/lib/inventory-view";
@@ -345,6 +345,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
   const { scope } = useScope();
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [tab, setTab] = useState(initialView.tab);
+  const tabListRef = useSelectedTabVisibility(tab);
   const [subscriptionFilter, setSubscriptionFilter] = useState(initialView.subscriptionFilter);
   const [search, setSearch] = useState(initialView.search);
   const [sourceFilter, setSourceFilter] = useState(initialView.sourceFilter);
@@ -1116,7 +1117,7 @@ function InventoryPageContent({ initialView }: { initialView: InventoryView }) {
         <StatePanel title="Inventory page is out of range" message="Matching groups exist, but this saved page has no rows."
           action={<button type="button" className="button" onClick={() => { setOsPage(0); setSoftwarePage(0); setAzurePage(0); }}>Return to first page</button>} />}
 
-      <div role="tablist" aria-label="Inventory views" className="tab-list" onKeyDown={handleTabListKeyDown}>
+      <div ref={tabListRef} role="tablist" aria-label="Inventory views" className="tab-list" onKeyDown={handleTabListKeyDown}>
         <button
           id="os-inventory-tab"
           type="button"
