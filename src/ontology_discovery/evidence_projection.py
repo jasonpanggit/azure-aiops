@@ -100,7 +100,20 @@ def project_application_dependency_evidence(
     for resource_id, rows in sorted(inventory_by_id.items()):
         asset_apps = physical_to_application.get(resource_id, set())
         if len(rows) > 1:
-            fingerprints = {_fingerprint(_inventory_payload(row)) for row in rows}
+            fingerprints = {
+                _fingerprint({
+                    "payload": _inventory_payload(row),
+                    "source_generation_id": str(
+                        row.get("source_generation_id") or inventory_generation
+                    ).strip(),
+                    "observed_at": (
+                        timestamp.astimezone(UTC).isoformat()
+                        if (timestamp := _inventory_timestamp(row, inventory_time)) is not None
+                        else None
+                    ),
+                })
+                for row in rows
+            }
             if len(fingerprints) > 1:
                 uncertainties.add("inventory_duplicate_resource_conflict")
                 continue
@@ -152,10 +165,7 @@ def project_application_dependency_evidence(
             source_generation = str(
                 row.get("source_generation_id") or inventory_generation
             ).strip()
-            timestamp_value = row.get("observed_at")
-            if timestamp_value is None or timestamp_value == "":
-                timestamp_value = row.get("timestamp")
-            timestamp = _timestamp(timestamp_value, inventory_time)
+            timestamp = _inventory_timestamp(row, inventory_time)
             if timestamp is None:
                 uncertainties.add("source_observation_stale_or_timestamp_invalid")
                 continue
@@ -484,6 +494,13 @@ def _tag_value(tags: Mapping[str, Any], key: str) -> Any:
         (value for name, value in tags.items() if str(name).casefold() == key.casefold()),
         None,
     )
+
+
+def _inventory_timestamp(row: Mapping[str, Any], default: datetime) -> datetime | None:
+    value = row.get("observed_at")
+    if value is None or value == "":
+        value = row.get("timestamp")
+    return _timestamp(value, default)
 
 
 def _timestamp(value: object, default: datetime | None) -> datetime | None:

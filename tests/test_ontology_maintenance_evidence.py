@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Iterable
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from itertools import permutations
@@ -387,6 +388,81 @@ def test_source_generation_mismatch_and_conflicting_inventory_records_abstain() 
     projection = _fixture(inventory_records=conflicting, monitor_rows=None)
     assert not projection["candidate_pairs"]
     assert "inventory_duplicate_resource_conflict" in projection["uncertainties"]
+
+
+@pytest.mark.parametrize("conflict", [
+    {"observed_at": (NOW - timedelta(seconds=1)).isoformat()},
+    {"observed_at": (NOW - timedelta(days=2)).isoformat()},
+    {"observed_at": (NOW + timedelta(seconds=1)).isoformat()},
+    {"observed_at": "invalid"},
+    {"source_generation_id": "different-inventory-generation"},
+])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("with_monitor", [False, True])
+def test_duplicate_inventory_provenance_conflicts_abstain_in_any_order(
+    conflict: dict[str, object], reverse: bool, with_monitor: bool,
+) -> None:
+    row = {
+        "resource_id": FRONTEND_ASSET,
+        "payload_json": json.dumps({
+            "id": FRONTEND_ASSET,
+            "tags": {"aiops.dependencyResourceIds": json.dumps([BACKEND_ASSET])},
+        }),
+        "observed_at": NOW.isoformat(),
+        "source_generation_id": f" {GENERATION} ",
+    }
+    duplicates = [row, {**row, **conflict}]
+    if reverse:
+        duplicates.reverse()
+    rows = [*duplicates, {"resource_id": BACKEND_ASSET}]
+    before = deepcopy(rows)
+    projection = _fixture(
+        inventory_records=rows,
+        monitor_rows=[_monitor()] if with_monitor else [],
+        bindings={"frontend-role": FRONTEND_ASSET, "backend-role": BACKEND_ASSET},
+    )
+    assert rows == before
+    assert "inventory_duplicate_resource_conflict" in projection["uncertainties"]
+    assert projection["coverage"] == "degraded"
+    assert len(projection["changed_entities"]) == 2
+    assert {record["source"] for record in projection["evidence_records"]} == (
+        {"azure-monitor:AppDependencies"} if with_monitor else set()
+    )
+    if with_monitor:
+        assert len(projection["candidate_pairs"]) == 1
+        assert projection["evidence_records"][0]["supports"] is True
+        assert projection["candidate_pairs"][0]["evidence_ids"] == [
+            projection["evidence_records"][0]["evidence_id"],
+        ]
+    else:
+        assert projection["candidate_pairs"] == []
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_equivalent_duplicate_inventory_provenance_preserves_exact_projection(reverse: bool) -> None:
+    row = {
+        "resource_id": FRONTEND_ASSET,
+        "payload_json": json.dumps({
+            "id": FRONTEND_ASSET,
+            "tags": {"aiops.dependencyResourceIds": json.dumps([BACKEND_ASSET])},
+        }),
+    }
+    equivalent = {
+        **row, "timestamp": "2026-10-19T14:00:00+02:00",
+        "source_generation_id": GENERATION,
+    }
+    bindings = {"frontend-role": FRONTEND_ASSET, "backend-role": BACKEND_ASSET}
+    expected = _fixture(
+        inventory_records=[row, {"resource_id": BACKEND_ASSET}],
+        monitor_rows=[_monitor()], bindings=bindings,
+    )
+    duplicates = [row, equivalent]
+    if reverse:
+        duplicates.reverse()
+    assert _fixture(
+        inventory_records=[*duplicates, {"resource_id": BACKEND_ASSET}],
+        monitor_rows=[_monitor()], bindings=bindings,
+    ) == expected
 
 
 def test_ambiguous_monitor_binding_is_not_resolved_by_label() -> None:
