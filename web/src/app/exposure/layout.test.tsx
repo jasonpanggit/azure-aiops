@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const navigation = vi.hoisted(() => ({
   pathname: "/exposure",
@@ -29,6 +29,8 @@ function renderLayout() {
 }
 
 describe("ExposureLayout", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   beforeEach(() => {
     navigation.pathname = "/exposure";
     navigation.params = new URLSearchParams();
@@ -79,6 +81,54 @@ describe("ExposureLayout", () => {
     expect(screen.getByRole("link", { name: "Defender exposure" })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole("link", { name: "Patch priorities" })).toHaveFocus();
+  });
+
+  it.each([
+    [300, 440, 240],
+    [-80, 60, -80],
+    [80, 180, 0],
+  ])("reveals a link spanning %s..%s horizontally by %s", (left, right, delta) => {
+    navigation.pathname = "/exposure/patch-priorities";
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute("aria-current") === "page"
+        ? DOMRect.fromRect({ x: left, width: right - left })
+        : DOMRect.fromRect({ x: 0, width: 200 });
+    });
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(200);
+    renderLayout();
+    const nav = screen.getByRole("navigation", { name: "Exposure views" });
+    expect(nav.scrollLeft).toBe(delta);
+    expect(screen.getByRole("link", { name: "Patch priorities" })).not.toHaveFocus();
+  });
+
+  it("keeps a different keyboard-focused link visible when resized", () => {
+    navigation.pathname = "/exposure/patch-priorities";
+    renderLayout();
+    const nav = screen.getByRole("navigation", { name: "Exposure views" });
+    const overview = screen.getByRole("link", { name: "Overview" });
+    overview.focus();
+    nav.scrollLeft = 100;
+    vi.spyOn(nav, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ width: 200 }));
+    vi.spyOn(nav, "clientWidth", "get").mockReturnValue(200);
+    vi.spyOn(overview, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ x: -100, width: 80 }));
+    fireEvent(window, new Event("resize"));
+    expect(nav.scrollLeft).toBe(0);
+    expect(overview).toHaveFocus();
+  });
+
+  it("reveals the new selected route and removes its resize listener on unmount", () => {
+    const remove = vi.spyOn(window, "removeEventListener");
+    const { rerender, unmount } = renderLayout();
+    const nav = screen.getByRole("navigation", { name: "Exposure views" });
+    const priorities = screen.getByRole("link", { name: "Patch priorities" });
+    vi.spyOn(nav, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ width: 200 }));
+    vi.spyOn(nav, "clientWidth", "get").mockReturnValue(200);
+    vi.spyOn(priorities, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ x: 300, width: 140 }));
+    navigation.pathname = "/exposure/patch-priorities";
+    rerender(<ExposureLayout><main>Exposure content</main></ExposureLayout>);
+    expect(nav.scrollLeft).toBe(240);
+    unmount();
+    expect(remove).toHaveBeenCalledWith("resize", expect.any(Function));
   });
 
   it.each(["/exposure/cves/CVE-2026-0001", "/exposure/kbs/KB600001"])(

@@ -152,9 +152,13 @@ def project_application_dependency_evidence(
             source_generation = str(
                 row.get("source_generation_id") or inventory_generation
             ).strip()
-            timestamp = _timestamp(
-                row.get("observed_at") or row.get("timestamp"), inventory_time
-            )
+            timestamp_value = row.get("observed_at")
+            if timestamp_value is None or timestamp_value == "":
+                timestamp_value = row.get("timestamp")
+            timestamp = _timestamp(timestamp_value, inventory_time)
+            if timestamp is None:
+                uncertainties.add("source_observation_stale_or_timestamp_invalid")
+                continue
             fresh = _fresh(timestamp, observed_at, max_age)
             valid_generation = source_generation == inventory_generation
             fingerprint = _fingerprint(_inventory_payload(row))
@@ -483,8 +487,10 @@ def _tag_value(tags: Mapping[str, Any], key: str) -> Any:
 
 
 def _timestamp(value: object, default: datetime | None) -> datetime | None:
-    if not value:
+    if value is None or value == "":
         return default
+    if not isinstance(value, (str, datetime)):
+        return None
     try:
         parsed = datetime.fromisoformat(str(value))
     except ValueError:
