@@ -256,7 +256,12 @@ The offline source projection also supports opt-in
 fixed-field `AppDependencies` observations. Physical resources resolve through
 existing in-scope Application membership; telemetry labels alone cannot create
 identity. Monitor input requires explicit server-supplied emitter/target
-bindings and an injected source reader. The fixed query and projector are not
+bindings and an injected source reader. Labels are trimmed and case-folded;
+aliases for the same normalized label must all uniquely resolve to the same
+resource. Conflicting, empty or ambiguous aliases keep that label unresolved
+regardless of mapping order, producing explicit uncertainty rather than Monitor
+support. Equivalent aliases preserve the same evidence. The fixed query and
+projector are not
 proof that production telemetry or those bindings exist. Repeated events from
 one source cannot count as independent corroboration. Stored graph baselines
 advance only with successful dispatch and predecessor CAS; partial scans do not

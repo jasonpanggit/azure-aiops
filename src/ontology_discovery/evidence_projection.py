@@ -446,7 +446,11 @@ def _bindings(
         )
         normalized = {_identity(value) for value in candidates if _identity(value)}
         if label:
-            result[label] = next(iter(normalized)) if len(normalized) == 1 else None
+            resolved = next(iter(normalized)) if len(normalized) == 1 else None
+            if label not in result:
+                result[label] = resolved
+            elif result[label] != resolved:
+                result[label] = None
     return result
 
 

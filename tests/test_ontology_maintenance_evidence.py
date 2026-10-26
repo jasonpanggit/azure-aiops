@@ -7,6 +7,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from itertools import permutations
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,7 +44,7 @@ def _fixture(
     *,
     monitor_rows: list[dict[str, object]] | None = None,
     inventory_records: list[dict[str, object]] | None = None,
-    bindings: dict[str, str] | None = None,
+    bindings: dict[str, str | list[str]] | None = None,
     observed_at: datetime = NOW,
 ) -> dict[str, object]:
     rows = inventory_records or [
@@ -290,6 +291,59 @@ def test_ambiguous_monitor_binding_is_not_resolved_by_label() -> None:
         for row in projection["evidence_records"]
     )
     assert "dependency_monitor_identity_binding_missing" in projection["uncertainties"]
+
+
+@pytest.mark.parametrize("order", list(permutations(range(3))))
+@pytest.mark.parametrize("label,valid,conflicting", [
+    ("frontend-role", FRONTEND_ASSET, BACKEND_ASSET),
+    ("backend-role", BACKEND_ASSET, FRONTEND_ASSET),
+])
+def test_conflicting_normalized_monitor_aliases_abstain_in_any_order(
+    order: tuple[int, ...], label: str, valid: str, conflicting: str,
+) -> None:
+    aliases = [(label, valid), (label.upper(), conflicting), (f" {label} ", valid)]
+    bindings = dict(aliases[index] for index in order)
+    bindings.setdefault("frontend-role", FRONTEND_ASSET)
+    bindings.setdefault("backend-role", BACKEND_ASSET)
+    projection = _fixture(monitor_rows=[_monitor()], bindings=bindings)
+    assert {row["source"] for row in projection["evidence_records"]} == {
+        "azure-resource-graph:dependency-tag",
+    }
+    assert "dependency_monitor_identity_binding_missing" in projection["uncertainties"]
+    assert projection["coverage"] == "degraded"
+
+
+@pytest.mark.parametrize("ambiguous", [[], [FRONTEND_ASSET, BACKEND_ASSET]])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_ambiguous_monitor_alias_cannot_be_replaced_by_a_unique_alias(
+    ambiguous: list[str], reverse: bool,
+) -> None:
+    aliases = [
+        ("FRONTEND-ROLE", ambiguous),
+        (" frontend-role ", FRONTEND_ASSET),
+    ]
+    if reverse:
+        aliases.reverse()
+    bindings = {"backend-role": BACKEND_ASSET, **dict(aliases)}
+    projection = _fixture(monitor_rows=[_monitor()], bindings=bindings)
+    assert {row["source"] for row in projection["evidence_records"]} == {
+        "azure-resource-graph:dependency-tag",
+    }
+    assert "dependency_monitor_identity_binding_missing" in projection["uncertainties"]
+
+
+def test_normalized_monitor_aliases_for_the_same_resource_preserve_support() -> None:
+    canonical = {"frontend-role": FRONTEND_ASSET, "backend-role": BACKEND_ASSET}
+    expected = _fixture(monitor_rows=[_monitor()], bindings=canonical)
+    projection = _fixture(
+        monitor_rows=[_monitor()],
+        bindings={
+            **canonical,
+            " FRONTEND-ROLE ": f" {FRONTEND_ASSET.upper()} ",
+            "BACKEND-ROLE": [BACKEND_ASSET, BACKEND_ASSET.upper()],
+        },
+    )
+    assert projection == expected
 
 
 def test_ambiguous_inventory_identity_does_not_choose_an_application() -> None:
