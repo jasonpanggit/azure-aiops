@@ -465,6 +465,75 @@ def test_equivalent_duplicate_inventory_provenance_preserves_exact_projection(re
     ) == expected
 
 
+@pytest.mark.parametrize("conflicting", ["[]", None, "invalid", False])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("with_monitor", [False, True])
+def test_conflicting_case_variant_dependency_tags_abstain_in_any_order(
+    conflicting: object, reverse: bool, with_monitor: bool,
+) -> None:
+    tags = [
+        ("aiops.dependencyResourceIds", json.dumps([BACKEND_ASSET])),
+        ("AIOPS.DEPENDENCYRESOURCEIDS", conflicting),
+    ]
+    if reverse:
+        tags.reverse()
+    rows = [
+        {"resource_id": FRONTEND_ASSET, "payload_json": json.dumps({"tags": dict(tags)})},
+        {"resource_id": BACKEND_ASSET},
+    ]
+    before = deepcopy(rows)
+    projection = _fixture(
+        inventory_records=rows,
+        monitor_rows=[_monitor()] if with_monitor else [],
+        bindings={"frontend-role": FRONTEND_ASSET, "backend-role": BACKEND_ASSET},
+    )
+    assert rows == before
+    assert "dependency_declaration_conflict" in projection["uncertainties"]
+    assert projection["coverage"] == "degraded"
+    assert len(projection["changed_entities"]) == 2
+    assert {row["source"] for row in projection["evidence_records"]} == (
+        {"azure-monitor:AppDependencies"} if with_monitor else set()
+    )
+    if with_monitor:
+        assert len(projection["candidate_pairs"]) == 1
+        assert projection["evidence_records"][0]["supports"] is True
+        assert projection["candidate_pairs"][0]["evidence_ids"] == [
+            projection["evidence_records"][0]["evidence_id"],
+        ]
+    else:
+        assert projection["candidate_pairs"] == []
+
+
+@pytest.mark.parametrize("tag_names", [
+    ["aiops.dependencyResourceIds"],
+    ["AIOPS.DEPENDENCYRESOURCEIDS"],
+    ["aiops.dependencyResourceIds", "AIOPS.DEPENDENCYRESOURCEIDS"],
+    ["AIOPS.DEPENDENCYRESOURCEIDS", "aiops.dependencyResourceIds"],
+])
+def test_unambiguous_case_variant_dependency_tags_retain_support(tag_names: list[str]) -> None:
+    projection = _fixture(
+        inventory_records=[
+            {
+                "resource_id": FRONTEND_ASSET,
+                "payload_json": json.dumps({
+                    "tags": dict.fromkeys(tag_names, json.dumps([BACKEND_ASSET])),
+                }),
+            },
+            {"resource_id": BACKEND_ASSET},
+        ],
+        monitor_rows=[_monitor()],
+        bindings={"frontend-role": FRONTEND_ASSET, "backend-role": BACKEND_ASSET},
+    )
+    assert projection["coverage"] == "complete"
+    assert projection["uncertainties"] == []
+    assert len(projection["candidate_pairs"]) == 1
+    assert len(projection["evidence_records"]) == 2
+    assert all(row["supports"] for row in projection["evidence_records"])
+    assert set(projection["candidate_pairs"][0]["evidence_ids"]) == {
+        row["evidence_id"] for row in projection["evidence_records"]
+    }
+
+
 def test_ambiguous_monitor_binding_is_not_resolved_by_label() -> None:
     projection = _fixture(
         monitor_rows=[_monitor()],
