@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expectFullWidthProse } from "./layout-density";
 
 const subscriptionId = "00000000-0000-0000-0000-000000000001";
 const situationId = "situation-layout-00000000-0000-0000-0000-000000000001";
@@ -67,6 +68,16 @@ const situation = {
   }],
   source_status: [],
 };
+
+for (const width of [375, 1912, 2560]) {
+  test(`Services explanatory prose fills its container at ${width}px`, async ({ page }) => {
+    await mockOperations(page);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/services");
+    await expectFullWidthProse(page.locator(".service-brief p"));
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
+  });
+}
 
 async function mockOperations(page: Page, unavailable: string[] = []) {
   await page.route("**/api/v1/**", (route) => {

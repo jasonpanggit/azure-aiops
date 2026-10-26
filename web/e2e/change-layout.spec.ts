@@ -1,11 +1,23 @@
 import { expect, test, type Page } from "@playwright/test";
 import { buildChangeAssessment, buildChangeHistory, buildChangeReport } from "../src/test/change-fixtures";
+import { expectFullWidthProse } from "./layout-density";
 
 const warning = "Source coverage is incomplete; validate current state before acting.";
 const envelope = (data: unknown) => ({
   data, scope: {}, knowledge_version: "change-layout", warnings: [warning],
   evidence: [{ source_engine: "ARG", source_table: "activity", timestamp: "2026-09-06T08:00:00Z", confidence: "low", freshness: "stale" }],
 });
+
+for (const width of [375, 1912, 2560]) {
+  test(`Predeploy explanatory prose fills its container at ${width}px`, async ({ page }) => {
+    await mockChanges(page);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/changes/predeploy");
+    await expect(page.getByRole("form", { name: "Submit a proposed change", exact: true })).toBeVisible();
+    await expectFullWidthProse(page.locator(".predeploy-intake > p"));
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
+  });
+}
 
 async function mockChanges(page: Page, unavailable: string[] = [], empty = false) {
   await page.route("**/api/v1/**", (route) => {

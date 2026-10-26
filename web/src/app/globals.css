@@ -73,7 +73,7 @@
 }
 
 .investigation-team-workspace p {
-  max-width: 75ch;
+  max-width: none;
   margin-block: 12px;
 }
 
@@ -153,7 +153,7 @@
 .investigation-hypotheses ul {
   margin-block: 12px;
   padding-left: 24px;
-  max-width: 75ch;
+  max-width: none;
 }
 
 .investigation-hypotheses li + li {
@@ -415,7 +415,7 @@ body {
 }
 
 :where(.page-container, .page-shell, .copilot-drawer) p {
-  max-inline-size: 75ch;
+  max-inline-size: none;
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -900,7 +900,7 @@ textarea:focus-visible {
 }
 
 .command-center-copy h2 {
-  max-width: 680px;
+  max-width: none;
   margin-top: 15px;
   font-size: clamp(30px, 4vw, 48px);
   font-weight: 400;
@@ -917,7 +917,7 @@ textarea:focus-visible {
 .command-center-warning .command-center-copy h2 strong { color: #ffd36b; }
 
 .command-center-copy p {
-  max-width: 630px;
+  max-width: none;
   margin-top: 14px;
   color: #d3e1eb;
   font-size: 14px;
@@ -1038,7 +1038,7 @@ textarea:focus-visible {
 .copilot-insights > details {
   grid-column: 1 / -1;
   min-width: 0;
-  max-width: 75ch;
+  max-width: none;
   overflow-wrap: anywhere;
 }
 
@@ -1091,7 +1091,7 @@ textarea:focus-visible {
 .page-header-copy {
   flex: 1 1 32rem;
   min-width: 0;
-  max-width: 800px;
+  max-width: none;
 }
 
 .page-header h1 {
@@ -1101,7 +1101,7 @@ textarea:focus-visible {
 }
 
 .page-header p {
-  max-width: 760px;
+  max-width: none;
   margin-top: 7px;
   color: var(--color-text-secondary);
 }
@@ -1477,7 +1477,7 @@ textarea:focus-visible {
 }
 
 .resource-health-history .card-body > p {
-  max-width: 75ch;
+  max-width: none;
 }
 
 .resource-health-history .card-body > p + p,
@@ -1774,7 +1774,8 @@ textarea:focus-visible {
 }
 
 .state-panel p {
-  max-width: 560px;
+  max-width: none;
+  justify-self: stretch;
   margin-top: 5px;
   color: var(--color-text-secondary);
 }
@@ -1833,8 +1834,12 @@ textarea:focus-visible {
   gap: 12px;
   width: 100%;
   min-width: 0;
-  max-width: 720px;
+  max-width: none;
   text-align: left;
+}
+
+.source-recovery-actions > p {
+  justify-self: stretch;
 }
 
 .source-recovery-actions p {
@@ -2296,7 +2301,7 @@ textarea:focus-visible {
 }
 
 .identity-review-details > p {
-  max-width: 65ch;
+  max-width: none;
 }
 
 .identity-review-reasons {
@@ -2306,7 +2311,7 @@ textarea:focus-visible {
 }
 
 .identity-review-boundary {
-  max-width: 75ch;
+  max-width: none;
   margin: 0 0 12px;
   color: var(--color-text-secondary);
 }
@@ -3635,7 +3640,7 @@ textarea:focus-visible {
 }
 
 .flow-verdict p {
-  max-width: 720px;
+  max-width: none;
   margin-top: 5px;
   color: var(--color-text-secondary);
 }
@@ -4526,7 +4531,7 @@ textarea:focus-visible {
 
 .exposure-detail-summary > p,
 .exposure-detail-section > p {
-  max-width: 76ch;
+  max-width: none;
   margin: 8px 0 0;
   color: var(--color-text-secondary);
   line-height: 1.55;
@@ -4544,7 +4549,7 @@ textarea:focus-visible {
 }
 
 .exposure-risk-summary-body p {
-  max-width: 70ch;
+  max-width: none;
   margin: 8px 0 0;
   color: var(--color-text-secondary);
   line-height: 1.5;
@@ -5902,7 +5907,7 @@ body.topology-fullscreen-open {
 
 .connection-readiness-stages p,
 .connection-readiness-stages > li > span {
-  max-width: 75ch;
+  max-width: none;
   color: var(--color-text-secondary);
   overflow-wrap: anywhere;
 }
@@ -6573,7 +6578,7 @@ body.topology-fullscreen-open {
 }
 
 .fabric-contract .card-body > p {
-  max-width: 72ch;
+  max-width: none;
   overflow-wrap: anywhere;
 }
 
@@ -6790,7 +6795,7 @@ body.topology-fullscreen-open {
 }
 
 .overview-history p {
-  max-width: 75ch;
+  max-width: none;
   line-height: 1.6;
   margin-block: 12px;
 }
@@ -6950,7 +6955,7 @@ body.topology-fullscreen-open {
 
 .exposure-movement .card-body > p,
 .exposure-movement details p {
-  max-width: 75ch;
+  max-width: none;
   overflow-wrap: anywhere;
 }
 
@@ -6971,7 +6976,7 @@ body.topology-fullscreen-open {
 .exposure-decision-list p,
 .exposure-decision .card-body > p,
 .exposure-recovery .card-body p {
-  max-width: 75ch;
+  max-width: none;
   overflow-wrap: anywhere;
 }
 
@@ -7042,7 +7047,7 @@ body.topology-fullscreen-open {
 }
 
 .cve-retained-evidence .card-body > p {
-  max-width: 75ch;
+  max-width: none;
   margin-block: 12px;
 }
 
@@ -7068,7 +7073,7 @@ body.topology-fullscreen-open {
 }
 
 .kb-update-evidence p {
-  max-width: 75ch;
+  max-width: none;
   margin-block: 12px;
 }
 
@@ -7179,7 +7184,7 @@ body.topology-fullscreen-open {
 
 .compliance-policy-explanation p,
 .compliance-policy-audit-entry p {
-  max-width: 75ch;
+  max-width: none;
   line-height: 1.6;
 }
 
@@ -7270,7 +7275,7 @@ body.topology-fullscreen-open {
 .service-reliability button:disabled { opacity: .55; cursor: not-allowed; }
 .service-reliability-review { display: grid; gap: 12px; }
 .service-reliability [aria-label="Measured component requests"] { display: grid; gap: 12px; }
-.service-reliability .card-body > p, .service-reliability [aria-label="Measured component requests"] > p { max-width: 75ch; }
+.service-reliability .card-body > p, .service-reliability [aria-label="Measured component requests"] > p { max-width: none; }
 .service-reliability-values { display: flex; flex-wrap: wrap; gap: 20px 32px; }
 .service-reliability-values dt { color: var(--color-text-secondary); }
 .service-reliability-values dd { margin: 4px 0 0; font-weight: 600; }
@@ -7283,7 +7288,7 @@ body.topology-fullscreen-open {
 .situation-response-deadline .card-body { display: grid; gap: 16px; }
 .situation-response-deadline .card-body > .button { justify-self: start; }
 .situation-response-deadline button:disabled { opacity: .55; cursor: not-allowed; }
-.situation-response-deadline p { max-width: 75ch; }
+.situation-response-deadline p { max-width: none; }
 .situation-response-deadline fieldset { display: grid; gap: 16px; min-width: 0; border: 1px solid var(--color-border); padding: 16px; }
 .situation-response-deadline input, .situation-response-deadline textarea { width: 100%; min-width: 0; max-width: 100%; }
 .situation-response-deadline code, .situation-response-deadline dd { overflow-wrap: anywhere; }
@@ -7291,7 +7296,7 @@ body.topology-fullscreen-open {
 .situation-deadline-controls { display: flex; flex-wrap: wrap; gap: 12px; }
 .situation-deadline-cell { min-width: 220px; width: 250px; }
 .remediation-verification-inbox .card-body { display: grid; gap: 16px; }
-.remediation-verification-inbox p { max-width: 75ch; }
+.remediation-verification-inbox p { max-width: none; }
 .remediation-inbox-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
 .remediation-inbox-controls select { min-width: 0; max-width: 100%; }
 .remediation-verification-inbox button:disabled { opacity: .55; cursor: not-allowed; }
@@ -7331,7 +7336,7 @@ body.topology-fullscreen-open {
 }
 
 .service-brief p {
-  max-width: 75ch;
+  max-width: none;
   line-height: 1.6;
   margin-block: 12px;
 }
@@ -7389,7 +7394,7 @@ body.topology-fullscreen-open {
 
 .page-scope-notice p {
   margin: 0 0 6px;
-  max-width: 75ch;
+  max-width: none;
 }
 
 .page-scope-notice a {
@@ -7409,7 +7414,7 @@ body.topology-fullscreen-open {
 }
 
 .change-observations p {
-  max-width: 75ch;
+  max-width: none;
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -7550,7 +7555,7 @@ body.topology-fullscreen-open {
 }
 
 .governance-settings-editor { min-width: 0; margin-top: 24px; }
-.governance-settings-editor p { max-width: 75ch; overflow-wrap: anywhere; }
+.governance-settings-editor p { max-width: none; overflow-wrap: anywhere; }
 .governance-settings-editor > p { margin-bottom: 12px; }
 .governance-settings-fields { min-width: 0; margin: 20px 0; padding: 0; border: 0; }
 .governance-settings-fields legend { font-weight: 600; }
@@ -7883,7 +7888,8 @@ body.topology-fullscreen-open {
 }
 
 .copilot-welcome > p {
-  max-width: 540px;
+  max-width: none;
+  justify-self: stretch;
   margin-top: 5px;
   color: var(--color-text-secondary);
 }
@@ -9906,7 +9912,7 @@ body.topology-fullscreen-open {
 }
 
 .inventory-export-capture p {
-  max-width: 75ch;
+  max-width: none;
   line-height: 1.6;
 }
 
@@ -10114,7 +10120,7 @@ body.topology-fullscreen-open {
 }
 
 .remediation-handoff-copy > p {
-  max-width: 62rem;
+  max-width: none;
 }
 
 .compliance-review-card .card-header {
@@ -10135,7 +10141,7 @@ body.topology-fullscreen-open {
 }
 
 .compliance-review-heading p {
-  max-width: 48rem;
+  max-width: none;
   color: var(--color-text-secondary);
 }
 
@@ -10458,7 +10464,7 @@ body.topology-fullscreen-open {
 }
 
 .remediation-execution-heading p {
-  max-width: 72ch;
+  max-width: none;
   color: var(--color-text-secondary);
 }
 
@@ -11127,7 +11133,7 @@ body.topology-fullscreen-open {
 }
 
 .network-intents p {
-  max-width: 75ch;
+  max-width: none;
 }
 
 .network-intents-heading,
@@ -11191,7 +11197,7 @@ body.topology-fullscreen-open {
 }
 
 .network-history p {
-  max-width: 75ch;
+  max-width: none;
 }
 
 .network-history-heading,
@@ -11264,7 +11270,7 @@ body.topology-fullscreen-open {
 
 .network-review-handoff p,
 .network-review-context p {
-  max-width: 75ch;
+  max-width: none;
 }
 
 .network-review-context,
@@ -11286,7 +11292,7 @@ body.topology-fullscreen-open {
 }
 
 .predeploy-history-body p {
-  max-width: 72ch;
+  max-width: none;
   margin: 0;
 }
 
@@ -11341,7 +11347,7 @@ body.topology-fullscreen-open {
 }
 
 .predeploy-intake p {
-  max-width: 72ch;
+  max-width: none;
   margin: 0;
 }
 
@@ -11388,7 +11394,7 @@ body.topology-fullscreen-open {
 }
 
 .saved-views-body > p {
-  max-width: 72ch;
+  max-width: none;
 }
 
 .saved-views-body > .button {
@@ -11487,7 +11493,7 @@ body.topology-fullscreen-open {
 }
 .governance-retained h3 { font-size: 1.125rem; margin: 0 0 0.5rem; }
 .governance-retained h4 { font-size: 1rem; margin: 0 0 0.5rem; }
-.governance-retained p { max-width: 72ch; margin: 0.5rem 0 0.75rem; overflow-wrap: anywhere; }
+.governance-retained p { max-width: none; margin: 0.5rem 0 0.75rem; overflow-wrap: anywhere; }
 .governance-retained-content { margin-top: 1.25rem; }
 .governance-retained-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 0.75rem; margin: 1.25rem 0; }
 .governance-retained-actions label { display: grid; gap: 0.375rem; max-width: 100%; }
@@ -11508,7 +11514,7 @@ body.topology-fullscreen-open {
 .governance-campaigns summary { cursor: pointer; padding: 0.5rem 0; }
 .remediation-decision-summary { padding: 1.25rem; border-bottom: 1px solid var(--color-border); min-width: 0; overflow-wrap: anywhere; }
 .remediation-decision-summary h2 { font-size: 1.125rem; margin-bottom: 1rem; }
-.remediation-decision-summary p { margin-block: 0.75rem; max-width: 75ch; }
+.remediation-decision-summary p { margin-block: 0.75rem; max-width: none; }
 .remediation-decision-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 1rem; margin: 0; }
 .remediation-decision-target { grid-column: 1 / -1; }
 .remediation-decision-summary dt { color: var(--color-text-secondary); font-size: 0.875rem; }
@@ -11524,7 +11530,7 @@ body.topology-fullscreen-open {
 
 .remediation-rollouts { margin-block-start: 18px; }
 .remediation-rollouts .card-body { display: grid; gap: 16px; min-width: 0; }
-.remediation-rollouts .card-body > p { max-width: 75ch; }
+.remediation-rollouts .card-body > p { max-width: none; }
 .remediation-rollouts .card-header { flex-wrap: wrap; gap: 12px; }
 .remediation-rollouts details { min-width: 0; }
 .remediation-rollouts summary { min-height: 44px; padding-block: 12px; cursor: pointer; }
@@ -11543,7 +11549,7 @@ body.topology-fullscreen-open {
 .agents-continuation :is(button, .button) { min-height: 44px; }
 .agents-job { overflow-wrap: anywhere; }
 .agents-job .card-body { display: grid; gap: 16px; }
-.agents-job .card-body > p { max-width: 75ch; margin: 0; }
+.agents-job .card-body > p { max-width: none; margin: 0; }
 .agents-job dl { display: grid; gap: 12px; margin: 0; }
 .agents-job dl > div { min-width: 0; }
 .agents-job dt { font-weight: 600; }
@@ -11594,7 +11600,7 @@ body.topology-fullscreen-open {
 }
 
 :where(.page-container, .page-shell, .copilot-drawer) p + :is(ul, ol):not([class]) {
-  max-inline-size: 75ch;
+  max-inline-size: none;
   margin-block: 12px;
   padding-inline-start: 24px;
   line-height: 1.6;

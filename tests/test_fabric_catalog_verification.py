@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -167,6 +167,44 @@ def test_direct_retry_keeps_telemetry_and_identity():
     assert calls[1].url == calls[2].url
     assert calls[1].headers["x-ms-client-request-id"] == calls[2].headers["x-ms-client-request-id"]
     assert calls[2].headers["x-ms-fabric-skill"] == "onelake-catalog-govern-cli"
+
+
+@pytest.mark.parametrize("second_offset", [0, 1])
+def test_backward_clock_between_sequential_gets_rejects_whole_observation(second_offset):
+    source, calls = _source([
+        {"value": [_catalog(ITEM), _catalog(OTHER)]},
+        _direct(OTHER), _direct(ITEM),
+    ])
+    times = iter([
+        NOW, NOW + timedelta(seconds=2), NOW + timedelta(seconds=second_offset),
+    ])
+    source.clock = lambda: next(times)
+    try:
+        with pytest.raises(ValueError, match="time"):
+            source.fetch_verified()
+        assert len(calls) == 3
+    finally:
+        source.client.http.close()
+
+
+@pytest.mark.parametrize("second_offset", [2, 3])
+def test_equal_or_increasing_sequential_verification_times_remain_valid(second_offset):
+    source, _ = _source([
+        {"value": [_catalog(ITEM), _catalog(OTHER)]},
+        _direct(OTHER), _direct(ITEM),
+    ])
+    times = iter([
+        NOW, NOW + timedelta(seconds=2), NOW + timedelta(seconds=second_offset),
+    ])
+    source.clock = lambda: next(times)
+    try:
+        result = source.fetch_verified()
+        assert [row.verified_at for row in result.verified_items] == [
+            NOW + timedelta(seconds=2), NOW + timedelta(seconds=second_offset),
+        ]
+        assert result.to_dict()["authoritative"] is False
+    finally:
+        source.client.http.close()
 
 
 def test_unchanged_metadata_and_optional_description():
