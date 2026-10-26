@@ -3549,7 +3549,7 @@ textarea:focus-visible {
 }
 
 .flow-query-form button {
-  min-height: 36px;
+  min-height: var(--control-height);
 }
 
 .flow-query-form button:disabled {
