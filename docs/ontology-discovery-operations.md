@@ -265,6 +265,11 @@ Monitor evidence. Only absent, null or empty-string row timestamps retain the
 existing alternate-field/inventory-observation fallback; invalid `observed_at`
 values cannot use a valid alternate `timestamp`. Valid stale or future timestamps
 remain unsupported evidence.
+Duplicate inventory rows must agree on payload, effective source generation and
+effective observation time. Conflicting provenance abstains with
+`inventory_duplicate_resource_conflict` regardless of row order, even when
+payloads match. Equivalent timestamp offsets and existing missing-provenance
+defaults retain identical evidence; independent Monitor evidence is preserved.
 Monitor input requires explicit server-supplied emitter/target
 bindings and an injected source reader. Labels are trimmed and case-folded;
 aliases for the same normalized label must all uniquely resolve to the same
