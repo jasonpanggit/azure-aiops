@@ -252,6 +252,7 @@ export const fabricMedallionApi = {
     apiRequest<{
       layers: Record<"bronze" | "silver" | "gold", FabricLayerCounts>;
       tables?: Record<"bronze" | "silver" | "gold", string[]>;
+      gold_declarations?: import("./types").FabricGoldDeclarations;
     }>("/fabric-medallion/layers", {
       query: scopeToSearchParams(scope),
     }),

@@ -44,6 +44,43 @@ flowchart LR
 - `storage.delta_writer`: Delta overwrite, append, and merge/upsert using optimistic Delta transactions, retry, and per-run idempotency.
 - `fabric.sync_service`: source-generation selection, replay, validation, Bronze/Silver/Ontology writes, state transitions, catalog generation, registration, and metrics.
 
+### Source product contracts
+
+`fabric.schema_registry` owns additive product declarations independently of
+Arrow schema versioning. Product-contract version `1.0.0` covers
+`bronze_resources`, `silver_vm_inventory` and the eight existing exposure Gold
+products. `product_contract_for()` returns detached JSON metadata for reuse by
+read-only consumers; it does not create, register or publish a table.
+
+The existing scoped
+`GET /api/v1/fabric-medallion/datasets/{table}/contract` response includes
+`product_contract`. The endpoint still requires source-status registration in
+the caller's effective scope. A declared but unregistered Gold product remains
+404; declarations do not enter `/layers` counters or grant connection access.
+This is separate from the queued Gold-declaration discovery UI/catalog.
+
+Contracts describe the implementation owner role and producer reference, grain,
+stable identity fields, selected source inputs, snapshot mode, generation
+field/group and consumer. Input lists are explicitly partial, not a complete
+dependency DAG or acquisition-completeness proof. A generation group is a
+logical grouping, not proof that every product was atomically published.
+The five analytical Gold products use `read_model_generation_id`; current
+projections and inventory retain their existing snapshot/write semantics.
+Never sum source-state facts as though they were unique exposures.
+
+Scope declarations require row tenant/subscription identity and independently
+proven connection membership. A subscription aggregate cannot become a
+connection product by copying a label. Actual authorization continues to use
+the existing scope/connection registry and evidence, never this declaration.
+
+Freshness references point to the existing per-table policy and its configured
+default cadence/multiplier; no policy values or Job schedules change.
+Retention is `not_declared`; operational ownership, physical inventory,
+deployed schema validation and consumer readiness remain uncollected until
+separately evidenced. Undeclared products return `status=not_declared` rather
+than receiving an inferred contract. Older clients can ignore the additive
+field without changing their existing schema/diagnostic display.
+
 OneLake is accessed through its ADLS Gen2-compatible endpoint; the implementation uses the Microsoft Azure Data Lake Storage SDK for folders/files and delta-rs for Delta transactions.[1] Fabric workspace, Lakehouse, table, and shortcut operations follow the published Fabric REST API specification.[2]
 
 ## Security boundaries

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from api.errors import ApiError
 from api.routers import fabric_medallion as routes
 from api.scope import Scope
 from ontology.publication_state import PublicationAttemptRecord
@@ -103,6 +104,72 @@ def test_publication_visibility_does_not_require_source_status_storage(connectio
     # The fixture reader raises for every dataset because none are registered.
     assert routes._publication_attempt_rows(context, Scope())[0]["status"] == "failed"
     assert accesses == []
+
+@pytest.mark.parametrize("recorded_table", ["", "bronze_resources", "gold_exposure_facts"])
+def test_gold_declarations_do_not_create_observed_health(
+    connection_context, recorded_table,
+):
+    context, _, datasets, accesses = connection_context
+    datasets["metadata_source_status"] = [] if not recorded_table else [{
+        "source_family": recorded_table,
+        "status": "succeeded",
+        "quality": "complete",
+        "observed_at": "2000-01-01T00:00:00Z",
+    }]
+    scope = Scope({
+        "subscription": {"sub-allowed"},
+        "subscription_connection": {"allowed"},
+    })
+
+    response = routes.medallion_layers(context, scope)
+
+    declarations = response["data"]["gold_declarations"]
+    assert declarations == {
+        "source": "fabric.schema_registry",
+        "version": routes.SCHEMA_VERSION,
+        "tables": sorted([
+            "gold_exposure_facts", "gold_exposure_dimensions",
+            "gold_exposure_facets", "gold_exposure_summaries",
+            "gold_exposure_evidence", "gold_exposure_current",
+            "gold_container_exposure_current", "gold_container_exposure_coverage",
+        ]),
+        "physical_inventory": "not_collected",
+    }
+    assert response["scope"] == scope.to_dict()
+    assert response["data"]["tables"]["gold"] == (
+        [recorded_table] if recorded_table.startswith("gold_") else []
+    )
+    assert response["data"]["layers"]["gold"] == {
+        "healthy": 0,
+        "total": int(recorded_table.startswith("gold_")),
+    }
+    assert response["evidence"][0]["freshness"] == (
+        "stale" if recorded_table else "unknown"
+    )
+    assert accesses == [("allowed-root", "metadata_source_status")]
+
+
+def test_gold_declarations_do_not_expose_other_connection_health(
+    connection_context, monkeypatch,
+):
+    context, _, datasets, accesses = connection_context
+    datasets["metadata_source_status"] = []
+    monkeypatch.setattr(routes, "_lakehouse_delta_rows", lambda _name: [{
+        "source_family": "gold_exposure_facts",
+        "subscription_id": "sub-hidden",
+        "subscription_connection": "hidden",
+        "status": "succeeded",
+    }])
+
+    response = routes.medallion_layers(
+        context, Scope({"subscription_connection": {"allowed"}}),
+    )
+
+    assert len(response["data"]["gold_declarations"]["tables"]) == 8
+    assert response["data"]["layers"]["gold"] == {"healthy": 0, "total": 0}
+    assert response["data"]["tables"]["gold"] == []
+    assert response["evidence"][0]["freshness"] == "unknown"
+    assert accesses == [("allowed-root", "metadata_source_status")]
 
 
 def test_scoped_quality_absence_requires_report_scope_provenance(
@@ -257,3 +324,45 @@ def test_registry_dimensions_are_applied_before_source_storage(
     datasets["metadata_source_status"] = []
     assert routes._scoped_source_rows(context, Scope({dimension: {value}})) == []
     assert accesses == [("allowed-root", "metadata_source_status")]
+
+
+def test_contract_declaration_never_registers_gold_or_changes_layer_totals(connection_context):
+    context, _, datasets, accesses = connection_context
+    datasets["metadata_source_status"] = [{
+        "source_family": "bronze_resources", "status": "succeeded",
+    }]
+    scope = Scope({"subscription_connection": {"allowed"}})
+    layers = routes.medallion_layers(context, scope)["data"]
+    assert layers["layers"]["gold"] == {"healthy": 0, "total": 0}
+    assert layers["tables"]["gold"] == []
+    with pytest.raises(ApiError) as error:
+        routes.medallion_dataset_contract("gold_exposure_facts", context, scope)
+    assert error.value.status_code == 404
+    assert all(root == "allowed-root" for root, _ in accesses)
+
+
+def test_contract_requires_connection_membership_even_for_shared_subscription(
+    connection_context, monkeypatch,
+):
+    context, details, datasets, accesses = connection_context
+    details["hidden"]["subscription_id"] = "sub-allowed"
+    datasets["metadata_source_status"] = [{
+        "source_family": "bronze_resources", "status": "succeeded",
+        "subscription_connection": "hidden",
+    }]
+    scope = Scope({"subscription_connection": {"allowed"}})
+    allowed = routes.medallion_dataset_contract("bronze_resources", context, scope)
+    assert allowed["scope"] == {"subscription_connection": ["allowed"]}
+    declaration = allowed["data"]["product_contract"]
+    assert declaration["scope_requirements"]["semantics"] == "subscription_snapshot"
+    assert declaration["scope_requirements"]["connection_membership"] == "requires_producer_evidence"
+    # With no connection-owned rows, a subscription-only aggregate cannot be
+    # relabeled as evidence for this connection, even for a declared product.
+    datasets["metadata_source_status"] = []
+    monkeypatch.setattr(routes, "_lakehouse_delta_rows", lambda _: [{
+        "source_family": "bronze_resources", "subscription_id": "sub-allowed",
+    }])
+    with pytest.raises(ApiError) as error:
+        routes.medallion_dataset_contract("bronze_resources", context, scope)
+    assert error.value.status_code == 404
+    assert all(root == "allowed-root" for root, _ in accesses)

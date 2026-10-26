@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, Literal
+
 import pyarrow as pa
 
 from fabric_pipelines.topology_fabric_contracts import (
@@ -8,6 +12,7 @@ from fabric_pipelines.topology_fabric_contracts import (
 )
 
 SCHEMA_VERSION = "2.7.0"
+PRODUCT_CONTRACT_VERSION = "1.0.0"
 
 _BASE = [
     pa.field("tenant_id", pa.string(), nullable=False),
@@ -1029,6 +1034,176 @@ SCHEMAS: dict[str, pa.Schema] = {
         ]
     ),
 }
+
+
+@dataclass(frozen=True)
+class ProductContract:
+    """Source declaration, not evidence of deployment, ownership or access."""
+
+    owner_role: str
+    producer_ref: str
+    grain: str
+    identity_fields: tuple[str, ...]
+    source_inputs: tuple[str, ...]
+    temporal_mode: Literal["current_snapshot", "generation_snapshot"]
+    generation_field: str
+    generation_group: str
+    consumer: str
+    scope_semantics: Literal[
+        "subscription_snapshot", "row_scoped_generation", "scoped_current_projection"
+    ]
+
+
+_INVENTORY_PRODUCT = {
+    "owner_role": "inventory_publication",
+    "producer_ref": "fabric.sync_service.FabricSyncService",
+    "identity_fields": ("resource_id",),
+    "temporal_mode": "current_snapshot",
+    "generation_field": "ingestion_run_id",
+    "generation_group": "inventory_publication",
+    "consumer": "inventory_and_ontology",
+    "scope_semantics": "subscription_snapshot",
+}
+_EXPOSURE_ANALYTICS_PRODUCT = {
+    "owner_role": "exposure_publication",
+    "producer_ref": "fabric_pipelines.vulnerability_pipeline.ExposureGoldFabricPublisher",
+    "source_inputs": (
+        "gold_exposure_current",
+        "gold_container_exposure_current",
+        "silver_exposure_observations",
+        "silver_container_vulnerability_observations",
+        "silver_exposure_enrichment",
+        "metadata_source_status",
+    ),
+    "temporal_mode": "generation_snapshot",
+    "generation_field": "read_model_generation_id",
+    "generation_group": "exposure_gold_read_model",
+    "consumer": "exposure_analytics_and_gold_grounding",
+    "scope_semantics": "row_scoped_generation",
+}
+_EXPOSURE_CURRENT_PRODUCT = {
+    "owner_role": "exposure_publication",
+    "producer_ref": "fabric.sync_service.FabricSyncService",
+    "temporal_mode": "current_snapshot",
+    "generation_field": "ingestion_run_id",
+    "generation_group": "exposure_current_projections",
+    "consumer": "exposure_projection",
+    "scope_semantics": "scoped_current_projection",
+}
+
+# Only inspected products have declarations. This mapping never registers tables.
+PRODUCT_CONTRACTS = MappingProxyType({
+    "bronze_resources": ProductContract(
+        **_INVENTORY_PRODUCT,
+        grain="One resource in the published subscription snapshot.",
+        source_inputs=("ARG.Resources",),
+    ),
+    "silver_vm_inventory": ProductContract(
+        **_INVENTORY_PRODUCT,
+        grain="One VirtualMachine entity in the published subscription snapshot.",
+        source_inputs=("bronze_resources",),
+    ),
+    "gold_exposure_facts": ProductContract(
+        **_EXPOSURE_ANALYTICS_PRODUCT,
+        grain="One source-state fact for an exposure in a read-model generation.",
+        identity_fields=("fact_id",),
+    ),
+    "gold_exposure_dimensions": ProductContract(
+        **_EXPOSURE_ANALYTICS_PRODUCT,
+        grain="One dimension value per scope and read-model generation.",
+        identity_fields=("dimension_key",),
+    ),
+    "gold_exposure_facets": ProductContract(
+        **_EXPOSURE_ANALYTICS_PRODUCT,
+        grain="One dimension-value count per scope and read-model generation.",
+        identity_fields=("facet_key",),
+    ),
+    "gold_exposure_summaries": ProductContract(
+        **_EXPOSURE_ANALYTICS_PRODUCT,
+        grain="One aggregate per scope and read-model generation.",
+        identity_fields=("summary_key",),
+    ),
+    "gold_exposure_evidence": ProductContract(
+        **_EXPOSURE_ANALYTICS_PRODUCT,
+        grain="One enrichment evidence reference per fact and read-model generation.",
+        identity_fields=("evidence_id",),
+    ),
+    "gold_exposure_current": ProductContract(
+        **_EXPOSURE_CURRENT_PRODUCT,
+        grain="One current exposure state per scoped target and weakness.",
+        identity_fields=("current_key",),
+        source_inputs=("silver_exposure_observations",),
+    ),
+    "gold_container_exposure_current": ProductContract(
+        **_EXPOSURE_CURRENT_PRODUCT,
+        grain="One current container-image exposure with workload coverage.",
+        identity_fields=("container_exposure_id",),
+        source_inputs=(
+            "silver_container_vulnerability_observations",
+            "silver_workload_deployments",
+        ),
+    ),
+    "gold_container_exposure_coverage": ProductContract(
+        **_EXPOSURE_CURRENT_PRODUCT,
+        grain="One scoped container workload-coverage summary.",
+        identity_fields=("coverage_id",),
+        source_inputs=(
+            "silver_container_vulnerability_observations",
+            "silver_workload_deployments",
+        ),
+    ),
+})
+
+
+def product_contract_for(table_name: str) -> dict[str, Any]:
+    """Return a detached JSON declaration without inferring runtime readiness.
+
+    Scope rules describe required evidence, not caller authorization. Unknown
+    tables remain undeclared even if a status row happens to register them.
+    """
+    contract = PRODUCT_CONTRACTS.get(table_name)
+    result: dict[str, Any] = {
+        "table_name": table_name,
+        "source": "fabric.schema_registry",
+        "version": PRODUCT_CONTRACT_VERSION,
+        "schema_version": SCHEMA_VERSION,
+        "status": "declared" if contract is not None else "not_declared",
+        "physical_inventory": "not_collected",
+        "consumer_readiness": "not_collected",
+        "operational_owner": "not_collected",
+    }
+    if contract is None:
+        return result
+    result.update({
+        "owner_role": contract.owner_role,
+        "producer_ref": contract.producer_ref,
+        "grain": contract.grain,
+        "identity_fields": list(contract.identity_fields),
+        "source_inputs": list(contract.source_inputs),
+        "source_inputs_completeness": "partial_not_dependency_graph",
+        "temporal_mode": contract.temporal_mode,
+        "generation": {
+            "field": contract.generation_field,
+            "group": contract.generation_group,
+        },
+        "consumer": contract.consumer,
+        "scope_requirements": {
+            "semantics": contract.scope_semantics,
+            "row_identity_fields": ["tenant_id", "subscription_id"],
+            "connection_membership": "requires_producer_evidence",
+            "authorization": "not_granted_by_declaration",
+        },
+        "freshness_policy_ref": {
+            "table": f"fabric.medallion_health.freshness_slo.tables.{table_name}",
+            "fallback": [
+                "fabric.medallion_health.freshness_slo.default_cadence_minutes",
+                "fabric.medallion_health.freshness_slo.default_slo_multiplier",
+            ],
+        },
+        "retention_policy": "not_declared",
+        "lifecycle": "source_declared",
+    })
+    return result
 
 
 def schema_for(table_name: str) -> pa.Schema:

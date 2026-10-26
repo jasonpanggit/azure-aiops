@@ -1364,6 +1364,14 @@ export interface FabricLayerCounts {
   total: number;
 }
 
+/** Static source contracts; never scope-qualified registration or deployment proof. */
+export interface FabricGoldDeclarations {
+  source: "fabric.schema_registry";
+  version: string;
+  tables: string[];
+  physical_inventory: "not_collected";
+}
+
 /** Scope-exact architecture assessment policy, distinct from provider policy. */
 export interface ComplianceDesignPolicy {
   name: string;

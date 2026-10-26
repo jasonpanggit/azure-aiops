@@ -717,6 +717,33 @@ class TestFabricMedallionRouterTask1:
         }
         assert body["evidence"][0]["source_engine"] == "fabric.medallion_health"
 
+    def test_gold_declarations_do_not_grant_scoped_dataset_reads(
+        self, fabric_medallion_client,
+    ):
+        response = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/layers?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        catalog = body["data"]["gold_declarations"]
+        assert catalog["source"] == "fabric.schema_registry"
+        assert catalog["physical_inventory"] == "not_collected"
+        assert len(catalog["tables"]) == 8
+        assert "gold_exposure_facts" in catalog["tables"]
+        assert "gold_hidden" not in catalog["tables"]
+        assert body["data"]["tables"]["gold"] == ["gold_operational_context"]
+        assert body["data"]["layers"]["gold"] == {"healthy": 1, "total": 1}
+        assert body["scope"] == {"subscription": [SUB_A]}
+        for suffix in ("", "/contract"):
+            undeployed = fabric_medallion_client.get(
+                f"/api/v1/fabric-medallion/datasets/gold_exposure_facts{suffix}"
+                f"?subscription={SUB_A}",
+                headers=_auth(SCOPED_TOKEN),
+            )
+            assert undeployed.status_code == 404
+            assert undeployed.json()["error"]["code"] == "not_found"
+
     def test_fabric_dataset_receipts_separate_failed_attempt_from_retained_source(
         self, fabric_medallion_client, monkeypatch
     ):
@@ -1122,6 +1149,11 @@ class TestFabricMedallionRouterTask1:
             headers=_auth(SCOPED_TOKEN),
         )
         assert hidden.status_code == 404
+        declared_only = fabric_medallion_client.get(
+            "/api/v1/fabric-medallion/datasets/gold_exposure_facts/contract",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert declared_only.status_code == 404
         forbidden = fabric_medallion_client.get(
             f"/api/v1/fabric-medallion/datasets/bronze_resources/contract?subscription={SUB_B}",
             headers=_auth(SCOPED_TOKEN),
@@ -1135,6 +1167,12 @@ class TestFabricMedallionRouterTask1:
         body = response.json()
         assert body["data"]["declared_schema"]["status"] == "available"
         assert body["data"]["declared_schema"]["fields"]
+        product = body["data"]["product_contract"]
+        assert product["status"] == "declared"
+        assert product["identity_fields"] == ["resource_id"]
+        assert product["temporal_mode"] == "current_snapshot"
+        assert product["physical_inventory"] == "not_collected"
+        assert product["scope_requirements"]["connection_membership"] == "requires_producer_evidence"
         assert (
             body["data"]["deployed_schema_validation"]
             == body["data"]["dataset_dependency_graph"]

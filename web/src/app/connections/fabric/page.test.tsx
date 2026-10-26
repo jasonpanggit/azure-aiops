@@ -189,6 +189,45 @@ describe("Per-subscription Fabric medallion page", () => {
     expect(screen.getByRole("option", { name: "All onboarded subscriptions" })).toBeInTheDocument();
   });
 
+  it("shows declared Gold contracts separately without reading or counting them as deployed datasets", async () => {
+    fabricLayers.mockResolvedValue(envelope({
+      layers: { bronze: { healthy: 0, total: 0 }, silver: { healthy: 0, total: 0 }, gold: { healthy: 0, total: 0 } },
+      tables: { bronze: [], silver: [], gold: [] },
+      gold_declarations: {
+        source: "fabric.schema_registry",
+        version: "2.7.0",
+        tables: ["gold_exposure_facts", "gold_exposure_summaries"],
+        physical_inventory: "not_collected",
+      },
+    }, "fabric.medallion_health", "unknown", ""));
+    fabricCapabilities.mockResolvedValue(envelope({
+      ...capabilitySnapshot, lineage: { datasets: [] },
+    }));
+
+    renderPage({ subscription_connection: ["prod"] });
+
+    const declarations = await screen.findByLabelText("Declared Gold product contracts");
+    fireEvent.click(within(declarations).getByText("Explore declared Gold products (source contracts only)"));
+    expect(within(declarations).getByText("gold_exposure_facts")).toBeVisible();
+    expect(within(declarations).getByText("gold_exposure_summaries")).toBeVisible();
+    expect(within(declarations).getByText(/Physical presence, schema validation/)).toBeVisible();
+    expect(within(declarations).getByText(/The Ontology Agent can propose semantic/)).toBeVisible();
+    expect(await screen.findByText("No Gold datasets registered")).toBeInTheDocument();
+    expect(screen.getAllByText(/Physical table absence is not verified/)).toHaveLength(3);
+    expect(screen.getAllByText("0 healthy / 0 registered").length).toBeGreaterThanOrEqual(3);
+    expect(fabricDataset).not.toHaveBeenCalled();
+    expect(fabricDatasetContract).not.toHaveBeenCalled();
+    expect(fabricLayers).toHaveBeenCalledWith({ subscription_connection: ["prod"] });
+  });
+
+  it("supports older layers responses without a Gold declaration catalog", async () => {
+    renderPage();
+
+    await screen.findByText("Reported evidence freshness");
+    expect(await screen.findAllByText("1 healthy / 1 registered")).not.toHaveLength(0);
+    expect(screen.queryByLabelText("Declared Gold product contracts")).not.toBeInTheDocument();
+  });
+
   it("distinguishes zero healthy datasets from zero records or missing physical tables", async () => {
     fabricLayers.mockResolvedValue(envelope({
       layers: { bronze: { healthy: 0, total: 18 }, silver: { healthy: 0, total: 29 }, gold: { healthy: 0, total: 0 } },

@@ -31,7 +31,7 @@ from typing import Any
 
 import yaml
 
-from fabric.schema_registry import SCHEMA_VERSION, SCHEMAS
+from fabric.schema_registry import SCHEMA_VERSION, SCHEMAS, product_contract_for
 
 # Safe-by-default: an unconfigured table still gets a real, dataset-scoped
 # SLO -- (default cadence * default multiplier) -- never a single hardcoded
@@ -457,6 +457,7 @@ def dataset_contract(
         },
         "deployed_schema_validation": "not_collected",
         "producer_ownership": "not_collected",
+        "product_contract": product_contract_for(table_name),
         "dataset_dependency_graph": "not_collected",
         "source_diagnostics": diagnostics,
     }

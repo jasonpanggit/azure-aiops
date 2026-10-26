@@ -16,7 +16,7 @@ import { useTablePagination } from "@/lib/use-table-pagination";
 import { useApi } from "@/hooks/useApi";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { fabricMedallionApi } from "@/lib/services";
-import type { Envelope, FabricCapabilities, FabricDataset, FabricGovernanceSummary, FabricIngestionRun, FabricManifestEntry, FabricManifestSummary, FabricSourceObservation, FabricLayerCounts, SubscriptionConnection } from "@/lib/types";
+import type { Envelope, FabricCapabilities, FabricDataset, FabricGoldDeclarations, FabricGovernanceSummary, FabricIngestionRun, FabricManifestEntry, FabricManifestSummary, FabricSourceObservation, FabricLayerCounts, SubscriptionConnection } from "@/lib/types";
 
 export type FabricLayerKey = "bronze" | "silver" | "gold";
 
@@ -175,6 +175,7 @@ function FabricMedallionPanelContent({
           layer={layer}
           tableNames={tableNames[layer]}
           counts={counts?.[layer]}
+          goldDeclarations={layer === "gold" ? layerSummary.data?.data.gold_declarations : undefined}
           registrationLoading={!layerSummary.data && !capabilities.data && (layerSummary.loading || capabilities.loading)}
           registrationUnavailable={!layerSummary.data && !capabilities.data}
           scope={subscriptionScope}
@@ -204,6 +205,7 @@ function FabricLayerSection({
   layer,
   tableNames,
   counts,
+  goldDeclarations,
   scope,
   refreshKey,
   registrationLoading,
@@ -212,6 +214,7 @@ function FabricLayerSection({
   layer: FabricLayerKey;
   tableNames: string[];
   counts?: FabricLayerCounts;
+  goldDeclarations?: FabricGoldDeclarations;
   scope: ScopeSelection;
   refreshKey: number;
   registrationLoading: boolean;
@@ -242,6 +245,24 @@ function FabricLayerSection({
         <StatusBadge label={formatHealthCount(counts)} tone={statusTone(!counts || counts.total === 0 ? "unknown" : counts.healthy === counts.total ? "healthy" : "degraded")} />
       </div>
       <div className="card-body">
+        {goldDeclarations && (
+          <details aria-label="Declared Gold product contracts">
+            <summary>Explore declared Gold products (source contracts only)</summary>
+            <p>
+              These definitions come from {goldDeclarations.source} version {goldDeclarations.version},
+              not the selected subscription&apos;s table inventory. Physical presence, schema validation,
+              readable-generation activation, and downstream readiness are not verified by this list.
+            </p>
+            <ul>
+              {goldDeclarations.tables.map(tableName => <li key={tableName}><code>{tableName}</code></li>)}
+            </ul>
+            <p>
+              Use the existing validated Gold transformation and publication path; table creation
+              and publication need separate authorization. The Ontology Agent can propose semantic
+              entities and relationships, but does not replace the Gold producer.
+            </p>
+          </details>
+        )}
         {failures.length > 0 && (
           <div role="status" aria-label={`${label} dataset read failures`}>
             <StatePanel
@@ -265,7 +286,7 @@ function FabricLayerSection({
         ) : registrationUnavailable ? (
           <StatePanel title={`${label} dataset registration unavailable`} message="Refresh Fabric health to retry the layer and capability sources. Missing registration evidence is not an empty layer." tone="error" />
         ) : rows.length === 0 && failures.length > 0 ? null : rows.length === 0 ? (
-          <StatePanel title={`No ${label} datasets registered`} message="No datasets are registered for this layer in the current scope." />
+          <StatePanel title={`No ${label} datasets registered`} message="No recorded dataset registrations were returned for this layer in the current scope. Physical table absence is not verified." />
         ) : (
           <>
             <TableColumnFilters filters={filters} onReset={resetFilters} resultCount={filteredRows.length} totalCount={rows.length} />
