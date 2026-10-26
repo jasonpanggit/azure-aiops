@@ -258,6 +258,13 @@ existing in-scope Application membership; telemetry labels alone cannot create
 identity. Application entity inputs may be single-pass iterables; the projector
 retains them for both identity resolution and emitted entities so linked batches
 preserve the same entities, pairs and citations as list inputs.
+Malformed, non-time-valued or timezone-naive inventory dependency timestamps abstain with
+`source_observation_stale_or_timestamp_invalid` uncertainty. They do not create
+inventory support, invent a replacement time or discard independently valid
+Monitor evidence. Only absent, null or empty-string row timestamps retain the
+existing alternate-field/inventory-observation fallback; invalid `observed_at`
+values cannot use a valid alternate `timestamp`. Valid stale or future timestamps
+remain unsupported evidence.
 Monitor input requires explicit server-supplied emitter/target
 bindings and an injected source reader. Labels are trimmed and case-folded;
 aliases for the same normalized label must all uniquely resolve to the same

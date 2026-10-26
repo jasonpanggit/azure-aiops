@@ -222,6 +222,88 @@ def test_application_entity_iterables_preserve_projection_and_linked_batches(con
     }
 
 
+def _inventory_with_timestamp(field: str, value: object) -> list[dict[str, object]]:
+    return [
+        {
+            "resource_id": FRONTEND_ASSET,
+            "tags": {"aiops.dependencyResourceIds": json.dumps([BACKEND_ASSET])},
+            field: value,
+        },
+        {"resource_id": BACKEND_ASSET},
+    ]
+
+
+@pytest.mark.parametrize("field", ["observed_at", "timestamp"])
+@pytest.mark.parametrize("value", [
+    "not-a-timestamp", NOW.replace(tzinfo=None).isoformat(), 0, False, [], {},
+])
+@pytest.mark.parametrize("with_monitor", [False, True])
+def test_invalid_inventory_timestamp_abstains_without_losing_independent_facts(
+    field: str, value: object, with_monitor: bool,
+) -> None:
+    rows = _inventory_with_timestamp(field, value)
+    before = json.dumps(rows, sort_keys=True)
+    projection = _fixture(
+        inventory_records=rows,
+        monitor_rows=[_monitor()] if with_monitor else [],
+        bindings={"frontend-role": FRONTEND_ASSET, "backend-role": BACKEND_ASSET},
+    )
+    assert json.dumps(rows, sort_keys=True) == before
+    assert "source_observation_stale_or_timestamp_invalid" in projection["uncertainties"]
+    assert projection["coverage"] == "degraded"
+    assert len(projection["changed_entities"]) == 2
+    if with_monitor:
+        assert len(projection["candidate_pairs"]) == 1
+        assert len(projection["evidence_records"]) == 1
+        record = projection["evidence_records"][0]
+        assert record["source"] == "azure-monitor:AppDependencies"
+        assert record["supports"] is True
+        assert projection["candidate_pairs"][0]["evidence_ids"] == [record["evidence_id"]]
+        assert "dependency_pair_single_source_only" in projection["uncertainties"]
+    else:
+        assert projection["candidate_pairs"] == []
+        assert projection["evidence_records"] == []
+
+
+@pytest.mark.parametrize("value", [0, False, [], {}])
+def test_invalid_primary_inventory_timestamp_cannot_use_valid_alternate(value: object) -> None:
+    rows = _inventory_with_timestamp("observed_at", value)
+    rows[0]["timestamp"] = NOW.isoformat()
+    projection = _fixture(inventory_records=rows)
+    assert projection["evidence_records"] == []
+    assert projection["candidate_pairs"] == []
+    assert "source_observation_stale_or_timestamp_invalid" in projection["uncertainties"]
+
+
+@pytest.mark.parametrize("field", ["observed_at", "timestamp"])
+@pytest.mark.parametrize("value,supports", [
+    (NOW.isoformat(), True),
+    (NOW, True),
+    ("2026-10-19T14:00:00+02:00", True),
+    ((NOW - timedelta(hours=24)).isoformat(), True),
+    ((NOW - timedelta(hours=24, seconds=1)).isoformat(), False),
+    ((NOW + timedelta(seconds=1)).isoformat(), False),
+    (None, True),
+    ("", True),
+])
+def test_valid_inventory_timestamps_preserve_freshness_and_existing_fallback(
+    field: str, value: str | datetime | None, supports: bool,
+) -> None:
+    projection = _fixture(inventory_records=_inventory_with_timestamp(field, value))
+    assert len(projection["evidence_records"]) == 1
+    record = projection["evidence_records"][0]
+    expected_time = value or NOW
+    parsed = datetime.fromisoformat(expected_time) if isinstance(expected_time, str) else expected_time
+    assert record["observed_at"] == parsed.astimezone(UTC).isoformat()
+    assert record["expires_at"] == (
+        parsed + timedelta(hours=24)
+    ).astimezone(UTC).isoformat()
+    assert record["supports"] is supports
+    assert record["uncertainty"] == (
+        "" if supports else "source_observation_stale_or_timestamp_invalid"
+    )
+
+
 def test_absent_ambiguous_out_of_scope_synthetic_and_stale_facts_abstain() -> None:
     cases = [
         _fixture(),
