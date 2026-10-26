@@ -253,7 +253,13 @@ qualify deployment or enable automatic ontology changes.
 
 The offline source projection also supports opt-in
 `aiops.dependencyResourceIds` declarations containing exact target ARM IDs and
-fixed-field `AppDependencies` observations. Physical resources resolve through
+fixed-field `AppDependencies` observations.
+Case-insensitive dependency-tag aliases must have identical JSON values.
+Conflicting declarations abstain with `dependency_declaration_conflict`
+regardless of key order; no alias wins by insertion order. Single aliases and
+identical-value aliases retain support. Independent Monitor evidence survives
+a declaration conflict; these checks do not establish authenticated provenance.
+Physical resources resolve through
 existing in-scope Application membership; telemetry labels alone cannot create
 identity. Application entity inputs may be single-pass iterables; the projector
 retains them for both identity resolution and emitted entities so linked batches

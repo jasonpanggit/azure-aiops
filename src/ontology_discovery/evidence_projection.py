@@ -119,7 +119,14 @@ def project_application_dependency_evidence(
                 continue
         row = rows[0]
         tags = _tags(_inventory_payload(row))
-        declaration = _tag_value(tags, _DEPENDENCY_TAG)
+        declarations = [
+            value for name, value in tags.items()
+            if str(name).casefold() == _DEPENDENCY_TAG.casefold()
+        ]
+        if len({_fingerprint(value) for value in declarations}) > 1:
+            uncertainties.add("dependency_declaration_conflict")
+            continue
+        declaration = declarations[0] if declarations else None
         if declaration is None:
             continue
         if len(asset_apps) != 1:
@@ -487,13 +494,6 @@ def _inventory_payload(row: Mapping[str, Any]) -> Mapping[str, Any]:
 def _tags(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     value = payload.get("tags") or payload.get("Tags") or {}
     return value if isinstance(value, Mapping) else {}
-
-
-def _tag_value(tags: Mapping[str, Any], key: str) -> Any:
-    return next(
-        (value for name, value in tags.items() if str(name).casefold() == key.casefold()),
-        None,
-    )
 
 
 def _inventory_timestamp(row: Mapping[str, Any], default: datetime) -> datetime | None:
