@@ -57,8 +57,9 @@ def project_application_dependency_evidence(
     inventory_time = inventory_observed_at or observed_at
     _aware(inventory_time, "inventory_observed_at")
 
+    entities = list(application_entities)
     applications: set[str] = set()
-    for entity in application_entities:
+    for entity in entities:
         if (
             str(entity.get("entity_type") or "").casefold() == "application"
             and str(entity.get("scope") or trusted_scope).casefold()
@@ -332,7 +333,7 @@ def project_application_dependency_evidence(
                     entity.get("resource_id") or entity.get("entity_id")
                 ),
             }
-            for entity in application_entities
+            for entity in entities
             if str(entity.get("entity_type") or "").casefold() == "application"
             and str(entity.get("scope") or trusted_scope).casefold()
             == trusted_scope.casefold()

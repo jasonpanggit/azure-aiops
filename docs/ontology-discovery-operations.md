@@ -255,7 +255,10 @@ The offline source projection also supports opt-in
 `aiops.dependencyResourceIds` declarations containing exact target ARM IDs and
 fixed-field `AppDependencies` observations. Physical resources resolve through
 existing in-scope Application membership; telemetry labels alone cannot create
-identity. Monitor input requires explicit server-supplied emitter/target
+identity. Application entity inputs may be single-pass iterables; the projector
+retains them for both identity resolution and emitted entities so linked batches
+preserve the same entities, pairs and citations as list inputs.
+Monitor input requires explicit server-supplied emitter/target
 bindings and an injected source reader. Labels are trimmed and case-folded;
 aliases for the same normalized label must all uniquely resolve to the same
 resource. Conflicting, empty or ambiguous aliases keep that label unresolved
