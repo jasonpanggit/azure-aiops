@@ -724,6 +724,17 @@ def run_investigation(
                     "grounded": True,
                 }
                 break
+            assessment = data.get("assessment") if isinstance(data, Mapping) else None
+            if call.tool == "incidents" and isinstance(assessment, Mapping):
+                from operations.observability_scenarios import scenario_summary
+
+                answer = {
+                    "text": scenario_summary(assessment),
+                    "agent_name": "operations-copilot",
+                    "model": "deterministic",
+                    "grounded": True,
+                }
+                break
     if answer is None:
         answer = _status_only_answer(calls)
     deterministic_answer = answer is not None

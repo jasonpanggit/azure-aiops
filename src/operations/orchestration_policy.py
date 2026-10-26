@@ -139,12 +139,32 @@ class OrchestrationPolicy:
                 except ValueError as exc:
                     raise PolicyViolation("invalid_arguments", call.tool) from exc
                 if call.tool == "incidents" and call.arguments.get("scenario"):
-                    from operations.incident_scenarios import validate_snapshot_binding
+                    from operations.observability_scenarios import (
+                        OBSERVABILITY_SCENARIOS,
+                    )
 
-                    try:
-                        validate_snapshot_binding(call.arguments, request.snapshot)
-                    except ValueError as exc:
-                        raise PolicyViolation("invalid_arguments", str(exc)) from exc
+                    if call.arguments["scenario"] in OBSERVABILITY_SCENARIOS:
+                        if (
+                            step.specialist_id != "resource_health_observability"
+                            or request.snapshot.page_kind != "resource_health"
+                        ):
+                            raise PolicyViolation(
+                                "page_tool_not_granted",
+                                "observability scenarios require the Resource Health page",
+                            )
+                    else:
+                        from operations.incident_scenarios import (
+                            validate_snapshot_binding,
+                        )
+
+                        try:
+                            validate_snapshot_binding(
+                                call.arguments, request.snapshot
+                            )
+                        except ValueError as exc:
+                            raise PolicyViolation(
+                                "invalid_arguments", str(exc)
+                            ) from exc
                 if (
                     specialist.output_contract.requires_citations
                     and not call.citation_ids

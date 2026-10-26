@@ -2511,10 +2511,16 @@ class OrchestrationService:
             tool_results,
         )
         scenario_claims = []
+        has_observability_scenario = False
         for result in tool_results:
+            if result.get("tool") != "incidents":
+                continue
             data = result.get("data")
             investigation = data.get("investigation") if isinstance(data, Mapping) else None
-            if result.get("tool") != "incidents" or not isinstance(investigation, Mapping):
+            assessment = data.get("assessment") if isinstance(data, Mapping) else None
+            if not isinstance(investigation, Mapping) and not isinstance(
+                assessment, Mapping
+            ):
                 continue
             refs = [
                 f"tool:{result['call_id']}:{index}"
@@ -2522,22 +2528,42 @@ class OrchestrationService:
             ]
             if not refs:
                 continue
-            from operations.incident_scenarios import scenario_summary
+            if isinstance(investigation, Mapping):
+                from operations.incident_scenarios import scenario_summary
 
-            scenario_claims.append({
-                "finding_id": f"incident-scenario:{result['call_id']}",
-                "summary": scenario_summary(investigation),
-                "evidence_refs": refs,
-                "confidence": "low",
-                "uncertainty": investigation["unknowns"],
-                "freshness": "unknown",
-                "actionable": False,
-                "next_check": investigation["next_checks"][0],
-            })
+                scenario_claims.append({
+                    "finding_id": f"incident-scenario:{result['call_id']}",
+                    "summary": scenario_summary(investigation),
+                    "evidence_refs": refs,
+                    "confidence": "low",
+                    "uncertainty": investigation["unknowns"],
+                    "freshness": "unknown",
+                    "actionable": False,
+                    "next_check": investigation["next_checks"][0],
+                })
+            else:
+                from operations.observability_scenarios import scenario_summary
+
+                has_observability_scenario = True
+                scenario_claims.append({
+                    "finding_id": f"observability-scenario:{result['call_id']}",
+                    "summary": scenario_summary(assessment),
+                    "evidence_refs": refs,
+                    "confidence": "low",
+                    "uncertainty": assessment["unknowns"] + assessment["limitations"],
+                    "freshness": "unknown",
+                    "actionable": False,
+                    "next_check": assessment["next_checks"][0],
+                })
         if scenario_claims:
+            reason = (
+                "bounded_observability_scenario_evidence"
+                if has_observability_scenario
+                else "bounded_incident_scenario_evidence"
+            )
             synthesis = ExecutiveSynthesis(
                 status="deterministic",
-                reason="bounded_incident_scenario_evidence",
+                reason=reason,
                 domain_count=1,
                 claims=scenario_claims,
             )
