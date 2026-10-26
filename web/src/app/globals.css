@@ -4675,7 +4675,7 @@ textarea:focus-visible {
 
 .exposure-source-item .button {
   width: fit-content;
-  min-height: 36px;
+  min-height: var(--control-height);
   margin-top: 4px;
 }
 
@@ -6794,6 +6794,11 @@ body.topology-fullscreen-open {
   border-radius: var(--radius-sm);
 }
 
+.compliance-policy-grid input:not([type="checkbox"]),
+.compliance-policy-grid textarea {
+  min-height: var(--control-height);
+}
+
 .overview-history p {
   max-width: none;
   line-height: 1.6;
@@ -7207,7 +7212,7 @@ body.topology-fullscreen-open {
 }
 
 .compliance-domain-filter select {
-  min-height: 36px;
+  min-height: var(--control-height);
   max-width: 100%;
   color: var(--color-text);
   font: inherit;
@@ -7373,6 +7378,11 @@ body.topology-fullscreen-open {
   align-self: end;
   gap: 8px;
   min-height: 44px;
+}
+
+.change-filters input,
+.change-filters select {
+  min-height: var(--control-height);
 }
 
 .service-impact-card {
@@ -10414,6 +10424,10 @@ body.topology-fullscreen-open {
 .remediation-approval-form textarea {
   min-height: 4rem;
   resize: vertical;
+}
+
+.remediation-search-field input {
+  min-height: var(--control-height);
 }
 
 .remediation-supersede-form textarea:focus,
