@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import {
   CopilotCitations,
@@ -146,6 +147,7 @@ export function CopilotDrawer({
     snapshot: snapshot ?? null,
   });
   const [question, setQuestion] = useState("");
+  const [mounted, setMounted] = useState(false);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [transcriptFingerprint, setTranscriptFingerprint] = useState(contextFingerprint);
   const [loading, setLoading] = useState(false);
@@ -167,6 +169,10 @@ export function CopilotDrawer({
   }
 
   useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") onClose();
     }
@@ -175,7 +181,7 @@ export function CopilotDrawer({
       panelRef.current?.focus();
     }
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
+  }, [open, onClose, mounted]);
 
   useEffect(() => () => {
     requestGeneration.current += 1;
@@ -395,13 +401,13 @@ export function CopilotDrawer({
     }
   }
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
   const visibleTurns = transcriptFingerprint === contextFingerprint ? turns : [];
   const visibleLoading = loading
     && activeRequestFingerprint.current === contextFingerprint;
   const visibleStage = transcriptFingerprint === contextFingerprint ? stage : "idle";
 
-  return (
+  return createPortal(
     <>
       <button className="copilot-drawer-backdrop" aria-label="Close Operations Copilot" onClick={onClose} />
       <aside
@@ -454,6 +460,7 @@ export function CopilotDrawer({
                   <button
                     type="button"
                     key={prompt.label}
+                    className="button button-ai"
                     onClick={() => ask(prompt.label, prompt.tool, prompt.toolArguments, prompt.specialistId)}
                     disabled={visibleLoading}
                   >
@@ -656,6 +663,7 @@ export function CopilotDrawer({
           )}
         </div>
       </aside>
-    </>
+    </>,
+    document.body,
   );
 }

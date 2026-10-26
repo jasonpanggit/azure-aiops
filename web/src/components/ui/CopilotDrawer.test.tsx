@@ -157,6 +157,39 @@ describe("CopilotDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open bounded investigation" }));
   }
 
+  it("portals the drawer outside transformed cards and retains focus, resize and close controls", () => {
+    const { container } = render(<TestProviders><IncidentScenarioInvestigation /></TestProviders>);
+    const card = screen.getByRole("region", { name: "Incident and change investigation" });
+    card.style.transform = "translateY(-1px)";
+    openIncidentScenario();
+    const drawer = screen.getByRole("dialog", { name: "Operations Copilot" });
+    expect(drawer.parentElement).toBe(document.body);
+    expect(container).not.toContainElement(drawer);
+    expect(drawer).toHaveFocus();
+    expect(drawer).toHaveStyle({ width: "420px" });
+    fireEvent.click(screen.getByRole("button", { name: "Widen panel" }));
+    expect(drawer).toHaveStyle({ width: "760px" });
+    expect(screen.getByRole("button", { name: /Investigate recent changes in the selected window/ })).toHaveClass("button", "button-ai");
+    expect(screen.getByRole("button", { name: /Build an incident impact brief/ })).toHaveClass("button", "button-ai");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(investigateCanonical).not.toHaveBeenCalled();
+  });
+
+  it("uses shared responsive form and control classes without changing the explicit window contract", () => {
+    render(<TestProviders><IncidentScenarioInvestigation /></TestProviders>);
+    const resource = screen.getByLabelText("Investigation resource ARM id");
+    expect(resource.closest("form")).toHaveClass("form-grid");
+    expect(resource.closest("label")).toHaveClass("form-field", "form-span");
+    for (const name of ["Investigation resource ARM id", "Investigation from", "Investigation through"]) {
+      expect(screen.getByLabelText(name)).toHaveClass("form-control");
+      expect(screen.getByLabelText(name).closest("label")).toHaveClass("form-field");
+      expect(screen.getByLabelText(name)).toBeRequired();
+    }
+    expect(screen.getByRole("button", { name: "Open bounded investigation" }).parentElement).toHaveClass("form-actions");
+    expect(investigateCanonical).not.toHaveBeenCalled();
+  });
+
   it("submits exact resource/time scenario hints and keeps detailed evidence visible with synthesis", async () => {
     const result = canonicalResult("thr-11111111111111111111111111111111", "tool:scenario:0");
     result.data.tool_results = [{

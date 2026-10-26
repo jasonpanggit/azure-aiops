@@ -46,12 +46,12 @@ export function IncidentScenarioInvestigation({
     <div className="card-body">
       <h2>Investigate resource changes and incident impact</h2>
       <p>Read-only projection evidence, not complete activity history. Temporal proximity is not causality. Historical health and dependency coverage may be unavailable.</p>
-      <form onSubmit={submit}>
-        <label>Selected resource ARM id<input aria-label="Investigation resource ARM id" value={resource} readOnly={Boolean(resourceId)} maxLength={512} onChange={event => setResource(event.target.value.trim())} required /></label>
-        <label>Investigation from (ISO timestamp with timezone)<input aria-label="Investigation from" value={since} maxLength={64} placeholder="2026-10-26T00:00:00Z" onChange={event => setSince(event.target.value)} required /></label>
-        <label>Investigation through (ISO timestamp with timezone)<input aria-label="Investigation through" value={until} maxLength={64} placeholder="2026-10-26T01:00:00Z" onChange={event => setUntil(event.target.value)} required /></label>
-        <button type="submit" className="button button-secondary">Open bounded investigation</button>
-        {error && <p role="alert">{error}</p>}
+      <form className="form-grid" onSubmit={submit}>
+        <label className="form-field form-span"><span>Selected resource ARM id</span><input className="form-control" aria-label="Investigation resource ARM id" value={resource} readOnly={Boolean(resourceId)} maxLength={512} onChange={event => setResource(event.target.value.trim())} required /></label>
+        <label className="form-field"><span>Investigation from (ISO timestamp with timezone)</span><input className="form-control" aria-label="Investigation from" value={since} maxLength={64} placeholder="2026-10-26T00:00:00Z" onChange={event => setSince(event.target.value)} required /></label>
+        <label className="form-field"><span>Investigation through (ISO timestamp with timezone)</span><input className="form-control" aria-label="Investigation through" value={until} maxLength={64} placeholder="2026-10-26T01:00:00Z" onChange={event => setUntil(event.target.value)} required /></label>
+        <div className="form-actions"><button type="submit" className="button button-secondary">Open bounded investigation</button></div>
+        {error && <p className="form-span" role="alert">{error}</p>}
       </form>
       <CopilotDrawer
         open={open} onClose={() => setOpen(false)}
