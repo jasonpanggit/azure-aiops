@@ -171,7 +171,15 @@ for (const width of [2560, 1912, 1440, 820, 768, 375, 320]) {
     const filterBox = await filters.boundingBox();
     expect(filterBox).not.toBeNull();
     for (const select of await filters.locator("select").all()) {
+      const value = await select.inputValue();
+      const label = await select.evaluate(element => (element as HTMLSelectElement).labels?.[0]?.textContent);
+      expect(label?.trim()).toBeTruthy();
+      await select.focus();
+      await expect(select).toBeFocused();
+      await expect(select).toHaveValue(value);
+      await expect(select).toHaveCSS("box-shadow", "rgba(15, 108, 189, 0.15) 0px 0px 0px 3px");
       const box = await select.boundingBox();
+      expect(box!.height).toBe(width <= 820 ? 44 : 40);
       expect(box!.x).toBeGreaterThanOrEqual(filterBox!.x);
       expect(box!.x + box!.width).toBeLessThanOrEqual(filterBox!.x + filterBox!.width);
       expect(box!.x + box!.width).toBeLessThanOrEqual(width);
