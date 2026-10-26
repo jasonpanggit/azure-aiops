@@ -135,9 +135,9 @@ function FabricMedallionPanelContent({
       </nav>
 
       <div className="metric-grid">
-        <MetricCard label="Bronze tables" value={formatHealthCount(counts?.bronze)} detail="Raw dataset health and source freshness" tone={fabricMetricTone(counts?.bronze)} />
-        <MetricCard label="Silver tables" value={formatHealthCount(counts?.silver)} detail="Normalized dataset health and quality" tone={fabricMetricTone(counts?.silver)} />
-        <MetricCard label="Gold tables" value={formatHealthCount(counts?.gold)} detail="Curated products; downstream readiness checked separately" tone={fabricMetricTone(counts?.gold)} />
+        <MetricCard label="Bronze tables" size="text" value={formatHealthCount(counts?.bronze)} detail="Dataset health, not row counts. Stale raw data can contain records." tone={fabricMetricTone(counts?.bronze)} />
+        <MetricCard label="Silver tables" size="text" value={formatHealthCount(counts?.silver)} detail="Dataset health, not row counts. Freshness and quality determine health." tone={fabricMetricTone(counts?.silver)} />
+        <MetricCard label="Gold tables" size="text" value={formatHealthCount(counts?.gold)} detail="Registered dataset health, not physical table inventory or downstream readiness." tone={fabricMetricTone(counts?.gold)} />
         <MetricCard
           label="Governed relationships"
           value={relationshipCount && relationshipCount > 0
@@ -616,8 +616,9 @@ export function tableNamesByLayer(
   return layers;
 }
 
+/** Distinguishes metadata dataset health from record counts and physical inventory. */
 export function formatHealthCount(counts?: FabricLayerCounts): string {
-  return counts ? `${counts.healthy}/${counts.total}` : "—";
+  return counts ? `${counts.healthy} healthy / ${counts.total} registered` : "—";
 }
 
 export function fabricMetricTone(counts?: FabricLayerCounts): "default" | "critical" | "warning" | "success" {

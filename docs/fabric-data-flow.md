@@ -1,5 +1,19 @@
 # Fabric Inventory Data Flow
 
+## Reading Medallion health
+
+Layer counts display **healthy / registered datasets**, not record counts or a
+physical lakehouse table inventory. `0 healthy / 18 registered` can describe
+populated Bronze datasets whose recorded freshness has expired. Individual
+dataset row counts are reported separately from recorded metadata, not a live
+table scan. No registered entries in a scope does not prove physical absence.
+
+Connection discovery and Fabric publication are separate operations. A successful
+subscription sync does not prove that full inventory/Fabric publication ran,
+or that connection-attributed publication metadata is available.
+Do not remove connection filters or attribute subscription-wide metadata to a
+connection to make its health counts appear populated.
+
 ```mermaid
 sequenceDiagram
     participant Agent as AIOps Agent / CLI

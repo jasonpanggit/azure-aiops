@@ -189,6 +189,23 @@ describe("Per-subscription Fabric medallion page", () => {
     expect(screen.getByRole("option", { name: "All onboarded subscriptions" })).toBeInTheDocument();
   });
 
+  it("distinguishes zero healthy datasets from zero records or missing physical tables", async () => {
+    fabricLayers.mockResolvedValue(envelope({
+      layers: { bronze: { healthy: 0, total: 18 }, silver: { healthy: 0, total: 29 }, gold: { healthy: 0, total: 0 } },
+    }, "fabric.medallion_health", "stale"));
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Bronze tables value")).toHaveTextContent("0 healthy / 18 registered");
+      expect(screen.getByLabelText("Silver tables value")).toHaveTextContent("0 healthy / 29 registered");
+      expect(screen.getByLabelText("Gold tables value")).toHaveTextContent("0 healthy / 0 registered");
+    });
+    expect(screen.getByText("Dataset health, not row counts. Stale raw data can contain records.")).toBeInTheDocument();
+    expect(screen.getByText("Registered dataset health, not physical table inventory or downstream readiness.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Bronze tables value").closest("article")).toHaveClass("metric-critical");
+    expect(screen.getByLabelText("Gold tables value").closest("article")).toHaveClass("metric-default");
+  });
+
   it("scopes every Fabric API call to the subscription from the query string", async () => {
     searchParams.current = new URLSearchParams({ subscription: connections[0].subscription_id });
     renderPage();
