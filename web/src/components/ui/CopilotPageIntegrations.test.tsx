@@ -33,7 +33,7 @@ describe("integrated route launcher coverage (COP-02)", () => {
     }
   });
 
-  it("keeps exactly one page-owned insight without a drawer portal", () => {
+  it("keeps exactly one page-owned insight outside the drawer", () => {
     for (const [route, disposition] of routes) {
       if (disposition.kind !== "integrated") continue;
       const component = route === "/network" ? "TopologyInsights" : "CopilotInsights";
@@ -43,7 +43,8 @@ describe("integrated route launcher coverage (COP-02)", () => {
       ).toHaveLength(1);
     }
     const drawer = readFileSync(join(APP_DIR, "..", "components", "ui", "CopilotDrawer.tsx"), "utf8");
-    expect(drawer).not.toContain("createPortal");
+    expect(drawer).not.toContain("<CopilotInsights");
+    expect(drawer).not.toContain("<TopologyInsights");
   });
 
   it("keeps dedicated, redirect, and excluded routes free of an embedded launcher", () => {
