@@ -596,6 +596,15 @@ export function CopilotDrawer({
                     ) : (
                       !turn.narration && <p>No matching context was found in this scope.</p>
                     )}
+                    {turn.toolCalls?.filter(call => call.tool === "incidents"
+                      && call.data && typeof call.data === "object" && "investigation" in call.data)
+                      .map((call, callIndex) => (
+                        <details key={`incident-evidence-${callIndex}`} open>
+                          <summary>Investigation timeline, hypotheses and impact</summary>
+                          {call.warning && <p className="copilot-tool-warning">{call.warning}</p>}
+                          <StructuredData value={call.data} />
+                        </details>
+                      ))}
                     <CopilotCitations
                       citations={turn.citations ?? []}
                       ariaLabel="Investigation citations"

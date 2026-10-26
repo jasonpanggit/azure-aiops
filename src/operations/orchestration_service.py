@@ -2510,6 +2510,39 @@ class OrchestrationService:
             snapshot.page_kind if snapshot is not None else None,
             tool_results,
         )
+        scenario_claims = []
+        for result in tool_results:
+            data = result.get("data")
+            investigation = data.get("investigation") if isinstance(data, Mapping) else None
+            if result.get("tool") != "incidents" or not isinstance(investigation, Mapping):
+                continue
+            refs = [
+                f"tool:{result['call_id']}:{index}"
+                for index, _ in enumerate(result.get("evidence") or [])
+            ]
+            if not refs:
+                continue
+            from operations.incident_scenarios import scenario_summary
+
+            scenario_claims.append({
+                "finding_id": f"incident-scenario:{result['call_id']}",
+                "summary": scenario_summary(investigation),
+                "evidence_refs": refs,
+                "confidence": "low",
+                "uncertainty": investigation["unknowns"],
+                "freshness": "unknown",
+                "actionable": False,
+                "next_check": investigation["next_checks"][0],
+            })
+        if scenario_claims:
+            synthesis = ExecutiveSynthesis(
+                status="deterministic",
+                reason="bounded_incident_scenario_evidence",
+                domain_count=1,
+                claims=scenario_claims,
+            )
+            self._record_synthesis_metric(synthesis)
+            return synthesis
         findings = normalize_cited_findings(
             tool_results,
             selected_resource_ids=selected_resource_ids,
@@ -5083,6 +5116,12 @@ class OrchestrationService:
                 "",
             )
         except PolicyViolation as exc:
+            if any(
+                call.tool == "incidents"
+                and set(call.arguments) & {"scenario", "resource_id", "since", "until"}
+                for step in candidate.steps for call in step.tool_calls
+            ):
+                return None, "fallback", f"candidate_rejected:{exc.code}"
             return self._validated_fallback(
                 request,
                 effective_scope,

@@ -9,6 +9,7 @@ import {
 } from "react";
 import Link from "next/link";
 import { ResourceHealthHistory } from "@/components/ResourceHealthHistory";
+import { IncidentScenarioInvestigation } from "@/components/IncidentScenarioInvestigation";
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
 import { MetricCard } from "@/components/ui/MetricCard";
@@ -91,6 +92,7 @@ function ResourceCard({
   onRetry: () => void;
   onReviewHistory: (trigger: HTMLButtonElement) => void;
 }) {
+  const [investigationOpen, setInvestigationOpen] = useState(false);
   const detail = health?.data;
   const isContainerApp =
     resource.resource_type.toLowerCase() === "microsoft.app/containerapps";
@@ -204,6 +206,10 @@ function ResourceCard({
         aria-label={`Review retained health for ${resource.resource_name}`} onClick={event => onReviewHistory(event.currentTarget)}>
         Review retained health
       </button>
+      <button type="button" className="button button-secondary" onClick={() => setInvestigationOpen(value => !value)}>
+        Investigate changes and impact for {resource.resource_name}
+      </button>
+      {investigationOpen && <IncidentScenarioInvestigation resourceId={resource.resource_id} healthPage />}
     </article>
   );
 }

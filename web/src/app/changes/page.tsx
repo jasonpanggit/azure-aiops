@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { ChangeObservations } from "@/components/ChangeObservations";
+import { IncidentScenarioInvestigation } from "@/components/IncidentScenarioInvestigation";
 
 import { CopilotDrawer } from "@/components/ui/CopilotDrawer";
 import { CopilotDrawerButton } from "@/components/ui/CopilotDrawerButton";
@@ -83,6 +84,7 @@ export default function ChangesPage() {
         }
       />
       <ChangeObservations />
+      <IncidentScenarioInvestigation key={JSON.stringify(scope)} />
       <h2>Legacy incident timeline associations</h2>
       <p>Change-type events from at most 100 loaded incident report rows, not the durable Situation queue or the independent feed. The timeline Copilot uses only this report. No loaded association establishes causality or source completeness.</p>
       {incidents.data && !incidents.error && <p>{changes.length} change-type events in {incidents.data.data.incidents.length} loaded / {incidents.data.pagination?.total ?? "unreported"} reported incident rows; the timeline and its Copilot show the selected event page only.</p>}

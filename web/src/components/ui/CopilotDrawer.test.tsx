@@ -10,6 +10,7 @@ import { buildNetworkCopilotContext, normalizeCopilotSnapshotV2, type CanonicalC
 import { ScopeProvider, useScope } from "@/lib/scope-context";
 import { ApiError, type EvidenceItem } from "@/lib/types";
 import { CopilotDrawer } from "./CopilotDrawer";
+import { IncidentScenarioInvestigation } from "@/components/IncidentScenarioInvestigation";
 
 const { investigateCanonical } = vi.hoisted(() => ({ investigateCanonical: vi.fn() }));
 vi.mock("@/lib/copilot/page-adapters", async () => {
@@ -149,6 +150,79 @@ function SessionEndControl({ children }: { children: ReactNode }) {
 }
 
 describe("CopilotDrawer", () => {
+  function openIncidentScenario() {
+    fireEvent.change(screen.getByLabelText("Investigation resource ARM id"), { target: { value: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/app" } });
+    fireEvent.change(screen.getByLabelText("Investigation from"), { target: { value: "2026-10-25T10:00:00Z" } });
+    fireEvent.change(screen.getByLabelText("Investigation through"), { target: { value: "2026-10-25T11:00:00Z" } });
+    fireEvent.click(screen.getByRole("button", { name: "Open bounded investigation" }));
+  }
+
+  it("submits exact resource/time scenario hints and keeps detailed evidence visible with synthesis", async () => {
+    const result = canonicalResult("thr-11111111111111111111111111111111", "tool:scenario:0");
+    result.data.tool_results = [{
+      call_id: "scenario", specialist_id: "change", tool: "incidents",
+      status: "ok", evidence: [], warning: "Partial coverage only",
+      data: { investigation: { timeline: [{ timestamp: "2026-10-25T10:10:00Z", kind: "change" }], hypotheses: [{ counterevidence: ["recovered-alert"] }], unknowns: ["Historical health unavailable"], impact: [] } },
+    }];
+    result.data.synthesis = {
+      status: "deterministic", reason: "bounded_incident_scenario_evidence", domain_count: 1, warning: "",
+      claims: [{ finding_id: "scenario", summary: "Temporal proximity is not causality.", evidence_refs: ["tool:scenario:0"], confidence: "low", uncertainty: [], freshness: "unknown" }],
+    };
+    investigateCanonical.mockResolvedValueOnce(result);
+    render(<TestProviders><IncidentScenarioInvestigation /></TestProviders>);
+    openIncidentScenario();
+    fireEvent.click(screen.getByRole("button", { name: "Investigate recent changes in the selected window →" }));
+    expect(investigateCanonical.mock.calls[0][0]).toMatchObject({
+      snapshot: {
+        page_kind: "changes",
+        selected_entities: [{ type: "azure", resource_id: "/subscriptions/sub-a/resourcegroups/rg/providers/microsoft.compute/virtualmachines/app" }],
+        filters: { since: ["2026-10-25T10:00:00Z"], until: ["2026-10-25T11:00:00Z"] },
+      },
+      hint: { specialist_id: "change", tool: "incidents", arguments: {
+        scenario: "recent_change", resource_id: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/app",
+        since: "2026-10-25T10:00:00Z", until: "2026-10-25T11:00:00Z",
+      } },
+    });
+    expect(await screen.findByText("Temporal proximity is not causality.")).toBeInTheDocument();
+    expect(screen.getByText("Investigation timeline, hypotheses and impact")).toBeInTheDocument();
+    expect(screen.getByText("recovered-alert")).toBeInTheDocument();
+    expect(screen.getByText("Historical health unavailable")).toBeInTheDocument();
+  });
+
+  it.each(["window", "resource", "cancel", "scope"] as const)(
+    "aborts an incident scenario on %s change and ignores late completion",
+    async (change) => {
+      let resolveOld: ((value: ReturnType<typeof canonicalResult>) => void) | undefined;
+      investigateCanonical.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+      function Harness() {
+        const { setScope } = useScope();
+        return <><button onClick={() => setScope({ subscription: ["sub-b"] })}>Change incident scope</button><IncidentScenarioInvestigation /></>;
+      }
+      render(<TestProviders><Harness /></TestProviders>);
+      openIncidentScenario();
+      fireEvent.click(screen.getByRole("button", { name: "Build an incident impact brief for the selected window →" }));
+      const signal = investigateCanonical.mock.calls[0][2] as AbortSignal;
+      expect(investigateCanonical.mock.calls[0][0].hint.specialist_id).toBe("incident");
+      if (change === "window") fireEvent.change(screen.getByLabelText("Investigation through"), { target: { value: "2026-10-25T12:00:00Z" } });
+      if (change === "resource") fireEvent.change(screen.getByLabelText("Investigation resource ARM id"), { target: { value: "/subscriptions/sub-a/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/other" } });
+      if (change === "scope") fireEvent.click(screen.getByRole("button", { name: "Change incident scope" }));
+      if (change === "cancel") fireEvent.click(screen.getByRole("button", { name: "Cancel request" }));
+      expect(signal.aborted).toBe(true);
+      await act(async () => { resolveOld?.(canonicalResult("thr-11111111111111111111111111111111", "server:stale-incident")); });
+      expect(screen.queryByText("server:stale-incident")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["2026-11-25T11:00:00Z", "2026-10-25T11:00:00"])("rejects invalid window %s before any investigation request", (until) => {
+    render(<TestProviders><IncidentScenarioInvestigation /></TestProviders>);
+    openIncidentScenario();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.change(screen.getByLabelText("Investigation through"), { target: { value: until } });
+    fireEvent.click(screen.getByRole("button", { name: "Open bounded investigation" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("at most seven days");
+    expect(investigateCanonical).not.toHaveBeenCalled();
+  });
+
   it("aborts the Network design review on actual scope selection and rejects a late result", async () => {
     let resolveOld: ((value: ReturnType<typeof canonicalResult>) => void) | undefined;
     investigateCanonical.mockImplementationOnce(() => new Promise((resolve) => {
