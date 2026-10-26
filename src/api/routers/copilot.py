@@ -2329,6 +2329,19 @@ def investigate_canonical(
             payload,
             browser_snapshot,
         )
+        if plan_hint is not None and plan_hint.tool == "incidents" and set(plan_hint.arguments) & {"scenario", "resource_id", "since", "until"}:
+            OrchestrationPolicy().validate(
+                request=request,
+                candidate=CandidatePlan(steps=[SpecialistStep(
+                    specialist_id=plan_hint.specialist_id,
+                    tool_calls=[ToolCallCandidate(
+                        tool=plan_hint.tool,
+                        arguments=dict(plan_hint.arguments),
+                        citation_ids=[COVERAGE_CITATION_ID],
+                    )],
+                )]),
+                effective_scope=scope,
+            )
     except ValueError as exc:
         raise ApiError(
             ErrorCode.INVALID_REQUEST,

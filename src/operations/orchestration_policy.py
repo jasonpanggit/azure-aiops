@@ -138,6 +138,13 @@ class OrchestrationPolicy:
                     validate_tool_arguments(call.tool, call.arguments)
                 except ValueError as exc:
                     raise PolicyViolation("invalid_arguments", call.tool) from exc
+                if call.tool == "incidents" and call.arguments.get("scenario"):
+                    from operations.incident_scenarios import validate_snapshot_binding
+
+                    try:
+                        validate_snapshot_binding(call.arguments, request.snapshot)
+                    except ValueError as exc:
+                        raise PolicyViolation("invalid_arguments", str(exc)) from exc
                 if (
                     specialist.output_contract.requires_citations
                     and not call.citation_ids

@@ -84,6 +84,10 @@ class ToolArguments(BaseModel):
     sort_direction: str | None = Field(default=None, min_length=1, max_length=8)
     active: bool | None = None
     entity_id: str | None = Field(default=None, min_length=1, max_length=512)
+    scenario: str | None = Field(default=None, min_length=1, max_length=32)
+    resource_id: str | None = Field(default=None, min_length=1, max_length=512)
+    since: str | None = Field(default=None, min_length=1, max_length=64)
+    until: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 _REQUIRED: dict[str, tuple[str, ...]] = {
@@ -122,7 +126,7 @@ _OPTIONAL: dict[str, tuple[str, ...]] = {
         "active",
     ),
     "defender_remediation_cases": ("business_service",),
-    "incidents": ("incident_id",),
+    "incidents": ("incident_id", "scenario", "resource_id", "since", "until"),
     "inventory_resources": ("resource_type", "family"),
 }
 
@@ -205,6 +209,10 @@ def validate_tool_arguments(
     missing = [field for field in _REQUIRED.get(name, ()) if field not in args]
     if require_required and missing:
         raise ValueError(f"missing required arguments: {', '.join(missing)}")
+    if name == "incidents" and set(args) & {"scenario", "resource_id", "since", "until"}:
+        from operations.incident_scenarios import validate_parameters
+
+        validate_parameters(args)
     return args, missing
 
 

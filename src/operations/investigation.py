@@ -711,6 +711,20 @@ def run_investigation(
 
     answer = _failed_patch_starter_answer(question, calls)
     if answer is None:
+        for call in calls:
+            data = call.result.data
+            scenario = data.get("investigation") if isinstance(data, Mapping) else None
+            if call.tool == "incidents" and isinstance(scenario, Mapping):
+                from operations.incident_scenarios import scenario_summary
+
+                answer = {
+                    "text": scenario_summary(scenario),
+                    "agent_name": "operations-copilot",
+                    "model": "deterministic",
+                    "grounded": True,
+                }
+                break
+    if answer is None:
         answer = _status_only_answer(calls)
     deterministic_answer = answer is not None
 

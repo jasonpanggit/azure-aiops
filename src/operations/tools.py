@@ -335,13 +335,13 @@ def _provider_result(
     tool-calling loop or, worse, being swallowed into an empty result.
     """
     subscription_ids = list(tool_context.scope.values("subscription"))
-    hybrid_names = {"incidents": "hybrid_incident_provider"}
+    hybrid_names = {"incidents": "hybrid_incident_provider", "change": "hybrid_change_provider"}
     hybrid_provider = getattr(
         tool_context.context,
         hybrid_names.get(name, f"hybrid_{name}_provider"),
         None,
     )
-    connection_scoped_provider = name in {"network", "incidents", "remediation"}
+    connection_scoped_provider = name in {"network", "incidents", "remediation", "change"}
     if connection_scoped_provider and callable(hybrid_provider):
         try:
             subscription_ids = _live_tool_subscription_ids(
@@ -1544,6 +1544,8 @@ def _tool_defender_secure_score(tool_context: ToolContext, args: Mapping[str, An
 
 
 def _tool_incidents(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    if set(args) & {"scenario", "resource_id", "since", "until"}:
+        return _tool_incident_scenario(tool_context, args)
     incident_id = str(args.get("incident_id") or "").strip()
 
     def run(engine: Any) -> ToolResult:
@@ -1588,6 +1590,65 @@ def _tool_incidents(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolR
         )
 
     return _provider_result(tool_context, "incidents", run)
+
+
+def _tool_incident_scenario(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    from operations.incident_scenarios import (
+        change_projection,
+        incident_projection,
+        investigate,
+        validate_parameters,
+    )
+
+    try:
+        resource, _, _ = validate_parameters(args)
+    except (TypeError, ValueError):
+        return ToolResult(status=STATUS_DENIED, warning="A scenario requires one resource and an explicit timezone-qualified window of at most seven days.")
+    port = tool_context.context.inventory_read_port()
+    identity = port.get_resource(tool_context.scope, resource)
+    if identity is None:
+        return ToolResult(status=STATUS_DENIED, warning="Selected resource is outside authorized inventory or unavailable.")
+
+    def project(loader: Callable[[Any], dict[str, Any]]) -> Callable[[Any], ToolResult]:
+        def run(engine: Any) -> ToolResult:
+            return ToolResult(status=STATUS_OK, data=loader(engine))
+        return run
+
+    # Each existing provider is acquired once. No specialist makes another read.
+    change_result = _provider_result(tool_context, "change", project(change_projection))
+    incident_result = _provider_result(tool_context, "incidents", project(incident_projection))
+    data = investigate(
+        args,
+        identity=identity,
+        changes=change_result.data if change_result.status == STATUS_OK else None,
+        incidents=incident_result.data if incident_result.status == STATUS_OK else None,
+        authorize=lambda resource_id: port.get_resource(tool_context.scope, resource_id),
+    )
+    evidence = tuple(
+        Evidence(
+            source_engine="operations.incident_scenarios",
+            source_table=f"incident_investigation/{family}",
+            resource_id=str(identity["resource_id"]),
+            timestamp=str(coverage.get("observed_at") or ""),
+            confidence=CONFIDENCE_MEDIUM,
+        )
+        for family, coverage in data["coverage"].items()
+        if coverage["status"] == "partial"
+    )
+    # A coverage receipt remains citeable even when all evidence adapters fail.
+    if not evidence:
+        evidence = (Evidence(
+            source_engine="operations.incident_scenarios",
+            source_table="incident_investigation/unavailable_coverage",
+            resource_id=str(identity["resource_id"]),
+            confidence=CONFIDENCE_MEDIUM,
+        ),)
+    return ToolResult(
+        status=STATUS_UNAVAILABLE if data["status"] == "unavailable" else STATUS_OK,
+        data={"investigation": data},
+        evidence=evidence,
+        warning="Partial evidence only; historical health/activity completeness and causality are not established.",
+    )
 
 
 def _tool_remediation_plans(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
@@ -2193,8 +2254,14 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         ),
         ToolSpec(
             name="incidents",
-            description="Correlated incidents, or a single incident's detail/timeline/root cause by id.",
-            parameters={"incident_id": "Optional incident id for full detail"},
+            description="Correlated incident detail, or an explicit bounded resource/window change or impact investigation. Temporal proximity is not causality.",
+            parameters={
+                "incident_id": "Optional incident id for full detail",
+                "scenario": "Optional recent_change or incident_impact; requires resource_id, since and until",
+                "resource_id": "Selected inventory-authorized ARM resource id",
+                "since": "Inclusive ISO timestamp with explicit timezone",
+                "until": "Inclusive ISO timestamp; after since and at most seven days later",
+            },
             handler=_tool_incidents,
         ),
         ToolSpec(
