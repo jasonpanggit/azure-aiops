@@ -354,17 +354,31 @@ class RuleTighteningAnalyzer:
         return findings
 
     def _subsumes(self, broad: NetworkSecurityRule, narrow: NetworkSecurityRule) -> bool:
+        if broad.priority >= narrow.priority:
+            return False
         if not broad.protocol_spec.is_any and broad.protocol != narrow.protocol:
             return False
         if not self._spec_covers(broad.source_spec, narrow.source_spec):
             return False
         if not self._spec_covers(broad.destination_spec, narrow.destination_spec):
             return False
+        broad_source_ports = broad.source_port_spec
+        narrow_source_ports = narrow.source_port_spec
+        if not broad_source_ports.is_any:
+            if narrow_source_ports.is_any or not narrow_source_ports.ranges or not broad_source_ports.ranges:
+                return False
+            if not all(
+                any(low >= b_low and high <= b_high for b_low, b_high in broad_source_ports.ranges)
+                for low, high in narrow_source_ports.ranges
+            ):
+                return False
         broad_ports = broad.destination_port_spec
         narrow_ports = narrow.destination_port_spec
         if broad_ports.is_any:
             return True
         if narrow_ports.is_any:
+            return False
+        if not narrow_ports.ranges or not broad_ports.ranges:
             return False
         return all(
             any(low >= b_low and high <= b_high for b_low, b_high in broad_ports.ranges)

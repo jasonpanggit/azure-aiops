@@ -2898,6 +2898,12 @@ const OVERVIEW_STARTERS: CoreCopilotStarterQuestion[] = [
 
 const NETWORK_STARTERS: CoreCopilotStarterQuestion[] = [
   {
+    label: "Review network design",
+    specialistId: "network",
+    tool: "firewall_nsg_gaps",
+    toolArguments: { category: "design_review" },
+  },
+  {
     label: "Can UAT reach PROD?",
     specialistId: "network",
     tool: "traffic_flow",

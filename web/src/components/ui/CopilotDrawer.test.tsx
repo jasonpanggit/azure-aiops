@@ -6,8 +6,8 @@ import {
   ThreadContinuityProvider,
   useThreadContinuity,
 } from "@/lib/copilot/thread-context";
-import { normalizeCopilotSnapshotV2, type CanonicalCopilotResult } from "@/lib/copilot/page-adapters";
-import { ScopeProvider } from "@/lib/scope-context";
+import { buildNetworkCopilotContext, normalizeCopilotSnapshotV2, type CanonicalCopilotResult } from "@/lib/copilot/page-adapters";
+import { ScopeProvider, useScope } from "@/lib/scope-context";
 import { ApiError, type EvidenceItem } from "@/lib/types";
 import { CopilotDrawer } from "./CopilotDrawer";
 
@@ -109,6 +109,24 @@ function TestProviders({ children }: { children: ReactNode }) {
   );
 }
 
+function NetworkDesignReviewHarness() {
+  const { scope, setScope } = useScope();
+  const context = buildNetworkCopilotContext({
+    scope, tab: "topology", gapOffset: 0, gapLimit: 20,
+    findingOffset: 0, findingLimit: 20,
+  });
+  return (
+    <>
+      <button type="button" onClick={() => setScope({ subscription: ["sub-a"] })}>
+        Select subscription A
+      </button>
+      <CopilotDrawer open onClose={vi.fn()} contextLabel="Network"
+        snapshot={context.snapshot} requestedScope={scope}
+        starterQuestions={context.starterQuestions} />
+    </>
+  );
+}
+
 function SessionEndControl({ children }: { children: ReactNode }) {
   const continuity = useThreadContinuity();
   return (
@@ -131,6 +149,63 @@ function SessionEndControl({ children }: { children: ReactNode }) {
 }
 
 describe("CopilotDrawer", () => {
+  it("aborts the Network design review on actual scope selection and rejects a late result", async () => {
+    let resolveOld: ((value: ReturnType<typeof canonicalResult>) => void) | undefined;
+    investigateCanonical.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveOld = resolve;
+    }));
+    render(
+      <ScopeProvider initialScope={{ subscription: ["sub-a", "sub-b"] }}>
+        <ThreadContinuityProvider><NetworkDesignReviewHarness /></ThreadContinuityProvider>
+      </ScopeProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Review network design →" }));
+    const first = investigateCanonical.mock.calls[0];
+    expect(first[0]).toMatchObject({
+      requested_scope: { subscription: ["sub-a", "sub-b"] },
+      hint: {
+        specialist_id: "network", tool: "firewall_nsg_gaps",
+        arguments: { category: "design_review" },
+      },
+    });
+    const signal = first[2] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Select subscription A" }));
+    expect(signal.aborted).toBe(true);
+    await act(async () => {
+      resolveOld?.(canonicalResult("thr-11111111111111111111111111111111", "server:old-network-scope"));
+    });
+    expect(screen.queryByText("server:old-network-scope")).not.toBeInTheDocument();
+    investigateCanonical.mockResolvedValueOnce(
+      canonicalResult("thr-22222222222222222222222222222222", "server:scoped-network-review"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Review network design →" }));
+    expect(investigateCanonical.mock.calls[1][0]).toMatchObject({
+      requested_scope: { subscription: ["sub-a"] },
+    });
+    expect(await screen.findByText("server:scoped-network-review")).toBeInTheDocument();
+  });
+
+  it("cancels a Network design review and rejects completion even if transport ignores abort", async () => {
+    let resolveRequest: ((value: ReturnType<typeof canonicalResult>) => void) | undefined;
+    investigateCanonical.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveRequest = resolve;
+    }));
+    render(
+      <ScopeProvider initialScope={{ subscription: ["sub-a"] }}>
+        <ThreadContinuityProvider><NetworkDesignReviewHarness /></ThreadContinuityProvider>
+      </ScopeProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Review network design →" }));
+    const signal = investigateCanonical.mock.calls[0][2] as AbortSignal;
+    fireEvent.click(screen.getByRole("button", { name: "Cancel request" }));
+    expect(signal.aborted).toBe(true);
+    await act(async () => {
+      resolveRequest?.(canonicalResult("thr-11111111111111111111111111111111", "server:cancelled-network-review"));
+    });
+    expect(screen.queryByText("server:cancelled-network-review")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review network design →" })).toBeEnabled();
+  });
   it("allows a page to own its insight panel without disabling the drawer", async () => {
     const pageSnapshot = { ...snapshot, page_kind: "resource" as const, evidence: [] };
     const { container, rerender } = render(
@@ -281,6 +356,7 @@ describe("CopilotDrawer", () => {
           hint: { specialist_id: specialist, tool, arguments: toolArguments },
         }),
         { subscription: ["visible"] },
+        expect.any(AbortSignal),
       ));
       await waitFor(() => expect(screen.getByLabelText("root continuity")).toHaveTextContent(threadId));
       fireEvent.change(screen.getByRole("textbox"), { target: { value: "What is uncertain?" } });
@@ -291,6 +367,7 @@ describe("CopilotDrawer", () => {
           thread_id: threadId, expected_thread_revision: 1,
         }),
         { subscription: ["visible"] },
+        expect.any(AbortSignal),
       ));
       expect(investigateCanonical.mock.calls.at(-1)?.[0]).not.toHaveProperty("hint");
     },
@@ -320,6 +397,7 @@ describe("CopilotDrawer", () => {
       expect.objectContaining({
         snapshot: pageSnapshot, requested_scope: { subscription: ["visible"] },
       }), { subscription: ["visible"] },
+      expect.any(AbortSignal),
     ));
     expect(investigateCanonical.mock.calls[0][0]).not.toHaveProperty("hint");
   });
@@ -375,6 +453,7 @@ describe("CopilotDrawer", () => {
         question: "What is wrong?",
       }),
       {},
+      expect.any(AbortSignal),
     ));
     expect(investigateCanonical).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("Firewall bypass")).toBeInTheDocument();
@@ -428,6 +507,7 @@ describe("CopilotDrawer", () => {
         thread_id: threadId,
       }),
       { subscription: ["sub-a"] },
+      expect.any(AbortSignal),
     ));
     const request = investigateCanonical.mock.calls.at(-1)?.[0];
     expect(request.snapshot).toEqual(normalizeCopilotSnapshotV2({
@@ -998,6 +1078,7 @@ describe("CopilotDrawer", () => {
           thread_id: "thr-55555555555555555555555555555555",
         }),
         { subscription: ["sub-a"] },
+        expect.any(AbortSignal),
       );
     },
   );
@@ -1038,6 +1119,7 @@ describe("CopilotDrawer", () => {
     await waitFor(() => expect(investigateCanonical).toHaveBeenCalledWith(
       expect.objectContaining({ thread_id: threadId }),
       { subscription: ["sub-a"] },
+      expect.any(AbortSignal),
     ));
 
     fireEvent.click(screen.getByRole("button", { name: "End session" }));
@@ -1767,6 +1849,7 @@ describe("CopilotDrawer", () => {
         },
       }),
       {},
+      expect.any(AbortSignal),
     );
   });
 

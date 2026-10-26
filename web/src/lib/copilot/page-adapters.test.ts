@@ -529,6 +529,7 @@ describe("inventory Copilot page adapter", () => {
         toolArguments: { selector: hubId },
       });
       expect(context.starterQuestions.slice(1).map((starter) => starter.label)).toEqual([
+        "Review network design",
         "Can UAT reach PROD?",
         "Show inspection bypass paths.",
       ]);

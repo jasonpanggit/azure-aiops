@@ -156,6 +156,7 @@ export function CopilotDrawer({
   const contextFingerprintRef = useRef(contextFingerprint);
   const requestGeneration = useRef(0);
   const requestInFlight = useRef(false);
+  const activeController = useRef<AbortController | null>(null);
   const activeRequestFingerprint = useRef<string | null>(null);
   const liveContinuityGeneration = useRef(threadContinuity.generation);
   const appliedContinuityGeneration = useRef(threadContinuity.generation);
@@ -178,9 +179,20 @@ export function CopilotDrawer({
 
   useEffect(() => () => {
     requestGeneration.current += 1;
+    activeController.current?.abort();
     requestInFlight.current = false;
     activeRequestFingerprint.current = null;
   }, []);
+
+  useEffect(() => {
+    if (open) return;
+    requestGeneration.current += 1;
+    activeController.current?.abort();
+    requestInFlight.current = false;
+    activeRequestFingerprint.current = null;
+    setLoading(false);
+    setStage("idle");
+  }, [open]);
 
   useEffect(() => {
     function onPointerMove(event: PointerEvent) {
@@ -202,6 +214,7 @@ export function CopilotDrawer({
   useEffect(() => {
     if (contextFingerprintRef.current === contextFingerprint) return;
     requestGeneration.current += 1;
+    activeController.current?.abort();
     contextFingerprintRef.current = contextFingerprint;
     requestInFlight.current = false;
     activeRequestFingerprint.current = null;
@@ -223,6 +236,7 @@ export function CopilotDrawer({
     }
     appliedContinuityGeneration.current = threadContinuity.generation;
     requestGeneration.current += 1;
+    activeController.current?.abort();
     requestInFlight.current = false;
     activeRequestFingerprint.current = null;
     setTurns([]);
@@ -243,6 +257,8 @@ export function CopilotDrawer({
     const nextQuestion = value.trim();
     if (!nextQuestion || requestInFlight.current) return;
     requestInFlight.current = true;
+    const controller = new AbortController();
+    activeController.current = controller;
     setQuestion("");
     setLoading(true);
     setStage("loading");
@@ -283,6 +299,7 @@ export function CopilotDrawer({
           } : {}),
         },
         effectiveRequestedScope,
+        controller.signal,
       ) : await copilotApi.investigate(
         nextQuestion,
         effectiveRequestedScope,
@@ -370,6 +387,7 @@ export function CopilotDrawer({
       setStage("error");
     } finally {
       if (requestIsCurrent()) {
+        activeController.current = null;
         requestInFlight.current = false;
         activeRequestFingerprint.current = null;
         setLoading(false);
@@ -590,7 +608,19 @@ export function CopilotDrawer({
               </div>
             </div>
           ))}
-          {visibleLoading && <div className="copilot-thinking"><span /><span /><span /> Correlating evidence and validating sources</div>}
+          {visibleLoading && (
+            <div className="copilot-thinking">
+              <span /><span /><span /> Correlating evidence and validating sources
+              <button type="button" className="button" onClick={() => {
+                requestGeneration.current += 1;
+                activeController.current?.abort();
+                requestInFlight.current = false;
+                activeRequestFingerprint.current = null;
+                setLoading(false);
+                setStage("idle");
+              }}>Cancel request</button>
+            </div>
+          )}
         </div>
 
         <div className="copilot-drawer-composer">
