@@ -9,8 +9,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
+from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
+from azure.core.exceptions import AzureError
 
 from .query_contract import QuerySpec
 
@@ -191,6 +193,118 @@ class AzureCliArgClient:
                     complete=True,
                 )
         raise RuntimeError(f"ARG query '{spec.name}' exceeded max_pages={self.max_pages}")
+
+
+class DiagnosticSettingsReadError(RuntimeError):
+    """A bounded Azure Monitor Diagnostic Settings read failed."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        self.status_code = status_code
+        super().__init__(message)
+
+
+class AzureMonitorDiagnosticSettingsClient:
+    """Read one resource's Azure Monitor Diagnostic Settings from ARM."""
+
+    endpoint = "https://management.azure.com"
+    api_version = "2021-05-01-preview"
+    arm_scope = "https://management.azure.com/.default"
+
+    def __init__(
+        self,
+        credential: Any,
+        *,
+        requester: HttpRequester | None = None,
+        timeout: float = 20.0,
+        max_pages: int = 20,
+    ) -> None:
+        if max_pages < 1:
+            raise ValueError("Diagnostic Settings max_pages must be positive")
+        self.credential = credential
+        self.requester = requester or httpx.request
+        self.timeout = timeout
+        self.max_pages = max_pages
+
+    def list_resource_settings(
+        self,
+        resource_id: str,
+        *,
+        authorized_subscription_ids: set[str],
+    ) -> tuple[dict[str, Any], ...]:
+        """List every setting for one authorized resource; reject truncation."""
+        path = _diagnostic_settings_path(resource_id, authorized_subscription_ids)
+        url = f"{self.endpoint}{path}"
+        params: dict[str, str] | None = {"api-version": self.api_version}
+        try:
+            token = self.credential.get_token(self.arm_scope)
+        except AzureError as exc:
+            raise DiagnosticSettingsReadError(
+                "Could not acquire the authorized ARM token.",
+                status_code=401,
+            ) from exc
+        access_token = str(getattr(token, "token", "") or "")
+        if not access_token:
+            raise DiagnosticSettingsReadError(
+                "Azure credential returned an empty ARM token."
+            )
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        results: list[dict[str, Any]] = []
+        for _page_number in range(1, self.max_pages + 1):
+            try:
+                response = self.requester(
+                    "GET",
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=self.timeout,
+                )
+            except httpx.HTTPError as exc:
+                raise DiagnosticSettingsReadError(
+                    "Azure Monitor Diagnostic Settings request failed."
+                ) from exc
+            if response.is_error:
+                raise DiagnosticSettingsReadError(
+                    "Azure Monitor Diagnostic Settings request was rejected.",
+                    status_code=response.status_code,
+                )
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise DiagnosticSettingsReadError(
+                    "Azure returned malformed Diagnostic Settings JSON."
+                ) from exc
+            if not isinstance(payload, dict) or not isinstance(
+                payload.get("value"), list
+            ):
+                raise DiagnosticSettingsReadError(
+                    "Azure returned an invalid Diagnostic Settings collection."
+                )
+            page = payload["value"]
+            if any(not isinstance(item, dict) for item in page):
+                raise DiagnosticSettingsReadError(
+                    "Azure returned a malformed Diagnostic Settings item."
+                )
+            results.extend(page)
+            next_link = payload.get("nextLink")
+            if next_link is None or next_link == "":
+                return tuple(results)
+            if not isinstance(next_link, str):
+                raise DiagnosticSettingsReadError(
+                    "Azure returned invalid Diagnostic Settings pagination metadata."
+                )
+            url = _validated_diagnostic_next_link(
+                next_link,
+                expected_path=path,
+                endpoint=self.endpoint,
+                api_version=self.api_version,
+            )
+            params = None
+        raise DiagnosticSettingsReadError(
+            "Diagnostic Settings pagination exceeded the configured page bound."
+        )
 
 
 class AzureResourceGraphClient:
@@ -655,6 +769,79 @@ def _cost_usage_date(value: Any) -> str:
     if len(text) == 8 and text.isdigit():
         return f"{text[:4]}-{text[4:6]}-{text[6:]}"
     return text
+
+
+def _diagnostic_settings_path(
+    resource_id: str,
+    authorized_subscription_ids: set[str],
+) -> str:
+    if not isinstance(resource_id, str) or not resource_id.startswith("/"):
+        raise ValueError("Diagnostic Settings require a canonical ARM resource ID")
+    if any(char in resource_id for char in ("?", "#", "\\")):
+        raise ValueError("Diagnostic Settings resource ID contains unsafe path data")
+    segments = resource_id.strip("/").split("/")
+    lowered = [segment.casefold() for segment in segments]
+    if (
+        len(segments) < 8
+        or lowered[0] != "subscriptions"
+        or lowered[2] != "resourcegroups"
+        or lowered[4] != "providers"
+        or not segments[1]
+        or not segments[3]
+        or not segments[5]
+        or not segments[6]
+        or not segments[7]
+        or len(segments) % 2 != 0
+        or any(
+            not segment
+            or segment in {".", ".."}
+            or any(ord(char) < 32 for char in segment)
+            for segment in segments
+        )
+    ):
+        raise ValueError("Diagnostic Settings require a resource-group ARM resource")
+    if segments[1].casefold() not in {
+        value.casefold() for value in authorized_subscription_ids
+    }:
+        raise PermissionError(
+            "Diagnostic Settings resource is outside authorized scope"
+        )
+    encoded = "/".join(quote(segment, safe="-._~") for segment in segments)
+    return f"/{encoded}/providers/Microsoft.Insights/diagnosticSettings"
+
+
+def _validated_diagnostic_next_link(
+    value: str,
+    *,
+    expected_path: str,
+    endpoint: str,
+    api_version: str,
+) -> str:
+    parsed = urlparse(value)
+    expected = urlparse(endpoint)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    allowed_query = {"api-version", "$skiptoken", "$top", "$skip"}
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != expected.hostname
+        or parsed.port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path != expected_path
+        or parsed.fragment
+        or {key.casefold() for key in query} - allowed_query
+        or query.get("api-version") != [api_version]
+        or any(
+            not item
+            for key, values in query.items()
+            if key.casefold() != "api-version"
+            for item in values
+        )
+    ):
+        raise DiagnosticSettingsReadError(
+            "Azure returned an unsafe Diagnostic Settings continuation link."
+        )
+    return value
 
 
 def _retry_delay(response: httpx.Response, attempt: int) -> float:

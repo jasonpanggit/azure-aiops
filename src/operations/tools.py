@@ -1730,7 +1730,10 @@ def _tool_observability_scenario(
                     scope=tool_context.scope,
                 )
             else:
-                source = observability_port.read_diagnostic_settings(tool_context.scope)
+                source = observability_port.read_diagnostic_settings(
+                    tool_context.scope,
+                    inventory,
+                )
                 if not isinstance(source, DiagnosticSettingsEvidence):
                     raise TypeError("Diagnostic reader returned an unsupported evidence contract")
                 citations += (
@@ -1826,6 +1829,7 @@ def _tool_observability_scenario(
 
 
 def _tool_incident_scenario(tool_context: ToolContext, args: Mapping[str, Any]) -> ToolResult:
+    from operations.incident_history_reader import unavailable_history
     from operations.incident_scenarios import (
         change_projection,
         incident_projection,
@@ -1850,12 +1854,26 @@ def _tool_incident_scenario(tool_context: ToolContext, args: Mapping[str, Any]) 
     # Each existing provider is acquired once. No specialist makes another read.
     change_result = _provider_result(tool_context, "change", project(change_projection))
     incident_result = _provider_result(tool_context, "incidents", project(incident_projection))
+    history = unavailable_history()
+    history_factory = getattr(
+        tool_context.context, "incident_history_read_port_provider", None
+    )
+    if callable(history_factory):
+        try:
+            history_port = history_factory()
+            if history_port is not None:
+                history = history_port.read(tool_context.scope, args, identity)
+        except (ApiError, OSError, RuntimeError, TypeError, ValueError, AttributeError):
+            # Exceptions can contain provider bodies, credentials or continuation URLs.
+            _LOGGER.warning("incident_history_unavailable code=adapter_failed")
+            history = unavailable_history("adapter_failed")
     data = investigate(
         args,
         identity=identity,
         changes=change_result.data if change_result.status == STATUS_OK else None,
         incidents=incident_result.data if incident_result.status == STATUS_OK else None,
         authorize=lambda resource_id: port.get_resource(tool_context.scope, resource_id),
+        history=history,
     )
     evidence = tuple(
         Evidence(
@@ -1864,6 +1882,7 @@ def _tool_incident_scenario(tool_context: ToolContext, args: Mapping[str, Any]) 
             resource_id=str(identity["resource_id"]),
             timestamp=str(coverage.get("observed_at") or ""),
             confidence=CONFIDENCE_MEDIUM,
+            freshness=str(coverage.get("freshness") or "unknown"),
         )
         for family, coverage in data["coverage"].items()
         if coverage["status"] == "partial"
@@ -1880,7 +1899,7 @@ def _tool_incident_scenario(tool_context: ToolContext, args: Mapping[str, Any]) 
         status=STATUS_UNAVAILABLE if data["status"] == "unavailable" else STATUS_OK,
         data={"investigation": data},
         evidence=evidence,
-        warning="Partial evidence only; historical health/activity completeness and causality are not established.",
+        warning="Partial evidence only; bounded ARM observations do not establish full history, alert/dependency coverage or causality.",
     )
 
 

@@ -16,7 +16,7 @@ from operations.observability_scenarios import (
     evaluate_alert_delivery,
 )
 from operations.tools import STATUS_UNAVAILABLE, call_tool
-from semantic.live_provider import LiveObservation
+from semantic.live_provider import LiveConnectionStatus, LiveObservation
 
 NOW = datetime(2026, 10, 26, 9, 5, tzinfo=UTC)
 OBSERVED = "2026-10-26T09:00:00Z"
@@ -36,6 +36,16 @@ CONNECTIONS = [
 
 
 def rule(rid, type_, enabled, scopes, groups, sub="sub-a"):
+    if not rid.startswith("/"):
+        resource_type = {
+            "microsoft.insights/metricalerts": "metricAlerts",
+            "microsoft.insights/scheduledqueryrules": "scheduledQueryRules",
+            "microsoft.insights/activitylogalerts": "activityLogAlerts",
+        }.get(type_.casefold(), type_.rsplit("/", 1)[-1])
+        rid = (
+            f"/subscriptions/{sub}/resourceGroups/rg/providers/"
+            f"Microsoft.Insights/{resource_type}/{rid}"
+        )
     return {
         "id": rid,
         "type": type_,
@@ -166,7 +176,7 @@ def test_normalizes_rules_groups_and_evaluates_gaps_without_delivery_claim():
         ("observability_alert_rules", ["sub-a"]),
         ("observability_action_groups", ["sub-a"]),
     ]
-    kinds = {r.rule_id: r.scope_kind for r in evidence.rules}
+    kinds = {r.rule_id.rsplit("/", 1)[-1]: r.scope_kind for r in evidence.rules}
     assert kinds == {
         "r-vm1": "direct_resource",
         "r-off": "direct_resource",
@@ -214,6 +224,21 @@ def test_rows_outside_authorized_subscriptions_fail_closed():
     )
     with pytest.raises(PermissionError):
         reader(Live(rules=[foreign])).read_alert_delivery(SCOPE)
+
+
+@pytest.mark.parametrize("source", ["rule", "action_group"])
+def test_resource_id_cannot_claim_a_different_subscription_than_projection(source):
+    live = Live()
+    if source == "rule":
+        bad = rule("r-f", "microsoft.insights/metricalerts", True, [VM1], [])
+        bad["id"] = bad["id"].replace("/subscriptions/sub-a/", "/subscriptions/sub-z/")
+        live.rules = [bad]
+    else:
+        bad = dict(GROUPS[0])
+        bad["id"] = bad["id"].replace("/subscriptions/sub-a/", "/subscriptions/sub-z/")
+        live.groups = [bad]
+    with pytest.raises(PermissionError):
+        reader(live).read_alert_delivery(SCOPE)
 
 
 @pytest.mark.parametrize(
@@ -279,6 +304,29 @@ def test_unclassifiable_rule_type_makes_collection_incomplete():
     assert evidence.rules_complete is False
 
 
+def test_metric_alert_without_scope_is_unknown_not_counted_as_other():
+    odd = rule("r-odd", "microsoft.insights/metricalerts", True, [], [])
+    evidence = reader(Live(rules=[odd])).read_alert_delivery(SCOPE)
+    assert evidence.rules_complete is False
+    assert evidence.rules[0].scope_kind == "unknown"
+
+
+def test_missing_action_projection_is_incomplete_not_a_missing_reference_finding():
+    odd = rule("r-odd", "microsoft.insights/metricalerts", True, [VM1], [])
+    del odd["actions"]
+    evidence = reader(Live(rules=[odd])).read_alert_delivery(SCOPE)
+    assert evidence.rules_complete is False
+    with pytest.raises(ValueError):
+        evaluate_alert_delivery(INVENTORY, evidence, scope=SCOPE)
+
+
+def test_malformed_action_group_data_is_not_coerced_to_missing():
+    odd = rule("r-odd", "microsoft.insights/metricalerts", True, [VM1], [])
+    odd["actions"] = "malformed"
+    with pytest.raises(TypeError):
+        reader(Live(rules=[odd])).read_alert_delivery(SCOPE)
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -305,6 +353,58 @@ def test_absent_group_is_unknown_when_group_collection_incomplete_or_stale(kwarg
     )
 
 
+def test_absent_group_is_unknown_when_any_connection_is_stale():
+    class StaleGroupConnection:
+        def query(self, spec, *, subscription_ids):
+            if "groups" not in spec.name:
+                return Live().query(spec, subscription_ids=subscription_ids)
+            return LiveObservation(
+                rows=(),
+                observed_at=OBSERVED,
+                status="ok",
+                completeness="healthy-empty",
+                source_status=(
+                    LiveConnectionStatus(
+                        connection_id="old",
+                        display_name="old",
+                        source_family=spec.name,
+                        status="succeeded",
+                        completeness="healthy-empty",
+                        represented_count=1,
+                        observed_at="2026-10-26T08:00:00Z",
+                    ),
+                    LiveConnectionStatus(
+                        connection_id="new",
+                        display_name="new",
+                        source_family=spec.name,
+                        status="succeeded",
+                        completeness="healthy-empty",
+                        represented_count=1,
+                        observed_at=OBSERVED,
+                    ),
+                ),
+                represented_count=2,
+                expected_count=2,
+            )
+
+    connections = [
+        SimpleNamespace(
+            subscription_id="sub-a", connection_id="old", is_active=True
+        ),
+        SimpleNamespace(
+            subscription_id="sub-a", connection_id="new", is_active=True
+        ),
+    ]
+    evidence = ArgObservabilityReader(
+        StaleGroupConnection(),
+        lambda: connections,
+        clock=lambda: NOW,
+    ).read_alert_delivery(SCOPE)
+    statuses = {ref.action_group_id: ref.status for ref in evidence.action_groups}
+    assert statuses[AG_GONE] == "unknown"
+    assert evidence.action_groups_freshness == "stale"
+
+
 def test_absent_group_is_invalid_only_when_collection_complete_and_fresh():
     evidence = reader(Live(rules=RULES[2:3])).read_alert_delivery(SCOPE)
     statuses = {ref.action_group_id: ref.status for ref in evidence.action_groups}
@@ -326,7 +426,82 @@ def test_singular_scope_property_is_normalized():
 
 def test_diagnostic_settings_has_no_governed_source():
     with pytest.raises(ObservabilityEvidenceUnavailable):
-        reader().read_diagnostic_settings(SCOPE)
+        reader().read_diagnostic_settings(SCOPE, INVENTORY)
+
+
+def test_alert_freshness_uses_every_connection_not_only_latest_timestamp():
+    class MultipleConnections:
+        def query(self, spec, *, subscription_ids):
+            rows = RULES if "rules" in spec.name else GROUPS
+            return LiveObservation(
+                rows=tuple(rows),
+                observed_at=OBSERVED,
+                status="ok",
+                completeness="complete",
+                source_status=(
+                    LiveConnectionStatus(
+                        connection_id="old",
+                        display_name="old",
+                        source_family=spec.name,
+                        status="succeeded",
+                        completeness="complete",
+                        represented_count=1,
+                        observed_at="2026-10-26T08:00:00Z",
+                    ),
+                    LiveConnectionStatus(
+                        connection_id="new",
+                        display_name="new",
+                        source_family=spec.name,
+                        status="succeeded",
+                        completeness="complete",
+                        represented_count=1,
+                        observed_at=OBSERVED,
+                    ),
+                ),
+                represented_count=2,
+                expected_count=2,
+            )
+
+    connections = [
+        SimpleNamespace(
+            subscription_id="sub-a",
+            connection_id="old",
+            is_active=True,
+        ),
+        SimpleNamespace(
+            subscription_id="sub-a",
+            connection_id="new",
+            is_active=True,
+        ),
+    ]
+    evidence = ArgObservabilityReader(
+        MultipleConnections(),
+        lambda: connections,
+        clock=lambda: NOW,
+    ).read_alert_delivery(SCOPE)
+    assert evidence.rules_complete is True
+    assert evidence.rules_freshness == "stale"
+
+
+def test_alert_source_count_mismatch_is_incomplete():
+    class CountMismatch:
+        def query(self, spec, *, subscription_ids):
+            return LiveObservation(
+                rows=tuple(RULES if "rules" in spec.name else GROUPS),
+                observed_at=OBSERVED,
+                status="ok",
+                completeness="complete",
+                represented_count=1,
+                expected_count=2,
+            )
+
+    evidence = ArgObservabilityReader(
+        CountMismatch(),
+        lambda: CONNECTIONS,
+        clock=lambda: NOW,
+    ).read_alert_delivery(SCOPE)
+    assert evidence.rules_complete is False
+    assert evidence.action_groups_complete is False
 
 
 class ToolCtx:

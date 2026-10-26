@@ -96,6 +96,7 @@ from network.design import NetworkDesignPolicyStore
 from network.flow import FlowQuery
 from network.models import PRIVATE_LINK_RESOURCE_TYPES
 from network.service import NetworkIntelligenceService
+from onboarding.azure_clients import AzureMonitorDiagnosticSettingsClient
 from onboarding.credentials import KeyVaultSecretWriter
 from onboarding.monitor_prometheus import (
     resource_scoped_endpoint,
@@ -134,6 +135,7 @@ from operations.foundry_agent import (
     MicrosoftAgentFrameworkFoundryAgent,
     select_foundry_agent_class,
 )
+from operations.incident_history_reader import ArmIncidentHistoryReader
 from operations.maf_orchestrator import (
     ENV_AGENT_ORCHESTRATION_MODE,
     MODE_CANONICAL,
@@ -148,6 +150,7 @@ from operations.patching import (
     UnconfiguredPatchExecutionAdapter,
 )
 from operations.tools import FabricIQToolAdapter
+from operations.workload_logging_policy import WorkloadLoggingPolicyStore
 from semantic.hybrid_query import HybridQueryService
 from semantic.live_operations import (
     LiveRemediationPlanner,
@@ -5888,9 +5891,21 @@ def build_context() -> ApiContext:
         inventory_read_port_provider=lambda: providers.get(
             "inventory_read_port", optional=True
         ),
+        incident_history_read_port_provider=lambda: ArmIncidentHistoryReader(
+            lambda: onboarding.registry.list(include_disabled=False),
+            lambda connection: build_connection_credential(connection, onboarding.resolver),
+        ),
         observability_read_port_provider=lambda: ArgObservabilityReader(
             live_resources,
             lambda: onboarding.registry.list(include_disabled=False),
+            diagnostic_client_factory=lambda connection: (
+                AzureMonitorDiagnosticSettingsClient(
+                    build_connection_credential(connection, onboarding.resolver)
+                )
+            ),
+            logging_policy_store=WorkloadLoggingPolicyStore(
+                OneLakeDocumentStore(str(aiops_home()))
+            ),
         ),
         exposure_query_provider=lambda: providers.get(
             "exposure_query", optional=True

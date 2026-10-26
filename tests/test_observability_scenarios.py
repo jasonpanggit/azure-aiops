@@ -68,8 +68,8 @@ class ObservabilityPort:
         self.error = error
         self.calls = []
 
-    def read_diagnostic_settings(self, scope):
-        self.calls.append(("diagnostic", scope))
+    def read_diagnostic_settings(self, scope, inventory):
+        self.calls.append(("diagnostic", scope, inventory["total"]))
         if self.error:
             raise self.error
         return self.diagnostic
@@ -370,8 +370,8 @@ def test_diagnostic_settings_evaluator_checks_categories_destinations_and_except
             *evidence.settings,
             DiagnosticSetting(
                 resource_id=FIXTURE["inventory"]["resources"][0]["resource_id"],
-                categories=("Metrics",),
-                destinations=("storage-archive",),
+                categories=("Audit", "Metrics"),
+                destinations=("law-main", "storage-archive"),
             ),
             DiagnosticSetting(
                 resource_id=vm2,
@@ -492,12 +492,11 @@ def test_injected_reader_returns_partial_cited_evaluation_without_claiming_live_
         and row.timestamp == OBSERVED_AT
         for row in result.evidence
     )
-    assert reader.calls == [
-        (
-            "alert" if scenario == ALERT_DELIVERY_COVERAGE else "diagnostic",
-            SCOPE,
-        )
-    ]
+    assert reader.calls == (
+        [("alert", SCOPE)]
+        if scenario == ALERT_DELIVERY_COVERAGE
+        else [("diagnostic", SCOPE, FIXTURE["inventory"]["total"])]
+    )
     assert "inventory freshness is unknown" in result.warning
 
 
