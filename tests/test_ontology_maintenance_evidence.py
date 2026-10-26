@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from itertools import permutations
@@ -46,6 +47,7 @@ def _fixture(
     inventory_records: list[dict[str, object]] | None = None,
     bindings: dict[str, str | list[str]] | None = None,
     observed_at: datetime = NOW,
+    application_entities: Iterable[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     rows = inventory_records or [
         {
@@ -70,7 +72,7 @@ def _fixture(
         scope=SCOPE,
         batch_source_generation_id=GENERATION,
         observed_at=observed_at,
-        application_entities=[
+        application_entities=application_entities if application_entities is not None else [
             {
                 "resource_id": FRONTEND_APP,
                 "entity_type": "Application",
@@ -190,6 +192,34 @@ def test_wrappers_duplicate_events_and_caller_source_labels_do_not_corroborate()
     ]
     assert len(monitor_facts) == 1
     assert monitor_facts[0]["source_system"] == "AppDependencies"
+
+
+@pytest.mark.parametrize("container", [list, tuple, iter, lambda rows: (row for row in rows)],
+                         ids=["list", "tuple", "iterator", "generator"])
+def test_application_entity_iterables_preserve_projection_and_linked_batches(container) -> None:
+    bindings = {"frontend-role": FRONTEND_ASSET, "backend-role": BACKEND_ASSET}
+    expected = _fixture(monitor_rows=[_monitor()], bindings=bindings)
+    projection = _fixture(
+        monitor_rows=[_monitor()], bindings=bindings,
+        application_entities=container(expected["changed_entities"]),
+    )
+    assert projection == expected
+    batches = split_evidence_batches(
+        changed_entities=projection["changed_entities"],
+        candidate_pairs=projection["candidate_pairs"],
+        evidence_records=projection["evidence_records"],
+        source_generation_id=projection["source_generation_id"],
+        observed_at=projection["observed_at"],
+        freshness=projection["freshness"],
+        coverage=projection["coverage"],
+    )
+    assert len(batches) == 1
+    batch = batches[0]
+    assert {row["entity_id"] for row in batch.changed_entities} == {FRONTEND_APP, BACKEND_APP}
+    assert len(batch.candidate_pairs) == 1
+    assert set(batch.candidate_pairs[0]["evidence_ids"]) == {
+        row["evidence_id"] for row in batch.evidence_records
+    }
 
 
 def test_absent_ambiguous_out_of_scope_synthetic_and_stale_facts_abstain() -> None:
