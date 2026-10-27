@@ -37,6 +37,50 @@ Runtime request selection is fail closed:
 
 ## Code-bound rollout authorization retired
 
+### Specialist MCP identity staging
+
+`allowed_tools` limits the Foundry tool definition; it does not identify the
+agent to the backend. The existing `ProjectManagedIdentity` connection sends
+the same project subject for every specialist. The API intentionally gives
+that subject the generic catalog. Its legacy allowlist also gates execution:
+do not add `governance_summary`, `identity_summary`, or `finops_summary` there
+to make parity pass, and never trust a request-body specialist selector.
+
+The default-OFF `enable_foundry_specialist_identity_candidate` input stages a
+**separate** `AgenticIdentityToken` connection for later specialist candidates.
+Supply `foundry_specialist_identity_principal_ids` with exactly the manifest's
+twelve specialist IDs mapped to their reviewed Foundry
+`instance_identity.principal_id` values. IDs must be distinct, nonzero object
+UUIDs, different from the shared project principal, and absent from the existing
+`entra_grants_json` subjects. The generated grants bind each subject to one
+specialist as a reader over the reviewed MCP subscriptions. Empty subscription
+scope is rejected rather than interpreted as unrestricted access.
+
+This is a grant/configuration migration, not an ordinary docs or image rollout.
+Unified Deployment must review its plan explicitly before applying it. Leave
+the input OFF during unrelated deployments; do not copy observed environment
+IDs into committed defaults. Enabling it does not enable publication or activate
+any version. Existing connections, the ontology curator, production pins,
+grounding settings, and promotion gates are not switched by this input.
+
+Before any migration, GET each actual deployed agent name using
+`api-version=2025-11-15-preview` and `Foundry-Features: AgentEndpoints=V1Preview`.
+Inspect `instance_identity`, not its blueprint. A legacy agent may have no
+instance identity; stop rather than substituting the project identity. See
+[Foundry agent identity](https://learn.microsoft.com/azure/foundry/agents/concepts/agent-identity)
+and [MCP authentication](https://learn.microsoft.com/azure/foundry/agents/how-to/mcp-authentication).
+
+Provider identity metadata is not proof of the token subject used by a tool
+call. Keep the existing inactive candidate held. A later, separately reviewed
+authentication candidate must use the new connection and demonstrate actual
+per-agent subjects, own-tool success, and foreign-tool denial before handler
+dispatch. Use the supported agent endpoint route where required; changing the
+runtime's endpoint mode is a separate rollout decision. The current live parity
+script uses one operator MCP token, so its generic catalog cannot qualify
+specialist-only tools even after this staging. Do not waive that failure,
+replace live catalogs with manifest unions, or label offline fixtures as live
+qualification. Scoped live validation and full-corpus gates remain prerequisites.
+
 The packaged canary/default authorization manifests and reviewed-tree runtime gate
 have been retired. Unified Deployment is now the sole writer lane for merge,
 build, and deployment coordination, and it is responsible for preventing image,

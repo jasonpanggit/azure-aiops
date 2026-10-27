@@ -251,7 +251,8 @@ locals {
       tools = concat(
         local.foundry_mcp_tool_config == null ? [] : [
           merge(local.foundry_mcp_tool_config, {
-            allowed_tools = local.foundry_specialist_tools[id]
+            allowed_tools         = local.foundry_specialist_tools[id]
+            project_connection_id = local.foundry_candidate_mcp_connection_id
           })
         ],
         local.foundry_ai_search_tool_config == null ? [] : [
@@ -1158,7 +1159,7 @@ resource "terraform_data" "foundry_agent" {
       OPERATIONS_MCP_SERVER_URL          = local.foundry_mcp_server_url == null ? "" : local.foundry_mcp_server_url
       MCP_APIM_AUDIENCE                  = local.apim_audience
       FOUNDRY_OPERATIONS_MCP_CONNECTION_ID = (
-        var.enable_apim ? azapi_resource.foundry_mcp_connection[0].id : ""
+        local.foundry_candidate_mcp_connection_id
       )
       FOUNDRY_AI_SEARCH_CONNECTION_ID = (
         var.enable_foundry_knowledge_search ? azapi_resource.foundry_ai_search_connection[0].id : ""
@@ -1175,6 +1176,7 @@ resource "terraform_data" "foundry_agent" {
     azurerm_cognitive_account_project.ops,
     azurerm_role_assignment.deployer_foundry_manager,
     azapi_resource.foundry_mcp_connection,
+    azapi_resource.foundry_specialist_identity_mcp_connection,
     azapi_resource.foundry_ai_search_connection,
     azurerm_role_assignment.foundry_project_search_index_data_contributor,
     azurerm_role_assignment.foundry_project_search_service_contributor,
