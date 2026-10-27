@@ -877,10 +877,13 @@ def test_100k_server_and_image_benchmark_is_exact_bounded_and_under_budget() -> 
             "5",
             "--json",
         ],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"benchmark stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
     )
     report = json.loads(result.stdout)
 
