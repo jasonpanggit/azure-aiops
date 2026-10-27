@@ -583,6 +583,27 @@ def build_deterministic_fallback(
             ]
         lowered_question = request.question.casefold()
         preferred_arguments: dict[str, dict[str, Any]] = {}
+        if page_kind == "resource_health" and "incidents" in tools:
+            from operations.observability_scenarios import (
+                ALERT_DELIVERY_COVERAGE,
+                DIAGNOSTIC_SETTINGS_COVERAGE,
+            )
+
+            scenario = ""
+            if any(
+                marker in lowered_question
+                for marker in ("diagnostic settings", "workload logging policy")
+            ):
+                scenario = DIAGNOSTIC_SETTINGS_COVERAGE
+            elif any(
+                marker in lowered_question
+                for marker in ("alert rules", "action group references", "alert delivery coverage")
+            ):
+                scenario = ALERT_DELIVERY_COVERAGE
+            if scenario:
+                tools.remove("incidents")
+                tools.insert(0, "incidents")
+                preferred_arguments["incidents"] = {"scenario": scenario}
         if page_kind == "kb_detail" and "kb_detail" in tools:
             tools.remove("kb_detail")
             tools.insert(0, "kb_detail")

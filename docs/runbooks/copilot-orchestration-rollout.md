@@ -91,6 +91,14 @@ Partial governed results retain `partial` turn status, including when another
 source is empty, denied or unavailable; their per-source statuses and warnings
 remain intact rather than turning a partial turn into an access denial.
 
+On Resource Health, deterministic freeform routing recognizes diagnostic
+settings/workload logging policy and alert rules/Action Group references/alert
+delivery coverage as the corresponding reviewed observability scenarios.
+Typing those scenario questions therefore uses the same governed tool arguments
+as the starter buttons, rather than silently retrieving generic incidents.
+This does not extend page grants, establish complete coverage, or qualify Foundry
+execution; generic incident and utilization questions retain their existing route.
+
 Network uses the contextual endpoint and reports `synthesis.mode` in current
 responses; older responses can report `synthesis_mode` at the top level.
 Topology Insights accepts either Foundry marker, but any explicit deterministic
