@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -856,14 +857,18 @@ def test_exposure_endpoint_maps_cursor_failures_to_safe_errors(
     assert "key" not in response.text.casefold()
 
 
-def test_100k_server_and_image_benchmark_is_exact_bounded_and_under_budget() -> None:
+def test_100k_server_and_image_benchmark_is_exact_bounded_and_under_budget(
+    tmp_path: Path,
+) -> None:
+    shadow_agents = tmp_path / "shadow" / "agents"
+    shadow_agents.mkdir(parents=True)
+    (shadow_agents / "__init__.py").write_text("")
+    repo_root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [
             sys.executable,
             str(
-                Path(__file__).resolve().parents[1]
-                / "scripts"
-                / "benchmark_exposure_read_model.py"
+                repo_root / "scripts" / "benchmark_exposure_read_model.py"
             ),
             "--rows",
             "100000",
@@ -879,6 +884,12 @@ def test_100k_server_and_image_benchmark_is_exact_bounded_and_under_budget() -> 
         ],
         check=False,
         capture_output=True,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                (str(tmp_path / "shadow"), str(repo_root / "src"))
+            ),
+        },
         text=True,
         timeout=60,
     )
