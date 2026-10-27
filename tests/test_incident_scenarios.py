@@ -134,6 +134,7 @@ def test_exact_scoped_timeline_ranking_counterevidence_and_redaction():
     context, reads, auth, _, _ = context_fixture()
     result = review(context)
     data = result.data["investigation"]
+    assert result.status == data["status"] == "partial"
     assert reads == ["change", "incidents"]
     assert auth == [ROOT]  # Recent-change investigation never traverses neighbors.
     assert [(row["kind"], row["timestamp"][11:16]) for row in data["timeline"]] == [
@@ -542,6 +543,9 @@ def test_canonical_api_one_collection_shared_drawer_and_retained_ledger(
     )
     assert response.status_code == 200, response.text
     data = response.json()["data"]
+    assert data["status"] == "partial"
+    assert data["tool_results"][0]["status"] == "partial"
+    assert all(citation["status"] == "partial" for citation in data["citations"])
     assert reads == ["change", "incidents"]
     assert data["selected_tools"] == ["incidents"]
     assert data["selected_specialists"] == [owner]
@@ -564,6 +568,7 @@ def test_canonical_api_one_collection_shared_drawer_and_retained_ledger(
         headers=HEADERS,
     )
     assert retained.status_code == 200, retained.text
+    assert retained.json()["data"]["turns"][0]["tool_results"][0]["status"] == "partial"
     assert (
         retained.json()["data"]["turns"][0]["tool_results"][0]["data"]["investigation"][
             "scenario_id"

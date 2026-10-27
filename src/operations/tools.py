@@ -1938,7 +1938,7 @@ def _tool_incident_scenario(tool_context: ToolContext, args: Mapping[str, Any]) 
             confidence=CONFIDENCE_MEDIUM,
         ),)
     return ToolResult(
-        status=STATUS_UNAVAILABLE if data["status"] == "unavailable" else STATUS_OK,
+        status=STATUS_UNAVAILABLE if data["status"] == "unavailable" else STATUS_PARTIAL,
         data={"investigation": data},
         evidence=evidence,
         warning="Partial evidence only; bounded ARM observations do not establish full history, alert/dependency coverage or causality.",
