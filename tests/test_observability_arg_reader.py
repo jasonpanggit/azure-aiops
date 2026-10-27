@@ -15,7 +15,8 @@ from operations.observability_scenarios import (
     DIAGNOSTIC_SETTINGS_COVERAGE,
     evaluate_alert_delivery,
 )
-from operations.tools import STATUS_UNAVAILABLE, call_tool
+from operations.tools import STATUS_PARTIAL, STATUS_UNAVAILABLE, call_tool
+from operations.workload_logging_policy import WorkloadLoggingPolicyUnavailable
 from semantic.live_provider import LiveConnectionStatus, LiveObservation
 
 NOW = datetime(2026, 10, 26, 9, 5, tzinfo=UTC)
@@ -527,9 +528,16 @@ def test_tool_path_returns_partial_for_alerts_and_unavailable_for_diagnostics():
         context=ToolCtx(reader()),
         scope=SCOPE,
     )
-    assert alert.status == STATUS_UNAVAILABLE
+    assert alert.status == STATUS_PARTIAL
     assert alert.data["assessment"]["status"] == "partial"
     assert alert.data["assessment"]["alert_coverage"]["delivery_status"] == "not_proven"
+    assert [item.source_table for item in alert.evidence] == [
+        "inventory/resource_observations",
+        "azure_monitor/alert_rules",
+        "azure_monitor/action_group_references",
+    ]
+    assert alert.evidence[1].timestamp == OBSERVED
+    assert alert.evidence[2].timestamp == OBSERVED
 
     diag = call_tool(
         "incidents",
@@ -539,3 +547,34 @@ def test_tool_path_returns_partial_for_alerts_and_unavailable_for_diagnostics():
     )
     assert diag.status == STATUS_UNAVAILABLE
     assert diag.data["assessment"]["status"] == "unavailable"
+    assert "reader configuration is incomplete" in diag.warning
+
+
+def test_missing_workload_policy_is_distinguished_from_missing_reader():
+    class MissingPolicy:
+        def read(self, *, subscription_ids):
+            raise WorkloadLoggingPolicyUnavailable(
+                "No approved workload logging policy is configured.",
+                reason_code="missing_policy",
+            )
+
+    configured_reader = ArgObservabilityReader(
+        live_resources=object(),
+        connections=lambda: CONNECTIONS,
+        diagnostic_client_factory=lambda _connection: object(),
+        logging_policy_store=MissingPolicy(),
+    )
+    result = call_tool(
+        "incidents",
+        {"scenario": DIAGNOSTIC_SETTINGS_COVERAGE},
+        context=ToolCtx(configured_reader),
+        scope=SCOPE,
+    )
+    assessment = result.data["assessment"]
+    assert result.status == STATUS_UNAVAILABLE
+    assert "policy is missing" in result.warning
+    assert any(
+        "No reviewed workload logging policy document" in item
+        for item in assessment["unknowns"]
+    )
+    assert not any("reader is configured" in item for item in assessment["limitations"])

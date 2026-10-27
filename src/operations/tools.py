@@ -62,6 +62,7 @@ _LOGGER = logging.getLogger(__name__)
 # never be narrated as if they were "empty".
 STATUS_OK = "ok"
 STATUS_EMPTY = "empty"
+STATUS_PARTIAL = "partial"
 STATUS_UNAVAILABLE = "unavailable"
 STATUS_DENIED = "denied"
 
@@ -1612,6 +1613,7 @@ def _tool_observability_scenario(
     tool_context: ToolContext,
     scenario: str,
 ) -> ToolResult:
+    from operations.observability_arg_reader import ObservabilityEvidenceUnavailable
     from operations.observability_scenarios import (
         ALERT_DELIVERY_COVERAGE,
         AlertDeliveryEvidence,
@@ -1620,6 +1622,7 @@ def _tool_observability_scenario(
         evaluate_diagnostic_settings,
         unavailable_assessment,
     )
+    from operations.workload_logging_policy import WorkloadLoggingPolicyUnavailable
 
     def run(port: Any) -> ToolResult:
         try:
@@ -1693,15 +1696,23 @@ def _tool_observability_scenario(
             observability_port = None
             resolution_failed = True
         if observability_port is None:
+            unavailable_reason = (
+                "No qualified observability reader is configured for this deployment."
+            )
             return ToolResult(
                 status=STATUS_UNAVAILABLE,
-                data={"assessment": assessment},
+                data={
+                    "assessment": unavailable_assessment(
+                        scenario,
+                        inventory=inventory,
+                        inventory_issue=unavailable_reason,
+                    )
+                },
                 evidence=citations,
                 warning=(
                     "The observability reader could not be resolved."
                     if resolution_failed
-                    else "Policy, Diagnostic Settings, alert-rule, and Action Group "
-                    "evidence is unavailable because no qualified reader is configured."
+                    else unavailable_reason
                 ),
             )
         source: Any = None
@@ -1778,13 +1789,41 @@ def _tool_observability_scenario(
             ValueError,
         ) as exc:
             _LOGGER.warning("observability_evidence_unavailable error=%s", exc)
+            if (
+                scenario != ALERT_DELIVERY_COVERAGE
+                and isinstance(exc, WorkloadLoggingPolicyUnavailable)
+                and exc.reason_code == "missing_policy"
+            ):
+                inventory_issue = (
+                    "No reviewed workload logging policy document is configured "
+                    "for the requested subscription scope."
+                )
+                warning = (
+                    "Diagnostic Settings were not evaluated because the reviewed "
+                    "workload logging policy is missing."
+                )
+            elif isinstance(exc, ObservabilityEvidenceUnavailable):
+                inventory_issue = (
+                    "The observability reader is present but its Diagnostic Settings "
+                    "reader or workload logging policy store is not configured."
+                )
+                warning = (
+                    "Diagnostic Settings evidence could not be read because the "
+                    "reader configuration is incomplete."
+                )
+            else:
+                inventory_issue = (
+                    "Policy or monitoring configuration evidence was incomplete "
+                    "or unavailable."
+                )
+                warning = "Observability coverage could not be fully evaluated."
             return ToolResult(
                 status=STATUS_UNAVAILABLE,
                 data={
                     "assessment": unavailable_assessment(
                         scenario,
                         inventory=inventory,
-                        inventory_issue="Policy or monitoring configuration evidence was incomplete or unavailable.",
+                        inventory_issue=inventory_issue,
                         evidence=(
                             source
                             if isinstance(
@@ -1796,12 +1835,15 @@ def _tool_observability_scenario(
                     )
                 },
                 evidence=citations,
-                warning="Observability coverage could not be fully evaluated.",
+                warning=warning,
             )
+        assessment_status = assessment.get("status")
         return ToolResult(
             status=(
                 STATUS_OK
-                if assessment["status"] == "evaluated"
+                if assessment_status == "evaluated"
+                else STATUS_PARTIAL
+                if assessment_status == "partial"
                 else STATUS_UNAVAILABLE
             ),
             data={"assessment": assessment},

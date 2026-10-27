@@ -687,7 +687,7 @@ export interface CopilotReply {
 export interface CopilotToolCall {
   tool: string;
   arguments: Record<string, unknown>;
-  status: "ok" | "empty" | "unavailable" | "denied";
+  status: "ok" | "partial" | "empty" | "unavailable" | "denied";
   data: unknown;
   evidence: EvidenceItem[];
   warning: string;
@@ -966,7 +966,7 @@ export function toCanonicalInvestigationView(
       ? data.tool_results.map((call) => ({
           tool: call.tool,
           arguments: {},
-          status: call.status === "partial" ? "unavailable" : call.status,
+          status: call.status,
           data: call.data,
           evidence: [],
           warning: call.warning,

@@ -25,7 +25,12 @@ from operations.observability_scenarios import (
     validate_parameters,
 )
 from operations.specialist_manifest import load_specialist_manifest
-from operations.tools import STATUS_DENIED, STATUS_UNAVAILABLE, call_tool
+from operations.tools import (
+    STATUS_DENIED,
+    STATUS_PARTIAL,
+    STATUS_UNAVAILABLE,
+    call_tool,
+)
 
 ROOT = Path(__file__).parent
 FIXTURE = json.loads((ROOT / "fixtures" / "observability_scenarios.json").read_text())
@@ -484,7 +489,7 @@ def test_injected_reader_returns_partial_cited_evaluation_without_claiming_live_
     )
     assessment = result.data["assessment"]
 
-    assert result.status == STATUS_UNAVAILABLE
+    assert result.status == STATUS_PARTIAL
     assert assessment["status"] == "partial"
     assert assessment["findings"]["status"] == "evaluated"
     assert any(

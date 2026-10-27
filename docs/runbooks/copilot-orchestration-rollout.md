@@ -82,6 +82,15 @@ status-only answer (`model: deterministic`). Such answers remain visibly
 deterministic, not LLM successes. Repairing the display does not restore missing
 provider data, qualify Exposure traversal, or authorize a rollout-mode change.
 
+Incident and observability scenario summaries are deliberately deterministic:
+the retained investigation path builds their summaries before selecting a
+Foundry narrator. A deterministic answer alone therefore does not establish
+that a narration provider failed or was unavailable. Inspect response details
+for an actual failure; keep source coverage and narration provenance separate.
+Partial governed results retain `partial` turn status, including when another
+source is empty, denied or unavailable; their per-source statuses and warnings
+remain intact rather than turning a partial turn into an access denial.
+
 Network uses the contextual endpoint and reports `synthesis.mode` in current
 responses; older responses can report `synthesis_mode` at the top level.
 Topology Insights accepts either Foundry marker, but any explicit deterministic

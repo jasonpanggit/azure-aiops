@@ -337,8 +337,16 @@ def _normalize(
         props = raw.get("properties")
         if not isinstance(props, Mapping):
             raise TypeError("Malformed health properties")
-        timestamp = instant(props.get("occurredTime"))
-        reported = instant(props.get("reportedTime"))
+        event_times = [
+            instant(props[key])
+            for key in ("occurredTime", "occuredTime")
+            if props.get(key) is not None
+        ]
+        if not event_times or any(value != event_times[0] for value in event_times[1:]):
+            raise ValueError("Missing or conflicting health event timestamp")
+        timestamp = event_times[0]
+        reported_value = props.get("reportedTime")
+        reported = instant(reported_value) if reported_value is not None else None
         state = str(props.get("availabilityState") or "").casefold()
         status = {
             "available": "healthy",
@@ -352,8 +360,8 @@ def _normalize(
     if (
         not isinstance(identity, str)
         or not identity
-        or reported < timestamp
-        or (reported - now).total_seconds() > 60
+        or (reported is not None and reported < timestamp)
+        or (reported is not None and (reported - now).total_seconds() > 60)
     ):
         raise ValueError("Missing identity or inconsistent provider chronology")
     if not start <= timestamp <= end:
@@ -365,7 +373,7 @@ def _normalize(
         "identity": digest,
         "resource_id": resource,
         "timestamp": timestamp.isoformat(),
-        "reported_at": reported.isoformat(),
+        "reported_at": reported.isoformat() if reported is not None else None,
         "kind": kind,
         "status": status,
         "source": "azure_activity_log"
