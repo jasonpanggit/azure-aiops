@@ -2,9 +2,13 @@
 
 ## Reading Medallion health
 
-Layer counts display **healthy / registered datasets**, not record counts or a
-physical lakehouse table inventory. `0 healthy / 18 registered` can describe
-populated Bronze datasets whose recorded freshness has expired. Individual
+Layer summary cards make **reported registration totals** primary and show
+healthy and not-confirmed-healthy counts separately. Layer badges retain
+**healthy / registered datasets**. Neither is a record count or a physical
+lakehouse table inventory. `0 healthy / 18 registered` can describe
+populated Bronze datasets whose recorded freshness has expired. Stale counts
+cover only returned dataset responses; failures and missing responses are not
+silently classified as stale. Individual
 dataset row counts are reported separately from recorded metadata, not a live
 table scan. No registered entries in a scope does not prove physical absence.
 
@@ -13,6 +17,20 @@ subscription sync does not prove that full inventory/Fabric publication ran,
 or that connection-attributed publication metadata is available.
 Do not remove connection filters or attribute subscription-wide metadata to a
 connection to make its health counts appear populated.
+
+**Reload page data** rereads health and connection status; it does not start
+ingestion or publication. Connection sync reports display the connection API's
+`sync_status` and `last_successful_sync_at` independently of metadata checkpoints
+and publication history. Missing last-success values remain unreported. The
+latest dated attempts summarize only returned ingestion/publication history,
+including ties, failures and unorderable timestamps, not the current scheduler
+state or a connection-wide successful refresh. Reported failure reasons are
+shown without attributing an unrecorded ingestion cause.
+
+The current APIs do not report the actual ingestion schedule or next run.
+Per-dataset freshness budgets expose policy cadence and thresholds, but those
+are not proof of scheduler configuration. Stale evidence alone does not identify
+why ingestion stopped or establish a failed publication.
 
 ## Exploring Gold products and the Ontology Agent
 

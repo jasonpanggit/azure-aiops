@@ -235,12 +235,14 @@ describe("Per-subscription Fabric medallion page", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Bronze tables value")).toHaveTextContent("0 healthy / 18 registered");
-      expect(screen.getByLabelText("Silver tables value")).toHaveTextContent("0 healthy / 29 registered");
-      expect(screen.getByLabelText("Gold tables value")).toHaveTextContent("0 healthy / 0 registered");
+      expect(screen.getByLabelText("Bronze tables value")).toHaveTextContent(/^18$/);
+      expect(screen.getByLabelText("Silver tables value")).toHaveTextContent(/^29$/);
+      expect(screen.getByLabelText("Gold tables value")).toHaveTextContent(/^0$/);
     });
-    expect(screen.getByText("Dataset health, not row counts. Stale raw data can contain records.")).toBeInTheDocument();
-    expect(screen.getByText("Registered dataset health, not physical table inventory or downstream readiness.")).toBeInTheDocument();
+    expect(screen.getByText("Registrations reported · 0 healthy · 18 not confirmed healthy")).toBeInTheDocument();
+    expect(screen.getByText(/Zero healthy does not mean empty/)).toBeInTheDocument();
+    expect(screen.getByText(/Gold registration counts do not establish physical absence/)).toBeInTheDocument();
+    expect(screen.getByText("Recorded dataset evidence is stale")).toBeInTheDocument();
     expect(screen.getByLabelText("Bronze tables value").closest("article")).toHaveClass("metric-critical");
     expect(screen.getByLabelText("Gold tables value").closest("article")).toHaveClass("metric-default");
   });
@@ -257,7 +259,85 @@ describe("Per-subscription Fabric medallion page", () => {
       expect(fabricCapabilities).toHaveBeenCalledWith({ subscription: [connections[0].subscription_id] });
     });
 
-    expect(await screen.findByText("Production")).toBeInTheDocument();
+    expect(await screen.findAllByText("Production")).not.toHaveLength(0);
+  });
+
+  it("keeps unhealthy and missing responses distinct from observed stale datasets", async () => {
+    fabricLayers.mockResolvedValue(envelope({
+      layers: { bronze: { healthy: 0, total: 3 }, silver: { healthy: 0, total: 0 }, gold: { healthy: 0, total: 0 } },
+      tables: { bronze: ["bronze_resources", "bronze_advisor", "bronze_cost_actuals"], silver: [], gold: [] },
+    }));
+    fabricCapabilities.mockResolvedValue(envelope({ ...capabilitySnapshot, lineage: { datasets: [] } }));
+    fabricDataset.mockImplementation((table: string) => {
+      if (table === "bronze_cost_actuals") return Promise.reject(new Error("Read denied"));
+      return Promise.resolve(envelope({
+        table_name: table, availability: table === "bronze_resources" ? "stale" : "degraded",
+        freshness: "unknown", row_count: 7, quality: "degraded",
+      }));
+    });
+    renderPage();
+    expect(await screen.findByText(/1 stale in 2 returned dataset responses/)).toBeInTheDocument();
+    expect(screen.getByText("Registrations reported · 0 healthy · 3 not confirmed healthy")).toBeInTheDocument();
+    expect(screen.getByText(/Read denied/)).toBeInTheDocument();
+    expect(screen.queryByText("Recorded dataset evidence is stale")).not.toBeInTheDocument();
+  });
+
+  it("reports selected connection success without treating attempt history as a successful sync", async () => {
+    searchParams.current = new URLSearchParams({ subscription: connections[0].subscription_id });
+    list.mockResolvedValue({
+      data: [
+        { ...connections[0], sync_status: "failed", last_successful_sync_at: null },
+        connections[1],
+      ], evidence: [], scope: {},
+    });
+    fabricIngestionHistory.mockResolvedValue(envelope({ runs: [
+      { source: "publication", projection_name: "older-success", attempted_at: "2026-01-02T00:00:00Z", status: "succeeded", message: "" },
+      { source: "source-status", projection_name: "newer-failure", attempted_at: "2026-01-03T00:00:00Z", status: "failed", message: "Collector timeout" },
+      { source: "publication", projection_name: "tied-running", attempted_at: "2026-01-03T00:00:00Z", status: "running", message: "" },
+      { source: "publication", projection_name: "unorderable", attempted_at: "invalid", status: "failed", message: "" },
+    ] }));
+    renderPage();
+    const sync = await screen.findByRole("region", { name: "Connection sync reports" });
+    expect(within(sync).getByText("Reported sync status: failed")).toBeInTheDocument();
+    expect(within(sync).getByText("Last successful connection sync: Not reported")).toBeInTheDocument();
+    expect(within(sync).queryByText("Non-production")).not.toBeInTheDocument();
+    expect(within(sync).getByText(/Actual schedule and next run: not reported/)).toBeInTheDocument();
+    const latest = await screen.findByRole("region", { name: "Latest recorded ingestion attempts" });
+    expect(within(latest).getByText(/2 attempts at this time; 1 failed. 1 attempts/)).toBeInTheDocument();
+    expect(within(latest).getByText(/Reported statuses: Failed: 1 · Running: 1/)).toBeInTheDocument();
+    expect(within(latest).getByText(/Collector timeout · Source: source-status/)).toBeInTheDocument();
+    expect(within(latest).queryByText("older-success")).not.toBeInTheDocument();
+    expect(within(latest).getByText(/not proof of a successful connection sync/)).toBeInTheDocument();
+  });
+
+  it("reloads connection reports and health through read APIs only", async () => {
+    renderPage();
+    const sync = await screen.findByRole("region", { name: "Connection sync reports" });
+    expect(within(sync).getAllByText(/Last successful connection sync:/)).toHaveLength(2);
+    await waitFor(() => expect(fabricLayers).toHaveBeenCalledTimes(1));
+    const reload = screen.getByRole("button", { name: "Reload page data" });
+    expect(reload).toHaveAttribute("title", "Reload recorded status; does not start ingestion or publication");
+    fireEvent.click(reload);
+    await waitFor(() => {
+      expect(list).toHaveBeenCalledTimes(2);
+      expect(fabricLayers).toHaveBeenCalledTimes(2);
+      expect(fabricIngestionHistory).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("does not order invalid timestamps or invent a failure reason", async () => {
+    list.mockResolvedValue({
+      data: [{ ...connections[0], last_successful_sync_at: "invalid" }], evidence: [], scope: {},
+    });
+    fabricIngestionHistory.mockResolvedValue(envelope({ runs: [
+      { source: "", projection_name: "undated", attempted_at: "", status: "failed", message: "" },
+    ] }));
+    renderPage();
+    expect(await screen.findByText("Last successful connection sync: Invalid timestamp reported: invalid")).toBeInTheDocument();
+    const latest = await screen.findByRole("region", { name: "Latest recorded ingestion attempts" });
+    expect(within(latest).getByText("Attempt time unreported")).toBeInTheDocument();
+    expect(within(latest).getByText(/0 attempts at this time; 0 failed. 1 attempts/)).toBeInTheDocument();
+    expect(within(latest).queryByText("undated")).not.toBeInTheDocument();
   });
 
   it("does not treat legacy empty manifest and governance arrays as observed absence", async () => {
@@ -445,7 +525,7 @@ describe("Per-subscription Fabric medallion page", () => {
     for (const read of [fabricLayers, fabricManifest, fabricGovernance, fabricIngestionHistory, fabricCapabilities]) {
       expect(read).toHaveBeenCalledTimes(1);
     }
-    fireEvent.click(screen.getByRole("button", { name: "Refresh Fabric health" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reload page data" }));
     await waitFor(() => {
       for (const read of [fabricLayers, fabricManifest, fabricGovernance, fabricIngestionHistory, fabricCapabilities]) {
         expect(read).toHaveBeenCalledTimes(2);
@@ -520,7 +600,7 @@ describe("Per-subscription Fabric medallion page", () => {
     fabricDataset.mockImplementation((tableName: string) => Promise.resolve(envelope({
       table_name: tableName, availability: "healthy", row_count: 5, freshness: "fresh",
     })));
-    fireEvent.click(screen.getByRole("button", { name: "Refresh Fabric health" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reload page data" }));
     expect(await screen.findByRole("button", { name: "Inspect contract and diagnostics for bronze_alerts" })).toBeInTheDocument();
     expect(screen.queryByRole("status", { name: "Bronze dataset read failures" })).not.toBeInTheDocument();
   });
@@ -576,14 +656,15 @@ describe("Per-subscription Fabric medallion page", () => {
     renderPage();
     const history = await screen.findByRole("region", { name: "Ingestion history / failed runs" });
     await waitFor(() => expect(within(history).getByText(/25 returned attempts; 1 failed/)).toBeInTheDocument());
-    expect(within(history).getByText("attempt-20")).toBeInTheDocument();
-    expect(within(history).queryByText("attempt-25")).not.toBeInTheDocument();
+    const attempts = within(history.querySelector(".compliance-list")!);
+    expect(attempts.getByText("attempt-20")).toBeInTheDocument();
+    expect(attempts.queryByText("attempt-25")).not.toBeInTheDocument();
     fireEvent.click(within(history).getByRole("button", { name: "Next page" }));
-    expect(within(history).getByText("attempt-25")).toBeInTheDocument();
+    expect(attempts.getByText("attempt-25")).toBeInTheDocument();
     expect(within(history).getByText("Retry via subscription sync")).toBeInTheDocument();
-    expect(within(history).queryByText("attempt-1")).not.toBeInTheDocument();
+    expect(attempts.queryByText("attempt-1")).not.toBeInTheDocument();
     fireEvent.click(within(history).getByRole("button", { name: "Previous page" }));
-    expect(within(history).getByText("attempt-1")).toBeInTheDocument();
+    expect(attempts.getByText("attempt-1")).toBeInTheDocument();
   });
 
   it("does not infer semantic validation from a blocked deployment or an empty history", async () => {

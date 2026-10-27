@@ -14,6 +14,7 @@ import { scopedBookmark, ScopeBookmarkError, type ScopeSelection } from "@/lib/s
 import { useScope } from "@/lib/scope-context";
 import { connectionsApi } from "@/lib/services";
 import { CopilotInsights } from "@/components/ui/CopilotInsights";
+import { formatDateTime, relativeTime } from "@/lib/format";
 
 /** Per-subscription Fabric medallion workbench. */
 export default function FabricMedallionPage() {
@@ -46,7 +47,7 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
   const router = useRouter();
   const searchParams = useSearchParams();
   const [refreshKey, setRefreshKey] = useState(0);
-  const connections = useApi(() => connectionsApi.list(scope), [scope]);
+  const connections = useApi(() => connectionsApi.list(scope), [scope, refreshKey]);
   const rows = useMemo(() => connections.data?.data ?? [], [connections.data]);
 
   const selectedSubscription = searchParams.get("subscription") ?? "";
@@ -63,6 +64,10 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
   );
 
   const activeConnection = rows.find((connection) => connection.subscription_id === selectedSubscription);
+  const scopedConnections = rows.filter(connection =>
+    (!fabricScope.subscription?.length || fabricScope.subscription.includes(connection.subscription_id))
+    && (!fabricScope.subscription_connection?.length || fabricScope.subscription_connection.includes(connection.connection_id)),
+  );
 
   const [copilotOpen, setCopilotOpen] = useState(false);
   const health = useFabricMedallionHealth(fabricScope, refreshKey);
@@ -153,8 +158,8 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
             <Link className="button" href="/connections">
               Back to connections
             </Link>
-            <button type="button" className="button button-primary" onClick={() => setRefreshKey((value) => value + 1)}>
-              Refresh Fabric health
+            <button type="button" className="button button-primary" title="Reload recorded status; does not start ingestion or publication" onClick={() => setRefreshKey((value) => value + 1)}>
+              Reload page data
             </button>
           </div>
         }
@@ -214,6 +219,28 @@ function FabricMedallionWorkspace({ scope, fabricScope }: { scope: ScopeSelectio
                   </div>
                 </div>
               )}
+              <section aria-label="Connection sync reports">
+                <h3>Connection sync reports</h3>
+                <p>Connection-reported status is separate from dataset freshness and publication stages. Reloading page data only reads status; it does not start ingestion or publication.</p>
+                <p>Actual schedule and next run: not reported by this API. A dataset freshness-policy cadence is not proof of the configured ingestion schedule.</p>
+                {scopedConnections.length === 0 ? <p>No connection sync reports returned for this selection.</p> : (
+                  <div className="compliance-list">
+                    {scopedConnections.map(connection => (
+                      <div key={connection.connection_id} className="compliance-row">
+                        <div>
+                          <strong>{connection.name}</strong>
+                          <span>Reported sync status: {connection.sync_status || "Unknown"}</span>
+                          <span>Last successful connection sync: {connection.last_successful_sync_at
+                            ? Number.isFinite(Date.parse(connection.last_successful_sync_at))
+                              ? `${formatDateTime(connection.last_successful_sync_at)} · ${relativeTime(connection.last_successful_sync_at)}`
+                              : `Invalid timestamp reported: ${connection.last_successful_sync_at}`
+                            : "Not reported"}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
             </>
           )}
         </div>
