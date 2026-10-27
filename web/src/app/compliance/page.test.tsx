@@ -348,7 +348,7 @@ describe("Architecture Compliance and Security Posture Intelligence", () => {
     const framework = screen.getByRole("region", { name: "Framework evidence coverage" });
     expect(within(framework).getByText(/not a control audit/)).toBeInTheDocument();
     expect(within(framework).getByText("Unmapped provider controls (1)")).toBeInTheDocument();
-    expect(within(framework).getAllByText("Not assessed").length).toBeGreaterThan(0);
+    expect((await within(framework).findAllByText("Not assessed")).length).toBeGreaterThan(0);
     fireEvent.click(within(framework).getByRole("link", { name: "Review LT findings" }));
     expect(screen.getByRole("combobox", { name: "Local finding domain" })).toHaveValue("LT");
     expect(screen.getByRole("button", { name: /Missing logging evidence/ })).toBeInTheDocument();

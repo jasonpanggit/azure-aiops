@@ -32,8 +32,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+sys.path.insert(0, str(SRC_ROOT))
 
 from api.exposure_query import (
     ExposureAuthorization,
@@ -651,8 +650,13 @@ def run_local_benchmark(
 
 
 def _rss_bytes() -> int:
+    if sys.platform == "linux":
+        with Path("/proc/self/statm").open(encoding="ascii") as statm:
+            resident_pages = int(statm.read().split()[1])
+        return resident_pages * os.sysconf("SC_PAGE_SIZE")
+
     usage = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    # macOS reports bytes; Linux and most other Unix platforms report KiB.
+    # macOS reports bytes; other supported Unix platforms report KiB.
     return usage if sys.platform == "darwin" else usage * 1_024
 
 
