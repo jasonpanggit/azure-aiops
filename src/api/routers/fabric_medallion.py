@@ -15,6 +15,7 @@ from fabric.config import FabricRuntimeConfig
 from fabric.data_access_roles import list_roles
 from fabric.lineage import entity_lineage_summary, native_lineage_url
 from fabric.medallion_health import _latest_per_scope, dataset_contract, dataset_status
+from fabric.product_evidence import unknown_product_evidence
 from fabric.schema_registry import SCHEMA_VERSION, SCHEMAS
 from fabric.table_maintenance import last_maintenance_status
 from ontology.publication_state import PublicationAttemptRecord
@@ -693,6 +694,12 @@ def medallion_dataset(
     table_rows = _latest_per_scope(rows, table_name)
     status = dataset_status(table_name, source_status=table_rows)
     status["recorded_evidence"] = _recorded_dataset_evidence(table_rows, status)
+    reader = getattr(context, "fabric_product_evidence_reader", None)
+    status["publication_evidence"] = (
+        reader(table_name, scope)
+        if reader is not None
+        else unknown_product_evidence(table_name, "no_product_publication_reader")
+    )
     return envelope(
         status,
         evidence=_evidence(

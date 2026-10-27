@@ -169,6 +169,7 @@ class ApiContext:
     exposure_ontology_provider: Callable[[Scope], Any] | None = None
     exposure_remediation_provider: Callable[[], Any] | None = None
     fabric_iq_provider: Callable[[], Any] | None = None
+    fabric_product_evidence_reader: Callable[[str, Scope], dict[str, Any]] | None = None
     # The autonomous background verification coordinator (Phase 03.4,
     # Recommendation 3) is a provider/callable -- not a pinned instance --
     # because it is only ever invoked once at app startup to obtain the one

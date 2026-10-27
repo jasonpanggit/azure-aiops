@@ -578,6 +578,8 @@ def _overall_status(calls: list[ToolCallRecord]) -> str:
     statuses = {call.result.status for call in calls}
     if statuses == {STATUS_EMPTY}:
         return STATUS_EMPTY
+    if "partial" in statuses:
+        return "partial"
     if STATUS_OK in statuses and (STATUS_UNAVAILABLE in statuses or STATUS_DENIED in statuses):
         return "partial"
     if STATUS_OK in statuses:

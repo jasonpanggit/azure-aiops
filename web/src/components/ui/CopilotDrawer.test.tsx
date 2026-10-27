@@ -8,6 +8,7 @@ import {
 } from "@/lib/copilot/thread-context";
 import { buildNetworkCopilotContext, normalizeCopilotSnapshotV2, type CanonicalCopilotResult } from "@/lib/copilot/page-adapters";
 import { ScopeProvider, useScope } from "@/lib/scope-context";
+import { toCanonicalInvestigationView } from "@/lib/services";
 import { ApiError, type EvidenceItem } from "@/lib/types";
 import { CopilotDrawer } from "./CopilotDrawer";
 import { IncidentScenarioInvestigation } from "@/components/IncidentScenarioInvestigation";
@@ -480,6 +481,27 @@ describe("CopilotDrawer", () => {
     },
   );
 
+  it("preserves partial governed tool status in the shared response projection", () => {
+    const result = canonicalResult("thr-12121212121212121212121212121212", "tool:network:one");
+    const data: CanonicalCopilotResult = {
+      ...result.data,
+      status: "partial",
+      tool_results: [{
+        call_id: "alert:0",
+        specialist_id: "resource_health_observability",
+        tool: "incidents",
+        status: "partial",
+        data: { assessment: { status: "partial" } },
+        evidence: [],
+        warning: "Inventory completeness remains unqualified.",
+      }],
+    };
+    const view = toCanonicalInvestigationView(data);
+    expect(view.toolCalls[0].status).toBe("partial");
+    expect(view.toolCalls[0].warning).toBe("Inventory completeness remains unqualified.");
+    expect(view.toolCalls[0].data).toEqual({ assessment: { status: "partial" } });
+  });
+
   it.each([
     "overview", "network", "compliance", "exposure", "defender_posture",
     "inventory", "connections", "connections_fabric", "twin",
@@ -931,10 +953,11 @@ describe("CopilotDrawer", () => {
     expect(screen.getByText("Incidents evidence is unavailable.")).toBeInTheDocument();
     if (foundry) {
       expect(screen.getByText(`Narrated by ${agent}.`)).toBeInTheDocument();
-      expect(screen.queryByText("Deterministic evidence is shown. Optional narration is unavailable.")).not.toBeInTheDocument();
+      expect(screen.queryByText("Deterministic evidence is shown. Review source coverage and response details.")).not.toBeInTheDocument();
     } else {
       expect(screen.queryByText(`Narrated by ${agent}.`)).not.toBeInTheDocument();
-      expect(screen.getByText("Deterministic evidence is shown. Optional narration is unavailable.")).toBeInTheDocument();
+      expect(screen.getByText("Deterministic evidence is shown. Review source coverage and response details.")).toBeInTheDocument();
+      expect(screen.queryByText(/Optional narration is unavailable/)).not.toBeInTheDocument();
     }
   });
 
@@ -966,7 +989,7 @@ describe("CopilotDrawer", () => {
 
     expect(await screen.findByText("The provider confirms an isolated network.")).toBeInTheDocument();
     expect(screen.getByText("Narrated by aiops-network-agent.")).toBeInTheDocument();
-    expect(screen.queryByText("Deterministic evidence is shown. Optional narration is unavailable.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Deterministic evidence is shown. Review source coverage and response details.")).not.toBeInTheDocument();
   });
 
   it("renders canonical synthesis claims without duplicating their tool result cards", async () => {

@@ -53,6 +53,7 @@ interface ChatTurn {
 
 const TOOL_STATUS_TONE: Record<string, "success" | "warning" | "critical" | "info"> = {
   ok: "success",
+  partial: "warning",
   empty: "info",
   unavailable: "warning",
   denied: "critical",
@@ -475,7 +476,7 @@ export function CopilotDrawer({
           <div className="copilot-live-status" role="status" aria-live="polite">
             {visibleLoading && "Gathering the visible page evidence and checking governed sources…"}
             {!visibleLoading && visibleStage === "fallback" && (
-              "Deterministic evidence is shown. Optional narration is unavailable."
+              "Deterministic evidence is shown. Review source coverage and response details."
             )}
             {!visibleLoading && visibleStage === "partial" && "Partial evidence: review freshness and source warnings before relying on this result."}
             {!visibleLoading && visibleStage === "error" && "The request failed. Retry the same bounded page snapshot."}

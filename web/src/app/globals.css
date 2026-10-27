@@ -8811,11 +8811,13 @@ body.topology-fullscreen-open {
   }
 
   .shell-sidebar {
+    visibility: hidden;
     transform: translateX(-100%);
     transition: transform 160ms ease;
   }
 
   .shell-sidebar-open {
+    visibility: visible;
     box-shadow: var(--shadow-overlay);
     transform: translateX(0);
   }

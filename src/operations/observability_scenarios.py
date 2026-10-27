@@ -280,7 +280,7 @@ def unavailable_assessment(
 
     limitations = [
         "The active scoped inventory snapshot is not a live or completeness-qualified resource denominator.",
-        "No qualified observability configuration reader is configured for this deployment.",
+        "Required observability configuration evidence was unavailable or incomplete.",
         "Configuration evidence, when available, would not prove telemetry or action delivery.",
     ]
     if scenario == ALERT_DELIVERY_COVERAGE:

@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import { FabricFreshnessBudget } from "@/components/fabric/FabricFreshnessBudget";
 import { FabricDatasetContract } from "@/components/fabric/FabricDatasetContract";
 import { FabricRecordedEvidence } from "@/components/fabric/FabricRecordedEvidence";
+import { FabricPublicationEvidence } from "@/components/fabric/FabricPublicationEvidence";
 import { EvidenceBar } from "@/components/ui/EvidenceBar";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { StatePanel } from "@/components/ui/StatePanel";
@@ -318,6 +319,7 @@ function FabricLayerSection({
                   </dl>
                   <FabricFreshnessBudget budget={dataset.freshness_budget} />
                   <FabricRecordedEvidence tableName={dataset.table_name} evidence={dataset.recorded_evidence} />
+                  <FabricPublicationEvidence tableName={dataset.table_name} evidence={dataset.publication_evidence} />
                   <button type="button" className="button" aria-expanded={selectedContract === dataset.table_name}
                     aria-controls={`${layer}-dataset-contract`} onClick={event => {
                       contractTrigger.current = event.currentTarget;

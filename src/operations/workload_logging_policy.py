@@ -22,6 +22,10 @@ POLICY_SCHEMA_VERSION = 1
 class WorkloadLoggingPolicyUnavailable(RuntimeError):
     """No current, valid, scope-matched reviewed policy is available."""
 
+    def __init__(self, message: str, *, reason_code: str = "policy_unavailable"):
+        self.reason_code = reason_code
+        super().__init__(message)
+
 
 @dataclass(frozen=True)
 class WorkloadLoggingPolicy:
@@ -61,7 +65,8 @@ class WorkloadLoggingPolicyStore:
             ) from exc
         if not snapshot.exists:
             raise WorkloadLoggingPolicyUnavailable(
-                "No approved workload logging policy is configured."
+                "No approved workload logging policy is configured.",
+                reason_code="missing_policy",
             )
         payload = snapshot.payload
         if not isinstance(payload, Mapping):

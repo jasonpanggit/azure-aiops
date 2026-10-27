@@ -359,7 +359,7 @@ def test_third_page_cannot_replace_original_filter_binding():
     assert len(calls) == 3
 
 
-def test_row_limit_malformed_chronology_and_missing_provider_times():
+def test_row_limit_malformed_chronology_and_missing_activity_provider_times():
     bad = [
         activity(eventTimestamp="0001-01-01T00:00:00+23:59"),
         activity(submissionTimestamp="2026-10-25T10:00:00Z"),
@@ -378,7 +378,8 @@ def test_row_limit_malformed_chronology_and_missing_provider_times():
     assert result["changes"]["invalid_rows"] == 5
     assert result["changes"]["truncated"] is True
     assert len(result["changes"]["rows"]) == 1
-    assert result["health"]["invalid_rows"] == 1
+    assert result["health"]["invalid_rows"] == 0
+    assert result["health"]["rows"][0]["reported_at"] is None
 
 
 def test_historical_rows_outside_window_excluded_and_non_changes_not_hypothesized():
@@ -665,6 +666,46 @@ def test_timezone_equivalence_uses_utc_event_order_and_never_query_time():
     assert (
         history["changes"]["observed_at"] != history["changes"]["rows"][0]["timestamp"]
     )
+
+
+def test_official_resource_health_wire_spelling_and_optional_reported_time():
+    reader, identity, _, _, _ = reader_fixture(
+        [
+            {"value": [activity()]},
+            {
+                "value": [
+                    health(
+                        occuredTime="2026-10-25T10:15:00Z",
+                        occurredTime=None,
+                        reportedTime=None,
+                    )
+                ]
+            },
+        ]
+    )
+    result = reader.read(SCOPE, ARGS, identity)["health"]
+    assert result["invalid_rows"] == 0
+    assert result["rows"][0]["timestamp"] == "2026-10-25T10:15:00+00:00"
+    assert result["rows"][0]["reported_at"] is None
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"occurredTime": None, "occuredTime": None},
+        {"occurredTime": "2026-10-25T10:15:00Z", "occuredTime": "2026-10-25T10:16:00Z"},
+        {"reportedTime": "2026-10-25T10:14:00Z"},
+    ],
+)
+def test_health_requires_unambiguous_event_time_and_valid_optional_reported_time(
+    updates,
+):
+    reader, identity, _, _, _ = reader_fixture(
+        [{"value": [activity()]}, {"value": [health(**updates)]}]
+    )
+    result = reader.read(SCOPE, ARGS, identity)["health"]
+    assert result["invalid_rows"] == 1
+    assert result["rows"] == []
 
 
 def test_httpx_transport_preserves_continuation_token_and_original_scope_filter():
