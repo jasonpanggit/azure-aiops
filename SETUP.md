@@ -7,12 +7,17 @@ You do not need to run Terraform, configure individual Azure services or
 assign the platform's resource-level roles yourself.
 
 On a machine with Git, Azure CLI, Terraform and `uv` installed, open a current
-platform checkout and run:
+platform checkout, prepare dependencies once, then run setup:
 
 ```bash
-uv run --locked --extra api --extra test python infra/scripts/setup-platform.py \
-  --apply --env-file /secure/platform-setup.env
+uv sync --locked --extra api --extra test
+bash infra/scripts/setup-platform.sh --apply --env-file /secure/platform-setup.env
 ```
+
+The Bash entry point invokes the existing Terraform-backed setup workflow;
+Python helpers remain internal dependencies. All setup options pass through
+unchanged. The launcher does not install dependencies or change your login,
+and omitting `--apply` retains the offline, read-only preview.
 
 `/secure/platform-setup.env` is the protected setup file supplied by your
 platform administrator, containing the SPN credentials and approved platform
