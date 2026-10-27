@@ -411,8 +411,9 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
                 (),
                 {
                     "run_id": "fabric-run",
-                    "source_run_id": "combined-run",
+                    "source_run_id": replay_source_run_id,
                     "status": "completed",
+                    "failed_records": 0,
                     "tables": ("metadata_source_status",),
                 },
             )()
@@ -479,6 +480,16 @@ def test_refresh_all_connections_publishes_fabric_from_resolved_generation(
     assert entities_run_id != result["combined_manifest"]["runId"]
     assert replay_calls == [entities_run_id]
     assert scope_calls == [{"subscription": [SUB_A, SUB_B]}]
+    from fabric.product_evidence import ProductEvidenceStore
+    from storage.onelake_documents import OneLakeDocumentStore
+
+    receipt = ProductEvidenceStore(OneLakeDocumentStore(tmp_path / "compat")).read(
+        "bronze_resources", {"subscription": [SUB_A, SUB_B]},
+    )
+    assert receipt["publication_attempt"]["source_generation"] == entities_run_id
+    assert receipt["publication_attempt"]["status"] == "completed"
+    # This fixture publishes metadata only, so no Bronze completion is invented.
+    assert all(stage["status"] == "unknown" for stage in receipt["stages"].values())
     assert len(pointer_stores) == 1
     if exposure_enabled:
         from storage.onelake_documents import OneLakeDocumentStore

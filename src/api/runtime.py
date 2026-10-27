@@ -5078,6 +5078,15 @@ def _load_eol_review_service() -> Any:
     )
 
 
+def _read_fabric_product_evidence(table_name: str, scope: Scope) -> dict[str, Any]:
+    """Read exact-scope publisher receipts without probing a Fabric table or pointer."""
+    from fabric.product_evidence import ProductEvidenceStore
+
+    return ProductEvidenceStore(OneLakeDocumentStore(str(aiops_home()))).read(
+        table_name, scope.to_dict()
+    )
+
+
 def build_context() -> ApiContext:
     """Assemble the default context from the environment."""
     ontology_roots = _ontology_api_roots()
@@ -5915,6 +5924,7 @@ def build_context() -> ApiContext:
         exposure_ontology_provider=exposure_ontology,
         exposure_remediation_provider=exposure_remediation,
         fabric_iq_provider=lambda: providers.get("fabric_iq", optional=True),
+        fabric_product_evidence_reader=_read_fabric_product_evidence,
         verification_coordinator_provider=_verification_coordinator,
         ontology_discovery_provider=lambda: _load_ontology_discovery_api(
             onboarding, ontology_roots

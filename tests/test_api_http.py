@@ -854,6 +854,51 @@ class TestFabricMedallionRouterTask1:
             "observed_at": None,
             "reason_code": "no_recorded_source_last_good",
         }
+        publication = response.json()["data"]["publication_evidence"]
+        assert publication["evidence_mode"] == "not_recorded"
+        assert publication["publication_attempt"] is None
+        assert len(publication["stages"]) == 6
+        assert all(stage["status"] == "unknown" for stage in publication["stages"].values())
+
+    def test_fabric_product_receipts_are_scoped_and_do_not_qualify_gold(
+        self, fabric_medallion_client, tmp_path
+    ):
+        from types import SimpleNamespace
+
+        from fabric.product_evidence import ProductEvidenceStore
+        from storage.onelake_documents import OneLakeDocumentStore
+
+        store = ProductEvidenceStore(OneLakeDocumentStore(tmp_path / "receipts"))
+        scope = {"subscription": [SUB_A]}
+        stamp = "2026-10-26T14:00:00+00:00"
+        attempt = store.begin(scope, "source-1", stamp)
+        store.finish(scope, attempt, stamp, result=SimpleNamespace(
+            status="completed", failed_records=0, source_run_id="source-1",
+            run_id="publisher-1", tables=("bronze_resources", "gold_exposure_facts"),
+        ))
+        fabric_medallion_client.app.state.context.fabric_product_evidence_reader = (
+            lambda name, effective: store.read(name, effective.to_dict())
+        )
+        response = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/bronze_resources?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert response.status_code == 200
+        evidence = response.json()["data"]["publication_evidence"]
+        assert evidence["stages"]["persisted"]["status"] == "recorded"
+        assert evidence["publication_attempt"]["scope"] == scope
+        assert evidence["stages"]["active"]["status"] == "unknown"
+        assert evidence["publication_attempt"]["observed_at"] == stamp
+        hidden = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/bronze_resources?subscription={SUB_B}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert hidden.status_code == 403
+        gold = fabric_medallion_client.get(
+            f"/api/v1/fabric-medallion/datasets/gold_exposure_facts?subscription={SUB_A}",
+            headers=_auth(SCOPED_TOKEN),
+        )
+        assert gold.status_code == 404
 
     @pytest.mark.parametrize("include_unorderable", [False, True])
     def test_fabric_dataset_receipts_reuse_conservative_partition_selection(

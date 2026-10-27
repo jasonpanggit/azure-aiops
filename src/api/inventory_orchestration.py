@@ -197,6 +197,10 @@ def _run_inventory_refresh_locked(
             assert_lock_held=assert_lock_held,
         )
         fabric_config = FabricRuntimeConfig.load(fabric_config_path)
+        from fabric.product_evidence import (
+            ProductEvidenceStore,
+            publish_with_product_evidence,
+        )
         from onboarding.activation import publish_combined_snapshot
         from storage.datasets import DatasetStore
         from storage.onelake_documents import OneLakeDocumentStore
@@ -250,9 +254,12 @@ def _run_inventory_refresh_locked(
             }
         )
         assert_lock_held()
-        publication = runtime.service.sync(
-            replay_source_run_id=str(entities_manifest["runId"]),
-            requested_scope={"subscription": requested_subscriptions},
+        publication = publish_with_product_evidence(
+            runtime.service,
+            ProductEvidenceStore(OneLakeDocumentStore(config.output_dir)),
+            source_generation=str(entities_manifest["runId"]),
+            scope={"subscription": requested_subscriptions},
+            assert_lock_held=assert_lock_held,
             exposure_pointer_store=(
                 OneLakeDocumentStore(config.output_dir)
                 if fabric_config.exposure.enabled

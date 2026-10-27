@@ -366,3 +366,37 @@ def test_contract_requires_connection_membership_even_for_shared_subscription(
         routes.medallion_dataset_contract("bronze_resources", context, scope)
     assert error.value.status_code == 404
     assert all(root == "allowed-root" for root, _ in accesses)
+
+
+def test_product_receipt_reader_runs_only_after_scoped_registration(connection_context):
+    context, _, datasets, _ = connection_context
+    datasets["metadata_source_status"] = [{
+        "source_family": "bronze_resources", "status": "succeeded",
+    }]
+    calls = []
+
+    def reader(name, scope):
+        calls.append((name, scope.to_dict()))
+        return {"sentinel": "exact-scoped-provider"}
+
+    context.fabric_product_evidence_reader = reader
+    scope = Scope({"subscription_connection": {"allowed"}})
+    with pytest.raises(ApiError) as error:
+        routes.medallion_dataset("gold_exposure_facts", context, scope)
+    assert error.value.status_code == 404
+    assert calls == []
+    data = routes.medallion_dataset("bronze_resources", context, scope)["data"]
+    assert data["publication_evidence"] == {"sentinel": "exact-scoped-provider"}
+    assert calls == [("bronze_resources", scope.to_dict())]
+
+
+def test_product_receipt_storage_failure_is_not_success_shaped(connection_context):
+    context, _, datasets, _ = connection_context
+    datasets["metadata_source_status"] = [{"source_family": "bronze_resources"}]
+
+    def broken_reader(*_):
+        raise OSError("receipt storage unavailable")
+
+    context.fabric_product_evidence_reader = broken_reader
+    with pytest.raises(OSError, match="receipt storage unavailable"):
+        routes.medallion_dataset("bronze_resources", context, Scope({"subscription_connection": {"allowed"}}))

@@ -44,6 +44,60 @@ flowchart LR
 - `storage.delta_writer`: Delta overwrite, append, and merge/upsert using optimistic Delta transactions, retry, and per-run idempotency.
 - `fabric.sync_service`: source-generation selection, replay, validation, Bronze/Silver/Ontology writes, state transitions, catalog generation, registration, and metrics.
 
+### Recorded product publication evidence
+
+The combined inventory producer wraps the existing sync with
+`fabric.product_evidence.publish_with_product_evidence`. It records a running
+attempt before publication and a terminal outcome afterward under the existing
+publisher lease. Fabric writes, source checkpoints, registration and Gold
+activation retain their existing implementations. Other sync entry points do
+not acquire receipts automatically.
+
+Contract `fabric-product-publication/1` keeps six independent stages:
+`acquired`, `validated`, `persisted`, `registered`, `active` and
+`consumer_query_verified`. Only validation and persistence can record completion
+from a completed, zero-failed-record sync result, and only for declared products
+actually listed in that result. This is a historical publisher outcome, not a
+fresh physical-table check. In particular, finalized replays may return an old
+completed result without new registration, active-pointer or consumer readback.
+The other four stages remain unknown; metadata source-status rows and the
+presence of a Lakehouse manager cannot qualify them.
+
+Receipts live in the trusted producer output root at
+`fabric/product-publication/<sha256-of-canonical-scope>.json`. Each document has
+the fixed ten-product registry, one current attempt and per-stage last-good
+facts. IDs and subscription sets are bounded; validated serialized documents
+must fit 64 KiB. This is a logical payload limit after reading, not a network
+download limit. CAS create/replace operations reject concurrent overwrites;
+superseded or already terminal attempts cannot complete. Failed or running
+attempts clear current completion but retain older successful facts with their
+original source generation and observation time. No HTTP request clock is
+substituted for an observation, and last-good retention is not current readiness.
+
+The registered-only dataset endpoint adds `publication_evidence` after its
+normal scope and registration checks. The optional API provider reads the
+server-owned `AIOPS_HOME` root. Producer output and API roots must match to share
+receipts; different roots honestly return unknown. Only an exact canonical
+subscription set matches: no cross-scope scan, subset aggregation, unrestricted
+read or connection identity relabeling occurs. A connection-constrained request
+stays unknown even if it shares a subscription with an aggregate receipt.
+Missing providers/documents return explicit unknown stages; corrupt receipts,
+contract mismatches, CAS conflicts and storage failures propagate as errors.
+
+The Medallion disclosure separates these recorded stages from source-partition
+receipts, healthy/registered counters, freshness policy and capability
+readiness. Declared-but-unregistered Gold products remain 404. No receipt
+changes health, registration, schema, Job cadence, SLO or consumer readiness.
+
+A receipt failure can occur **after** sync committed data. The producer logs
+`PRODUCT_PUBLICATION_RECEIPT_FAILED` and fails rather than reporting healthy
+empty evidence. Inspect the existing source checkpoint and selected generation
+before an operator-approved idempotent retry; missing evidence is not permission
+to rerun acquisition or blindly republish. Lost leases leave an incomplete
+attempt rather than allowing an old worker to claim success. Rolling back this
+additive code leaves existing receipt documents unused; it does not revert
+published tables or active pointers. Live qualification remains a separate gate.
+
 ### Source product contracts
 
 `fabric.schema_registry` owns additive product declarations independently of
@@ -57,7 +111,8 @@ The existing scoped
 `product_contract`. The endpoint still requires source-status registration in
 the caller's effective scope. A declared but unregistered Gold product remains
 404; declarations do not enter `/layers` counters or grant connection access.
-This is separate from the queued Gold-declaration discovery UI/catalog.
+This is separate from the source-integrated Gold-declaration discovery UI/catalog;
+neither declaration surface is physical inventory or live qualification.
 
 Contracts describe the implementation owner role and producer reference, grain,
 stable identity fields, selected source inputs, snapshot mode, generation

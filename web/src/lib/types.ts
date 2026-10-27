@@ -1462,6 +1462,39 @@ export interface FabricRecordedEvidence {
   }>;
 }
 
+export type FabricPublicationStage = "acquired" | "validated" | "persisted" | "registered" | "active" | "consumer_query_verified";
+
+/** Publisher outcomes are not current active-product or consumer-readiness proof. */
+export interface FabricPublicationFact {
+  attempt_id: string;
+  source_generation: string;
+  publication_run_id: string;
+  observed_at: string;
+  scope: Record<string, string[]>;
+}
+
+export interface FabricPublicationEvidence {
+  contract: "fabric-product-publication/1";
+  table_name: string;
+  evidence_mode: "recorded_publisher_outcome" | "not_recorded";
+  publication_attempt: {
+    attempt_id: string;
+    source_generation: string;
+    publication_run_id: string | null;
+    status: "running" | "completed" | "failed";
+    attempted_at: string;
+    observed_at: string;
+    scope: Record<string, string[]>;
+  } | null;
+  stages: Record<FabricPublicationStage, {
+    status: "recorded" | "unknown";
+    evidence_mode: "recorded_publisher_outcome" | "not_recorded";
+    reason_code: string;
+    last_attempt: FabricPublicationFact | null;
+    last_good: FabricPublicationFact | null;
+  }>;
+}
+
 export interface FabricDataset {
   table_name: string;
   availability: string;
@@ -1476,6 +1509,7 @@ export interface FabricDataset {
   lineage_ref: string;
   freshness_budget?: FabricFreshnessBudget;
   recorded_evidence?: FabricRecordedEvidence;
+  publication_evidence?: FabricPublicationEvidence;
 }
 
 /** Registry declarations and scoped metadata references, not verified deployed schema or dataset edges. */
