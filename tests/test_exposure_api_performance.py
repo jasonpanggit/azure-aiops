@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -44,7 +47,6 @@ from scripts.benchmark_exposure_read_model import (
     derive_live_benchmark_inputs,
     generate_exposure_rows,
     run_fabric_sql_benchmark,
-    run_local_benchmark,
 )
 
 
@@ -855,13 +857,32 @@ def test_exposure_endpoint_maps_cursor_failures_to_safe_errors(
 
 
 def test_100k_server_and_image_benchmark_is_exact_bounded_and_under_budget() -> None:
-    report = run_local_benchmark(
-        row_count=100_000,
-        seed=31_001,
-        page_size=100,
-        warmups=2,
-        measurements=5,
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(
+                Path(__file__).resolve().parents[1]
+                / "scripts"
+                / "benchmark_exposure_read_model.py"
+            ),
+            "--rows",
+            "100000",
+            "--seed",
+            "31001",
+            "--page-size",
+            "100",
+            "--warmups",
+            "2",
+            "--measurements",
+            "5",
+            "--json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
+    report = json.loads(result.stdout)
 
     assert report["status"] == "pass"
     assert report["dataset"]["row_count"] == 100_000
