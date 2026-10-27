@@ -78,6 +78,20 @@ beforeEach(() => {
   }));
 });
 describe("Identity evidence boundaries", () => {
+  it("allocates six principal columns without changing evidence or the accessible scroller", async () => {
+    render(<IdentityPage />);
+    await screen.findByText("1 unresolved role/action records; 1 unknown change ages");
+    const region = screen.getByRole("region", { name: "Observed principal assignments" });
+    const table = region.querySelector("table");
+    expect(region).toHaveAttribute("tabindex", "0");
+    expect(table).toHaveClass("identity-principals-grid");
+    expect(table?.querySelectorAll(":scope > colgroup > col")).toHaveLength(6);
+    expect(table?.querySelectorAll("thead th")).toHaveLength(6);
+    expect(table?.querySelector("tbody tr")?.children).toHaveLength(6);
+    expect(region).toHaveTextContent("Unresolved");
+    expect(region).toHaveTextContent("2 subscription");
+    expect(region.querySelector("a")).toHaveAttribute("href", "/search?q=unresolved-principal");
+  });
   it("qualifies unresolved risk, observed breadth and unknown age without standard-access assurance", async () => {
     render(<IdentityPage />);
     await screen.findByText("1 unresolved role/action records; 1 unknown change ages");
