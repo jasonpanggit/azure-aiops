@@ -136,9 +136,17 @@ function FabricMedallionPanelContent({
       </nav>
 
       <div className="metric-grid">
-        <MetricCard label="Bronze tables" size="text" value={formatHealthCount(counts?.bronze)} detail="Dataset health, not row counts. Stale raw data can contain records." tone={fabricMetricTone(counts?.bronze)} />
-        <MetricCard label="Silver tables" size="text" value={formatHealthCount(counts?.silver)} detail="Dataset health, not row counts. Freshness and quality determine health." tone={fabricMetricTone(counts?.silver)} />
-        <MetricCard label="Gold tables" size="text" value={formatHealthCount(counts?.gold)} detail="Registered dataset health, not physical table inventory or downstream readiness." tone={fabricMetricTone(counts?.gold)} />
+        {FABRIC_LAYER_KEYS.map(layer => (
+          <MetricCard
+            key={layer}
+            label={`${FABRIC_LAYER_LABELS[layer]} tables`}
+            value={counts?.[layer].total ?? null}
+            detail={counts
+              ? `Registrations reported · ${counts[layer].healthy} healthy · ${counts[layer].total - counts[layer].healthy} not confirmed healthy`
+              : "Registration count unavailable"}
+            tone={fabricMetricTone(counts?.[layer])}
+          />
+        ))}
         <MetricCard
           label="Governed relationships"
           value={relationshipCount && relationshipCount > 0
@@ -148,6 +156,7 @@ function FabricMedallionPanelContent({
           tone={governanceMetricTone}
         />
       </div>
+      <p>Counts describe registered datasets, not rows or physical table inventory. Zero healthy does not mean empty; stale datasets can contain records. Gold registration counts do not establish physical absence or downstream readiness.</p>
 
       <section className="card" aria-label="Fabric section evidence">
         <div className="card-header"><div><h2>Reported evidence freshness</h2><p>A successful request does not prove fresh datasets or downstream readiness.</p></div></div>
@@ -166,6 +175,13 @@ function FabricMedallionPanelContent({
           ))}
         </div>
       </section>
+      {fabricEvidenceFreshness(layerSummary.data) === "stale" && (
+        <StatePanel
+          title="Recorded dataset evidence is stale"
+          message="The layer-health response carries stale evidence. This does not establish why ingestion has not refreshed it. Inspect connection sync reports, returned attempts, and each dataset's freshness budget; reloading this page does not run ingestion."
+          tone="stale"
+        />
+      )}
 
       {layerSummary.error && <StatePanel title="Fabric layer counts unavailable" message={layerSummary.error.message} tone="error" />}
       <FabricCapabilityCallouts capabilities={capabilities.data?.data} error={capabilities.error} />
@@ -268,7 +284,7 @@ function FabricLayerSection({
           <div role="status" aria-label={`${label} dataset read failures`}>
             <StatePanel
               title={rows.length ? `${label} layer health is partial` : `${label} layer health is unavailable`}
-              message={`${rows.length} of ${tableNames.length} registered dataset responses available. Refresh Fabric health to retry failed reads. Layer counts are reported independently.`}
+              message={`${rows.length} of ${tableNames.length} registered dataset responses available. Reload page data to retry failed reads. Layer counts are reported independently.`}
               tone="error"
             />
             <ul>
@@ -285,11 +301,12 @@ function FabricLayerSection({
         ) : datasets.loading || registrationLoading ? (
           <StatePanel title={`Loading ${label.toLowerCase()} layer health`} message="Checking dataset freshness, quality, row counts, and lineage." tone="loading" />
         ) : registrationUnavailable ? (
-          <StatePanel title={`${label} dataset registration unavailable`} message="Refresh Fabric health to retry the layer and capability sources. Missing registration evidence is not an empty layer." tone="error" />
+          <StatePanel title={`${label} dataset registration unavailable`} message="Reload page data to retry the layer and capability sources. Missing registration evidence is not an empty layer." tone="error" />
         ) : rows.length === 0 && failures.length > 0 ? null : rows.length === 0 ? (
           <StatePanel title={`No ${label} datasets registered`} message="No recorded dataset registrations were returned for this layer in the current scope. Physical table absence is not verified." />
         ) : (
           <>
+            <p>{rows.filter(dataset => dataset.availability === "stale").length} stale in {rows.length} returned dataset responses. Failed or missing responses are not counted as stale. Layer totals and health are reported independently.</p>
             <TableColumnFilters filters={filters} onReset={resetFilters} resultCount={filteredRows.length} totalCount={rows.length} />
             <div className="fabric-dataset-card-grid" aria-label={`${label} dataset health cards`}>
               {paging.pageRows.map((dataset) => (
@@ -512,6 +529,12 @@ function unverifiedObservationCopy(
 function FabricIngestionPanel({ ingestionHistory }: { ingestionHistory: { data: Envelope<{ runs: FabricIngestionRun[] }> | null; error: Error | null; loading: boolean } }) {
   const runs = ingestionHistory.data?.data.runs ?? [];
   const paging = useTablePagination(runs);
+  const datedRuns = runs.filter(run => Number.isFinite(Date.parse(run.attempted_at)));
+  const latestTime = datedRuns.length
+    ? datedRuns.reduce((latest, run) => Math.max(latest, Date.parse(run.attempted_at)), -Infinity)
+    : null;
+  const latestRuns = datedRuns.filter(run => Date.parse(run.attempted_at) === latestTime);
+  const latestFailures = latestRuns.filter(run => run.status === "failed");
   return (
     <section id="fabric-ingestion" className="card" aria-labelledby="fabric-ingestion-heading">
       <div className="card-header"><div><h2 id="fabric-ingestion-heading">Ingestion history / failed runs</h2><p>Review recent source and publication attempts, failures, and retry guidance.</p></div></div>
@@ -524,6 +547,27 @@ function FabricIngestionPanel({ ingestionHistory }: { ingestionHistory: { data: 
           <StatePanel title="No ingestion attempts reported" message="An empty history does not establish successful ingestion or publication for this scope." />
         ) : (
           <>
+          <section aria-label="Latest recorded ingestion attempts">
+            <h3>Latest dated attempts in returned history</h3>
+            <p>{latestTime === null ? "Attempt time unreported" : `${formatDateTime(new Date(latestTime).toISOString())} · ${relativeTime(new Date(latestTime).toISOString())}`}</p>
+            <p>{latestRuns.length} attempts at this time; {latestFailures.length} failed. {runs.length - datedRuns.length} attempts have no usable timestamp and cannot be ordered.</p>
+            {latestRuns.length > 0 && (
+              <p>Reported statuses: {Array.from(new Set(latestRuns.map(run => run.status))).map(status =>
+                `${datasetStatusLabel(status)}: ${latestRuns.filter(run => run.status === status).length}`,
+              ).join(" · ")}</p>
+            )}
+            <p>These are source or publication attempts, not proof of a successful connection sync, current tables, or consumer readiness. Failure cause is unconfirmed unless reported below.</p>
+            {latestFailures.length > 0 && (
+              <ul>
+                {latestFailures.slice(0, 5).map((run, index) => (
+                  <li key={`${run.source}:${run.projection_name}:${index}`}>
+                    <strong>{run.projection_name}</strong>: {run.message || "Failure reason not reported"} · Source: {run.source || "Unreported"}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {latestFailures.length > 5 && <p>Showing 5 of {latestFailures.length} failures at this time. All returned attempts remain in the paginated history below.</p>}
+          </section>
           <p>{runs.length} returned attempts; {runs.filter(run => run.status === "failed").length} failed. Counts describe this returned history, not all ingestion activity.</p>
           <div className="compliance-list">
             {paging.pageRows.map((run) => (
