@@ -600,7 +600,7 @@ export default function ResourceHealthPage() {
       {unavailableMetrics.length > 0 ? (
         <StatePanel
           title="Some metrics are unavailable"
-          message="VM memory % and disk free % need either a Log Analytics workspace with classic guest performance counters, or an Azure Monitor Workspace receiving OpenTelemetry host metrics; neither was discovered for this scope. Container Apps use platform memory metrics."
+          message="Usable VM memory % and disk free % readings were not returned for part of this scope. This does not mean no workspaces exist: guest counters may be missing, workspace queries may have failed, or the telemetry workspace may be outside the selected subscriptions. These VM metrics require Log Analytics guest performance counters or Azure Monitor Workspace OpenTelemetry host metrics. Container Apps use platform memory metrics."
           tone="partial"
         />
       ) : null}

@@ -373,6 +373,8 @@ def test_snapshot_reports_metrics_unavailable_when_no_workspace_discovered():
         "memory_percent",
         "disk_free_percent",
     ]
+    assert "no usable workspace IDs" in snapshot.warnings[0]
+    assert "cross-subscription telemetry workspaces are not searched" in snapshot.warnings[0]
 
 
 def test_snapshot_guest_performance_failure_does_not_block_cpu_metrics():
@@ -395,7 +397,9 @@ def test_snapshot_guest_performance_failure_does_not_block_cpu_metrics():
     resource = snapshot.resources[0]
     assert resource.cpu_percent == 33.0
     assert resource.memory_percent is None
-    assert snapshot.warnings == ()
+    assert len(snapshot.warnings) == 1
+    assert "Could not read guest performance from a discovered Log Analytics" in snapshot.warnings[0]
+    assert "coverage is unknown" in snapshot.warnings[0]
 
 
 def test_snapshot_law_lister_failure_adds_warning_but_keeps_metrics():
@@ -547,7 +551,94 @@ def test_snapshot_otel_failure_does_not_block_classic_or_cpu_metrics():
     resource = snapshot.resources[0]
     assert resource.cpu_percent == 33.0
     assert resource.memory_percent == 30.0
-    assert snapshot.warnings == ()
+    assert len(snapshot.warnings) == 1
+    assert "Could not read guest performance from a discovered Azure Monitor" in snapshot.warnings[0]
+
+
+@pytest.mark.parametrize("source", ["classic", "otel"])
+@pytest.mark.parametrize("outcome", ["empty", "failed", "unusable"])
+def test_guest_metric_warnings_distinguish_discovery_read_and_no_counters(source, outcome):
+    reader = _FakeGuestPerformanceReader(
+        error=ValueError("private provider details") if outcome == "failed" else None
+    )
+    kwargs = (
+        {
+            "law_lister": lambda _conn: [{}] if outcome == "unusable" else [{"workspaceId": "law-1"}],
+            "guest_performance_reader_factory": lambda _conn: reader,
+        }
+        if source == "classic"
+        else {
+            "amw_lister": lambda _conn: [{}] if outcome == "unusable" else [{"endpoint": "endpoint-1"}],
+            "otel_performance_reader_factory": lambda _conn: reader,
+        }
+    )
+    service = ResourceHealthService(
+        connections=lambda: [_connection()],
+        resource_lister=lambda _conn: [_vm_row()],
+        metrics_client_factory=lambda _conn: _FakeMetricsClient(
+            {"Percentage CPU": {"value": 33.0}}
+        ),
+        **kwargs,
+    )
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+    assert snapshot.resources[0].cpu_percent == 33.0
+    assert snapshot.resources[0].memory_percent is None
+    assert snapshot.resources[0].disk_free_percent is None
+    assert len(snapshot.warnings) == 1
+    warning = snapshot.warnings[0]
+    assert {
+        "empty": "returned no guest performance counters",
+        "failed": "Could not read guest performance",
+        "unusable": "no usable",
+    }[outcome] in warning
+    assert "private provider details" not in warning
+    if outcome == "unusable":
+        assert reader.queried == []
+
+
+def test_unwired_guest_readers_do_not_assert_workspace_absence():
+    service = ResourceHealthService(
+        connections=lambda: [_connection()],
+        resource_lister=lambda _conn: [_vm_row()],
+        metrics_client_factory=lambda _conn: _FakeMetricsClient({}),
+    )
+    snapshot = service.snapshot(subscription_ids=["sub-1"])
+    assert "not configured" in snapshot.warnings[0]
+    assert "workspace presence and guest metric coverage are unknown" in snapshot.warnings[0]
+
+
+def test_authorized_resource_retains_guest_read_warning_and_platform_metrics():
+    vm_row = _vm_row()
+    service = ResourceHealthService(
+        connections=lambda: [_connection()],
+        resource_lister=lambda _conn: pytest.fail("No separate resource discovery"),
+        metrics_client_factory=lambda _conn: _FakeMetricsClient(
+            {"Percentage CPU": {"value": 33.0}}
+        ),
+        law_lister=lambda _conn: [{"workspaceId": "law-1"}, {"workspaceId": "law-2"}],
+        guest_performance_reader_factory=lambda _conn: _FakeGuestPerformanceReader(
+            error=RuntimeError("unreadable")
+        ),
+        amw_lister=lambda _conn: [{"endpoint": "endpoint-1"}],
+        otel_performance_reader_factory=lambda _conn: _FakeOtelPerformanceReader(
+            {"endpoint-1": {vm_row["id"].casefold(): {"memory_percent": 61.0}}}
+        ),
+    )
+    snapshot = service.snapshot_resource(
+        {
+            "resource_id": vm_row["id"],
+            "resource_name": vm_row["name"],
+            "resource_type": vm_row["type"],
+            "subscription_id": vm_row["subscriptionId"],
+            "resource_group": vm_row["resourceGroup"],
+        },
+        subscription_ids=["sub-1"],
+    )
+    assert snapshot.resources[0].cpu_percent == 33.0
+    assert snapshot.resources[0].memory_percent == 61.0
+    assert snapshot.resources[0].disk_free_percent is None
+    assert all("Could not read guest performance" in warning for warning in snapshot.warnings)
+    assert len(snapshot.warnings) == 2
 
 
 def test_snapshot_amw_lister_failure_adds_warning_but_keeps_metrics():

@@ -413,6 +413,14 @@ class ResourceHealthService:
         callers should still get full coverage by merging non-overlapping
         resources from either source.
         """
+        if (
+            (self.law_lister is None or self.guest_performance_reader_factory is None)
+            and (self.amw_lister is None or self.otel_performance_reader_factory is None)
+        ):
+            warnings.append(
+                "Guest metric workspace discovery/readers are not configured; "
+                "workspace presence and guest metric coverage are unknown."
+            )
         merged = self._classic_guest_performance(connection, warnings)
         otel = self._otel_guest_performance(connection, warnings)
         for resource_id, values in otel.items():
@@ -438,6 +446,12 @@ class ResourceHealthService:
             if str(row.get("workspaceId") or "").strip()
         }
         if not workspace_ids:
+            warnings.append(
+                "Log Analytics workspace discovery returned no usable workspace IDs "
+                f"for connection '{connection.connection_id}'. Discovery is limited "
+                "to that connection's subscription; cross-subscription telemetry "
+                "workspaces are not searched."
+            )
             return {}
         try:
             reader = self.guest_performance_reader_factory(connection)
@@ -450,12 +464,21 @@ class ResourceHealthService:
         merged: dict[str, dict[str, float]] = {}
         for workspace_id in workspace_ids:
             try:
-                merged.update(reader.query_guest_performance(workspace_id))
+                readings = reader.query_guest_performance(workspace_id)
             except (RuntimeError, ValueError):
-                # One workspace's guest counters being unreachable (e.g. no
-                # Azure Monitor Agent perf collection configured) must not
-                # block CPU/network/disk-IO metrics for the rest of scope.
+                warnings.append(
+                    "Could not read guest performance from a discovered Log Analytics "
+                    f"workspace for connection '{connection.connection_id}'; "
+                    "guest metric coverage is unknown."
+                )
                 continue
+            if not readings:
+                warnings.append(
+                    "A discovered Log Analytics workspace returned no guest performance "
+                    f"counters for connection '{connection.connection_id}' in the queried "
+                    "window; this does not establish missing collection configuration."
+                )
+            merged.update(readings)
         return merged
 
     def _otel_guest_performance(
@@ -472,6 +495,12 @@ class ResourceHealthService:
             )
             return {}
         if not amw_rows:
+            warnings.append(
+                "Azure Monitor Workspace discovery returned no usable query endpoints "
+                f"for connection '{connection.connection_id}'. Discovery is limited "
+                "to that connection's subscription; cross-subscription telemetry "
+                "workspaces are not searched."
+            )
             return {}
         try:
             reader = self.otel_performance_reader_factory(connection)
@@ -485,15 +514,28 @@ class ResourceHealthService:
         for row in amw_rows:
             endpoint = row.get("endpoint")
             if endpoint is None:
+                warnings.append(
+                    "A discovered Azure Monitor Workspace has no usable query endpoint "
+                    f"for connection '{connection.connection_id}'; guest metric "
+                    "coverage is unknown."
+                )
                 continue
             try:
-                merged.update(reader.query_guest_performance(endpoint))
+                readings = reader.query_guest_performance(endpoint)
             except (RuntimeError, ValueError):
-                # One Azure Monitor Workspace being unreachable (e.g. no
-                # OTel collector configured, or an RBAC gap) must not block
-                # CPU/network/disk-IO metrics -- or the classic guest path --
-                # for the rest of scope.
+                warnings.append(
+                    "Could not read guest performance from a discovered Azure Monitor "
+                    f"Workspace for connection '{connection.connection_id}'; "
+                    "guest metric coverage is unknown."
+                )
                 continue
+            if not readings:
+                warnings.append(
+                    "A discovered Azure Monitor Workspace returned no guest performance "
+                    f"counters for connection '{connection.connection_id}' in the queried "
+                    "window; this does not establish missing collection configuration."
+                )
+            merged.update(readings)
         return merged
 
 
