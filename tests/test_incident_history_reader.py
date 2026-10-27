@@ -521,7 +521,7 @@ def test_source_failure_does_not_fabricate_history_or_hide_other_evidence(caplog
 
     context.incident_history_read_port_provider = fail
     result = review(context)
-    assert result.status == "ok"
+    assert result.status == "partial"
     data = result.data["investigation"]
     assert data["coverage"]["health"]["error_code"] == "adapter_failed"
     assert data["coverage"]["activity_log"]["status"] == "unavailable"
