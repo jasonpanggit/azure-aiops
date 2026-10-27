@@ -298,7 +298,15 @@ function IdentityWorkspace({ scope }: { scope: ScopeSelection }) {
                 />
                 <p className="identity-table-hint" id="identity-table-hint">Scroll horizontally to review every assignment column.</p>
                 <div className="table-scroll identity-principals-table" role="region" aria-label="Observed principal assignments" aria-describedby="identity-table-hint" tabIndex={0}>
-                  <table className="operations-table">
+                  <table className="operations-table identity-principals-grid">
+                    <colgroup>
+                      <col />
+                      <col />
+                      <col />
+                      <col />
+                      <col />
+                      <col />
+                    </colgroup>
                     <thead>
                       <tr>
                         <th>Principal</th>

@@ -2240,15 +2240,6 @@ textarea:focus-visible {
   box-shadow: var(--shadow-card);
 }
 
-.identity-principals-table .operations-table {
-  min-width: 1000px;
-}
-
-.identity-principals-table th:nth-child(3),
-.identity-principals-table td:nth-child(3) {
-  min-width: 140px;
-}
-
 .identity-review-table .operations-table {
   min-width: 1180px;
 }
@@ -6053,6 +6044,17 @@ body.topology-fullscreen-open {
 .identity-workspace .operations-table {
   min-width: 900px;
 }
+
+.identity-workspace .identity-principals-grid {
+  min-width: 1600px;
+  table-layout: fixed;
+}
+
+.identity-principals-grid > colgroup > col:nth-child(2) { width: 180px; }
+.identity-principals-grid > colgroup > col:nth-child(3) { width: 240px; }
+.identity-principals-grid > colgroup > col:nth-child(4) { width: 300px; }
+.identity-principals-grid > colgroup > col:nth-child(5) { width: 240px; }
+.identity-principals-grid > colgroup > col:nth-child(6) { width: 300px; }
 
 .governance-workspace .operations-table {
   min-width: 680px;
