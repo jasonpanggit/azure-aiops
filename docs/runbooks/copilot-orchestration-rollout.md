@@ -322,6 +322,25 @@ mark the live gate passed from Terraform declarations alone.
 
 ## Order of operations (create → validate → switch → observe → promote)
 
+### Specialist catalog authentication prerequisite
+
+The generic Operations MCP catalog intentionally omits `governance_summary`,
+`identity_summary`, and `finops_summary`. The same legacy allowlist also gates
+tool execution, so adding those tools to `legacy_operations_mcp_tools` would
+expand generic caller authority, not merely improve discovery.
+
+Publishing a specialist version with an `allowed_tools` entry does not bind
+the outbound caller to that specialist. The API derives specialist identity
+from the authenticated principal's trusted grants; a request-body
+`specialist_id` does not select or authorize a specialist catalog.
+
+A catalog read using one generic operator or shared project identity cannot
+qualify specialist-only tool availability. Keep the candidate held until an
+approved authenticated specialist context can exercise its exact catalog,
+own-tool success, and foreign-tool denial. Do not impersonate that context,
+widen generic grants, or replace live results with manifest-derived catalogs
+to make parity pass. Metadata comparison alone is not runtime qualification.
+
 Each promotion is an additive revision deploy. The previous revision is retained
 so a rollback is a revision/mode switch, never a rebuild.
 
