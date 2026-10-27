@@ -432,6 +432,7 @@ so a rollback is a revision/mode switch, never a rebuild.
   python3 scripts/evaluate_agents.py \
     --api "$API_URL" \
     --resource "$AIOPS_ENTRA_API_AUDIENCE" \
+    --subscription "$AZURE_SUBSCRIPTION_ID" \
     --dataset tests/fixtures/copilot_evaluation_cases.v1.json \
     --thresholds tests/fixtures/copilot_release_thresholds.v1.json \
     --revision "$CANDIDATE_REVISION" \
