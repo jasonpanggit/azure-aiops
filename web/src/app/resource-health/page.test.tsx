@@ -236,6 +236,33 @@ describe("ResourceHealthPage inventory-first hydration", () => {
     );
   });
 
+  it("reports missing guest readings without claiming that no workspaces were discovered", async () => {
+    const resource = inventoryResource(1);
+    mocks.inventoryResources.mockResolvedValue(inventoryEnvelope([resource]));
+    mocks.resourceHealth.mockResolvedValue(healthEnvelope(resource));
+    render(<ResourceHealthPage />);
+
+    const message = await screen.findByText(/Usable VM memory % and disk free % readings were not returned/);
+    expect(message).toHaveTextContent("This does not mean no workspaces exist");
+    expect(message).toHaveTextContent("guest counters may be missing");
+    expect(message).toHaveTextContent("workspace queries may have failed");
+    expect(message).toHaveTextContent("telemetry workspace may be outside the selected subscriptions");
+    expect(message).toHaveTextContent("Container Apps use platform memory metrics");
+    expect(screen.queryByText(/neither was discovered/)).not.toBeInTheDocument();
+  });
+
+  it("does not show the guest-metrics banner when no metrics are marked unavailable", async () => {
+    const resource = inventoryResource(1);
+    const response = healthEnvelope(resource);
+    response.data.unavailable_metrics = [];
+    mocks.inventoryResources.mockResolvedValue(inventoryEnvelope([resource]));
+    mocks.resourceHealth.mockResolvedValue(response);
+    render(<ResourceHealthPage />);
+
+    await screen.findByRole("heading", { name: "CPU comparison" });
+    expect(screen.queryByText("Some metrics are unavailable")).not.toBeInTheDocument();
+  });
+
   it("distinguishes health responses from quantified CPU samples and preserves unknowns", async () => {
     const rows = [inventoryResource(1), inventoryResource(2)];
     mocks.inventoryResources.mockResolvedValue(inventoryEnvelope(rows));

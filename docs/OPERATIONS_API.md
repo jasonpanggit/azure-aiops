@@ -1105,6 +1105,20 @@ service `LookupError` is labeled `service_lookup_error`, without its exception
 text. Reasons, resource addresses and credentials are not added to public
 error details. A generic404 alone does not identify a rejection branch.
 
+## Resource Health guest metric coverage
+
+Guest memory/disk-free coverage is not workspace discovery evidence.
+`unavailable_metrics` must not be interpreted as proof that no workspace exists
+or that collection is disabled. The live Health path discovers Log Analytics
+workspaces and Azure Monitor Workspaces through ARG within each authorized
+connection's subscription, not from the Inventory snapshot; cross-subscription
+telemetry workspaces are not searched. Incomplete/failed discovery remains
+unknown. Snapshot `warnings` distinguish missing reader configuration, no usable
+workspace IDs/endpoints in the bounded discovery result, failed guest reads,
+and successful reads returning no guest counters in the queried window.
+CPU/platform readings remain usable independently; a missing guest reading
+remains null and does not establish its cause.
+
 ## Retained Resource Health observations
 
 `GET /api/v1/resource-health/resource/history?resource_id=...` reads personal

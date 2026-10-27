@@ -393,6 +393,42 @@ def test_resource_health_discovers_container_apps(
     assert "'microsoft.app/containerapps'" in captured_queries["live_compute_resources"]
 
 
+@pytest.mark.parametrize("source", ["law", "amw"])
+@pytest.mark.parametrize(
+    "status,completeness",
+    [("ok", "complete"), ("ok", "healthy-empty"), ("partial", "partial"),
+     ("unavailable", "unavailable"), ("ok", "unknown")],
+)
+def test_health_workspace_discovery_preserves_unknown_outcomes(
+    monkeypatch, tmp_path, source, status, completeness,
+):
+    home = tmp_path / "aiops-local"
+    seed_local_environment(root=home, fixture="tests/fixtures/mock_arg_responses.json")
+    monkeypatch.setenv("AIOPS_HOME", str(home))
+    monkeypatch.setenv("AIOPS_RUNTIME_MODE", "demo")
+    monkeypatch.setenv("AIOPS_API_AUTH", "token")
+    monkeypatch.setenv("AIOPS_API_TOKENS", TOKENS)
+    context = build_context()
+    captured = []
+
+    def query(_self, spec, *, subscription_ids):
+        captured.append((spec.name, subscription_ids))
+        return SimpleNamespace(rows=(), status=status, completeness=completeness)
+
+    monkeypatch.setattr(runtime_module.ConnectionScopedLiveResourceProvider, "query", query)
+    service = context.hybrid_resource_health_provider([DEFAULT_LOCAL_SUBSCRIPTION_ID])
+    connection = SimpleNamespace(subscription_id=DEFAULT_LOCAL_SUBSCRIPTION_ID)
+    lister = service.law_lister if source == "law" else service.amw_lister
+    if completeness in {"complete", "healthy-empty"}:
+        assert lister(connection) == []
+    else:
+        with pytest.raises(RuntimeError, match="workspace presence is unknown"):
+            lister(connection)
+    assert captured == [
+        (f"live_{source}_workspaces", [DEFAULT_LOCAL_SUBSCRIPTION_ID])
+    ]
+
+
 @pytest.mark.parametrize("case", ["lower", "upper", "mixed", "other", "empty"])
 def test_resource_health_connection_filter_is_case_insensitive(
     monkeypatch, tmp_path, case,

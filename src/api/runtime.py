@@ -5773,6 +5773,13 @@ def build_context() -> ApiContext:
                 ),
                 subscription_ids=[str(connection.subscription_id)],
             )
+            if observation.status != "ok" or observation.completeness not in {
+                "complete", "healthy-empty"
+            }:
+                raise RuntimeError(
+                    "Log Analytics workspace discovery was incomplete or unavailable; "
+                    "workspace presence is unknown."
+                )
             return list(observation.rows)
 
         def amw_lister(connection: Any) -> list[dict[str, Any]]:
@@ -5798,6 +5805,13 @@ def build_context() -> ApiContext:
                 ),
                 subscription_ids=[str(connection.subscription_id)],
             )
+            if observation.status != "ok" or observation.completeness not in {
+                "complete", "healthy-empty"
+            }:
+                raise RuntimeError(
+                    "Azure Monitor Workspace discovery was incomplete or unavailable; "
+                    "workspace presence is unknown."
+                )
             rows: list[dict[str, Any]] = []
             for row in observation.rows:
                 query_endpoint = str(row.get("prometheusQueryEndpoint") or "").strip()
