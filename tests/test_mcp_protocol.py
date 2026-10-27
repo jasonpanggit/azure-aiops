@@ -113,6 +113,84 @@ def test_specialist_catalogs_remain_exactly_bounded(tmp_path):
         assert specialist.azure_mcp_tools == ()
 
 
+@pytest.mark.parametrize(
+    ("specialist_id", "tool"),
+    [
+        ("finops", "finops_summary"),
+        ("governance", "governance_summary"),
+        ("identity_access", "identity_summary"),
+    ],
+)
+@pytest.mark.parametrize("caller_specialist", ["", "network"])
+def test_summary_tools_reject_generic_or_foreign_callers_before_dispatch(
+    tmp_path, monkeypatch, specialist_id, tool, caller_specialist,
+):
+    from operations import tools
+
+    dispatched = []
+    monkeypatch.setattr(tools, "call_tool", lambda *args, **kwargs: dispatched.append(args))
+    c = client(tmp_path, specialist_id=caller_specialist)
+    listed = c.post(
+        "/api/v1/mcp",
+        json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": {"specialist_id": specialist_id},
+        },
+        headers=auth(),
+    )
+    assert listed.status_code == 200
+    assert tool not in {entry["name"] for entry in listed.json()["result"]["tools"]}
+
+    response = c.post(
+        "/api/v1/mcp",
+        json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {
+                "name": tool,
+                "specialist_id": specialist_id,
+                "arguments": {},
+            },
+        },
+        headers=auth(),
+    )
+    assert response.status_code == 200
+    assert response.json()["result"]["isError"] is True
+    assert dispatched == []
+
+
+@pytest.mark.parametrize(
+    ("specialist_id", "tool"),
+    [
+        ("finops", "finops_summary"),
+        ("governance", "governance_summary"),
+        ("identity_access", "identity_summary"),
+    ],
+)
+def test_summary_tools_dispatch_only_for_trusted_specialist_grant(
+    tmp_path, monkeypatch, specialist_id, tool,
+):
+    from operations import tools
+
+    dispatched = []
+
+    def call_tool(name, arguments, **kwargs):
+        dispatched.append((name, kwargs["principal"].mcp_specialist_id()))
+        return tools.ToolResult(status="empty")
+
+    monkeypatch.setattr(tools, "call_tool", call_tool)
+    response = client(tmp_path, specialist_id=specialist_id).post(
+        "/api/v1/mcp",
+        json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": tool, "arguments": {}},
+        },
+        headers=auth(),
+    )
+    assert response.status_code == 200
+    assert response.json()["result"]["isError"] is False
+    assert dispatched == [(tool, specialist_id)]
+
+
 def test_unknown_tool_is_an_error(tmp_path):
     """An unknown tool is a genuine caller mistake and stays isError."""
     c = client(tmp_path)
