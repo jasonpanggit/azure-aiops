@@ -6,6 +6,19 @@
 # dev fabric.config.yaml, which uses a service-principal secret for
 # non-Azure-hosted local runs.
 fabric:
+  medallion_health:
+    freshness_slo:
+      tables:
+        # Daily inventory publication at 14:30 UTC, plus two hours of delay
+        # allowance: 1440 minutes * (26 / 24) = 26 hours. Scope only to
+        # declared inventory-publication products; other producers keep
+        # their existing policy. This is not consumer-readiness evidence.
+        bronze_resources:
+          cadence_minutes: 1440
+          slo_multiplier: 1.0833333333333333
+        silver_vm_inventory:
+          cadence_minutes: 1440
+          slo_multiplier: 1.0833333333333333
   semantic:
     max_results: 50
     max_traversal_nodes: 500
