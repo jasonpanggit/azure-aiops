@@ -131,6 +131,11 @@ output "fabric_ontology_name" {
   value       = var.enable_fabric ? var.fabric_ontology_name : null
 }
 
+output "ontology_evidence_api_gateway_grants" {
+  description = "Validation collector API reader grant, scoped only to this deployment subscription."
+  value       = local.ontology_evidence_gateway_grants
+}
+
 output "ontology_evidence_role_contract" {
   description = "Exact five-item contract consumed by the external OneLake ManagedIdentity Read reconciler."
   value = var.enable_fabric && var.ontology_discovery_environment == "validation" ? {

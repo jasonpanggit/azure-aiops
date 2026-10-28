@@ -18,6 +18,12 @@ variable "ontology_discovery_schedule" {
 }
 
 locals {
+  ontology_evidence_gateway_grants = var.enable_fabric && var.ontology_discovery_environment == "validation" ? {
+    (azurerm_user_assigned_identity.azure_mcp.principal_id) = [{
+      role  = "reader"
+      scope = { subscription = [var.subscription_id] }
+    }]
+  } : {}
   ontology_discovery_image = var.ontology_discovery_image_digest != "" ? "${local.registry_server}/${var.api_image_repository}@${var.ontology_discovery_image_digest}" : (var.api_image_digest != "" ? local.api_image : (var.ontology_discovery_image_tag != "" ? "${local.registry_server}/${var.api_image_repository}:${var.ontology_discovery_image_tag}" : local.api_image))
 
   ontology_publisher_image       = var.ontology_publisher_image_digest != "" ? "${local.registry_server}/${var.api_image_repository}@${var.ontology_publisher_image_digest}" : local.ontology_discovery_image

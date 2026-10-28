@@ -272,7 +272,16 @@ def test_validation_roles_run_preview_before_apply_and_remove_contract(
     invocation, monkeypatch
 ):
     args, events, _ = invocation
-    monkeypatch.setitem(OUTPUTS, "ontology_evidence_role_contract", {"targets": {}})
+    monkeypatch.setitem(
+        OUTPUTS, "ontology_evidence_role_contract", {"principal_object_id": CLIENT}
+    )
+    monkeypatch.setitem(
+        OUTPUTS,
+        "ontology_evidence_api_gateway_grants",
+        {CLIENT: [{"role": "reader", "scope": {
+            "subscription": [ENVIRONMENT["AZURE_SUBSCRIPTION_ID"]]
+        }}]},
+    )
     setup.main(args + ["--stage", "fabric"])
     role_commands = [
         cmd for cmd, _, _ in events if any("reconcile_onelake" in item for item in cmd)
@@ -282,6 +291,17 @@ def test_validation_roles_run_preview_before_apply_and_remove_contract(
     assert role_commands[1][-1] == "--apply"
     contract = Path(role_commands[0][role_commands[0].index("--contract-file") + 1])
     assert not contract.exists()
+
+
+def test_missing_collector_api_grant_blocks_before_fabric_writes(invocation, monkeypatch):
+    args, events, path = invocation
+    monkeypatch.setitem(
+        OUTPUTS, "ontology_evidence_role_contract", {"principal_object_id": CLIENT}
+    )
+    with pytest.raises(setup.SetupError, match="exactly reader"):
+        setup.main(args + ["--stage", "fabric"])
+    assert not (path / "fabric.yaml").exists()
+    assert not any("publish" in label or "reconcile" in label for _, label, _ in events)
 
 
 def test_disabled_fabric_is_skipped_without_config(invocation, monkeypatch):
