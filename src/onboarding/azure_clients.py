@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import subprocess  # nosec B404
 import time
 from collections.abc import Callable
@@ -308,7 +309,7 @@ class AzureMonitorDiagnosticSettingsClient:
 
 
 class AzureResourceGraphClient:
-    """Query Azure Resource Graph with the connection's token credential."""
+    """Query scoped ARG pages with at most three retries per page by default."""
 
     endpoint = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources"
     api_version = "2022-10-01"
@@ -321,8 +322,14 @@ class AzureResourceGraphClient:
         max_pages: int = 1000,
         timeout: int = 60,
         requester: HttpRequester | None = None,
+        max_retries: int = 3,
+        retry_sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.credential = credential
+        if max_retries < 0:
+            raise ValueError("ARG max_retries cannot be negative")
+        self.max_retries = max_retries
+        self.retry_sleep = retry_sleep
         if page_size < 1:
             raise ValueError("ARG page_size must be positive")
         if max_pages < 1:
@@ -354,20 +361,13 @@ class AzureResourceGraphClient:
             options: dict[str, Any] = {"$top": self.page_size}
             if skip_token:
                 options["$skipToken"] = skip_token
-            response = self.requester(
-                "POST",
-                self.endpoint,
-                params={"api-version": self.api_version},
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-                json={
+            response = self._post_with_retry(
+                {
                     "subscriptions": scope_ids,
                     "query": spec.query,
                     "options": options,
                 },
-                timeout=self.timeout,
+                access_token,
             )
             if response.is_error:
                 detail = response.text.strip() or f"HTTP {response.status_code}"
@@ -394,9 +394,46 @@ class AzureResourceGraphClient:
                 )
         raise RuntimeError(f"ARG query '{spec.name}' exceeded max_pages={self.max_pages}")
 
+    def _post_with_retry(self, body: dict[str, Any], access_token: str) -> httpx.Response:
+        # Transient transport failures (for example ephemeral-port exhaustion
+        # surfacing as ConnectError) and throttling are retried within a
+        # bounded budget; any other outcome is returned or raised unchanged.
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.requester(
+                    "POST",
+                    self.endpoint,
+                    params={"api-version": self.api_version},
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json=body,
+                    timeout=self.timeout,
+                )
+            except httpx.TransportError as exc:
+                if attempt >= self.max_retries:
+                    raise
+                delay = min(2.0**attempt, 30.0)
+                logger.warning(
+                    "ARG transport %s; retry %d/%d in %.1fs",
+                    type(exc).__name__, attempt + 1, self.max_retries, delay,
+                )
+                self.retry_sleep(delay)
+                continue
+            if response.status_code not in {429, 503} or attempt >= self.max_retries:
+                return response
+            delay = _retry_delay(response, attempt)
+            logger.warning(
+                "ARG HTTP %d; retry %d/%d in %.1fs",
+                response.status_code, attempt + 1, self.max_retries, delay,
+            )
+            self.retry_sleep(delay)
+        raise RuntimeError("ARG request was not attempted")
+
 
 class AzureCostManagementClient:
-    """Query Azure Cost Management actual-cost data for a subscription."""
+    """Query actual costs with five throttle retries and a 120-second delay cap."""
 
     endpoint_template = (
         "https://management.azure.com/subscriptions/{subscription_id}/providers/"
@@ -410,7 +447,7 @@ class AzureCostManagementClient:
         *,
         timeout: int = 60,
         requester: HttpRequester | None = None,
-        max_retries: int = 3,
+        max_retries: int = 5,
         retry_sleep: Callable[[float], None] = time.sleep,
         max_workers: int = 4,
     ) -> None:
@@ -565,7 +602,12 @@ class AzureCostManagementClient:
             )
             if response.status_code not in {429, 503} or attempt >= self.max_retries:
                 return response
-            self.retry_sleep(_retry_delay(response, attempt))
+            delay = _retry_delay(response, attempt)
+            logger.warning(
+                "Cost Management HTTP %d; retry %d/%d in %.1fs",
+                response.status_code, attempt + 1, self.max_retries, delay,
+            )
+            self.retry_sleep(delay)
         if response is None:
             raise RuntimeError("Cost Management request was not attempted")
         return response
@@ -859,9 +901,11 @@ def _retry_delay(response: httpx.Response, attempt: int) -> float:
         if not raw:
             continue
         try:
-            return max(float(raw), 0.0)
+            delay = float(raw)
         except ValueError:
             continue
+        if math.isfinite(delay):
+            return min(max(delay, 0.0), 120.0)
     return min(2.0**attempt, 30.0)
 
 
