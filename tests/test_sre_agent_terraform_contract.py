@@ -96,7 +96,8 @@ def test_sre_principals_receive_no_premature_gateway_grants() -> None:
     assert (
         "value = jsonencode(merge(jsondecode(var.entra_grants_json), "
         "local.foundry_mcp_gateway_grants, "
-        "local.foundry_specialist_identity_grants))"
+        "local.foundry_specialist_identity_grants, "
+        "local.ontology_evidence_gateway_grants))"
     ) in container_apps
     assert "sre_agent_api_gateway_grants" not in container_apps
     foundry = _read(REPO_ROOT / "infra" / "terraform" / "foundry.tf")

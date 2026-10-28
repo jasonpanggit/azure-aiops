@@ -701,6 +701,35 @@ migration is in
 [OneLake role migration](docs/onelake-data-access-role-migration.md).
 Fresh installs must not run those state-removal commands.
 
+Validation collectors also need an API subject grant. Terraform includes
+`ontology_evidence_gateway_grants` in `AIOPS_API_GATEWAY_GRANTS` only when
+Fabric is enabled and `ontology_discovery_environment="validation"`: the
+Azure MCP managed identity receives **reader on the deployment subscription
+only**, never operator, publisher or unscoped reader. Setup verifies the
+`ontology_evidence_api_gateway_grants` output before any Fabric-stage writes.
+Refresh outputs from the reviewed configuration before running that stage.
+
+The isolated canary workspace and Lakehouse are already declared as
+`fabric_workspace.ontology_rbac_validation[0]` and
+`fabric_lakehouse.ontology_rbac_validation[0]`. If an approved CLI repair
+created them before Terraform, import their verified IDs into the **correct
+tenant/subscription state** before planning; do not create duplicates or
+substitute the production Lakehouse:
+
+```bash
+terraform -chdir=infra/terraform import \
+  'fabric_workspace.ontology_rbac_validation[0]' "$VALIDATION_WORKSPACE_ID"
+terraform -chdir=infra/terraform import \
+  'fabric_lakehouse.ontology_rbac_validation[0]' \
+  "$VALIDATION_WORKSPACE_ID/$VALIDATION_LAKEHOUSE_ID"
+```
+
+Verify the provider's import identifiers and the reviewed variable file for
+the selected deployment before importing. Importing bindings, reconciling
+Viewer/OneLake Read, and setting API subject grants do not run publication or
+drills. A zero-traffic API candidate does not repair the active API until a
+separately governed activation; live managed-identity receipts remain required.
+
 ### Direct Lake semantic model (optional manual BI surface)
 
 Terraform can create semantic models in general, but current `main` no longer

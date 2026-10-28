@@ -156,6 +156,25 @@ def configure_fabric(
     return secret_env
 
 
+def validate_evidence_api_grants(outputs: dict, subscription_id: str) -> None:
+    """Reject missing or widened collector API grants before Fabric setup writes."""
+    contract = outputs.get("ontology_evidence_role_contract")
+    if contract is None:
+        return
+    if not isinstance(contract, dict):
+        raise SetupError("Ontology evidence role contract must be a mapping")
+    principal = identifier(contract.get("principal_object_id"), "evidence principal")
+    subscription = identifier(subscription_id, "evidence subscription")
+    expected = {
+        principal: [{"role": "reader", "scope": {"subscription": [subscription]}}]
+    }
+    if outputs.get("ontology_evidence_api_gateway_grants") != expected:
+        raise SetupError(
+            "Collector API grants must be exactly reader on the deployment subscription; "
+            "refresh Terraform outputs before Fabric setup"
+        )
+
+
 class Setup:
     """Run existing deployment tools under one isolated SPN Azure CLI context."""
 
@@ -212,6 +231,9 @@ class Setup:
                 "setup: Fabric disabled; skipping configuration and catalog publication"
             )
             return
+        validate_evidence_api_grants(
+            outputs, self.environment["AZURE_SUBSCRIPTION_ID"]
+        )
         configure_fabric(
             args.fabric_config, outputs, self.environment, args.source_data_root
         )

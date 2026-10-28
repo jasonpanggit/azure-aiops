@@ -768,6 +768,9 @@ def test_batch_uses_in_memory_bearer_token() -> None:
         )
 
     assert len(results) == 5
+    fake_client.headers.__setitem__.assert_called_once_with(
+        "x-ms-fabric-skill", "onelake-catalog-govern-cli"
+    )
     assert client_factory.call_args.kwargs["headers"] == {
         "Authorization": "Bearer in-memory-token"
     }

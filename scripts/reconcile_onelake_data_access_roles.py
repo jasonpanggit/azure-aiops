@@ -724,6 +724,7 @@ def reconcile_all_evidence_items(
         headers={"Authorization": f"Bearer {token}"},
         timeout=30.0,
     ) as client:
+        client.headers["x-ms-fabric-skill"] = "onelake-catalog-govern-cli"
         for logical_name, workspace_id, item_id in items:
             logger.info(
                 "%s: reconciling target (dry_run=%s)",
@@ -817,6 +818,7 @@ def reconcile_coordinator_source(
         headers={"Authorization": f"Bearer {token_provider()}"},
         timeout=30.0,
     ) as client:
+        client.headers["x-ms-fabric-skill"] = "onelake-catalog-govern-cli"
         viewer = reconcile_workspace_viewer(
             client=client,
             workspace_id=workspace_id,
