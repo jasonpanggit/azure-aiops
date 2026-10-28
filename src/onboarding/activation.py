@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from onboarding.ontology_metadata import generate_ontology_metadata
 from onboarding.service import SubscriptionOnboardingService
-from storage.datasets import COMBINED_ACTIVATION_QUERY_VERSION, DatasetStore
+from storage.datasets import (
+    COMBINED_ACTIVATION_QUERY_VERSION,
+    SOURCE_PROVENANCE_CONTRACT,
+    DatasetStore,
+)
 from storage.onelake_documents import OneLakeDocumentStore
 
 from .graph_normalize import ENTITY_TYPES, NormalizedGraph
@@ -498,6 +502,8 @@ def publish_combined_snapshot(
     """
     if not connection_ids:
         raise ValueError("At least one subscription connection is required")
+    if len(set(connection_ids)) != len(connection_ids):
+        raise ValueError("Duplicate subscription connections are not supported")
     entities: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in ENTITY_TYPES}
     relationships: dict[str, dict[str, Any]] = {}
     changes: dict[str, dict[str, Any]] = {}
@@ -505,6 +511,7 @@ def publish_combined_snapshot(
         name: {} for name in _EXPOSURE_PASSTHROUGH_KEYS
     }
     source_runs: list[str] = []
+    source_snapshots: list[dict[str, Any]] = []
     latest_started_at = ""
 
     for connection_id in connection_ids:
@@ -516,8 +523,30 @@ def publish_combined_snapshot(
             raise ValueError(
                 f"Connection '{connection_id}' has no successful discovery snapshot"
             )
-        manifest = _read_manifest(store, generation)
-        source_runs.append(str(manifest.get("runId") or connection_id))
+        selected_manifest = _read_manifest(store, generation)
+        source_run = selected_manifest.get("runId")
+        if not isinstance(source_run, str) or not source_run:
+            raise ValueError("Source snapshot generation identity is missing")
+        manifest, source_datasets = store.read_verified_generation(
+            Path(str(generation)).name, expected_run_id=source_run,
+        )
+        if manifest != selected_manifest:
+            raise ValueError(
+                "Source snapshot identity does not match retained generation"
+            )
+        source_runs.append(source_run)
+        source_snapshots.append(
+            {
+                "connectionId": connection_id,
+                "runId": source_run,
+                "manifestIntegrityHash": manifest["integrityHash"],
+                "startedAt": manifest.get("startedAt"),
+                "completedAt": manifest.get("completedAt"),
+                "subscriptions": manifest.get("subscriptions"),
+                "queryVersion": manifest.get("queryVersion"),
+                "representation": "normalized_snapshot",
+            }
+        )
         latest_started_at = max(latest_started_at, str(manifest.get("startedAt") or ""))
         datasets = manifest.get("datasets") or {}
         for dataset_name in datasets:
@@ -525,7 +554,7 @@ def publish_combined_snapshot(
                 entity_type = dataset_name.split("/", 1)[1]
                 if entity_type not in entities:
                     continue
-                for row in store.read_dataset(dataset_name):
+                for row in source_datasets[dataset_name]:
                     identifier = str(row.get("id") or "")
                     if identifier:
                         existing = entities[entity_type].get(identifier)
@@ -547,12 +576,12 @@ def publish_combined_snapshot(
                             )
                         entities[entity_type][identifier] = row
             elif dataset_name == "relationships/relationships":
-                for row in store.read_dataset(dataset_name):
+                for row in source_datasets[dataset_name]:
                     identifier = str(row.get("relationshipId") or "")
                     if identifier:
                         relationships[identifier] = row
             elif dataset_name == "changes/resource_changes":
-                for row in store.read_dataset(dataset_name):
+                for row in source_datasets[dataset_name]:
                     identifier = "|".join(
                         str(row.get(key) or "")
                         for key in ("id", "changeId", "timestamp", "connection_id")
@@ -560,7 +589,7 @@ def publish_combined_snapshot(
                     changes[identifier] = row
             elif dataset_name in exposure_rows:
                 key_field = _EXPOSURE_PASSTHROUGH_KEYS[dataset_name]
-                for row in store.read_dataset(dataset_name):
+                for row in source_datasets[dataset_name]:
                     identifier = "|".join(
                         (
                             str(row.get("connection_id") or connection_id),
@@ -598,6 +627,10 @@ def publish_combined_snapshot(
         ),
     )
     target_store = DatasetStore(target_root)
+    source_provenance = {
+        "contract": SOURCE_PROVENANCE_CONTRACT,
+        "sources": sorted(source_snapshots, key=lambda source: source["connectionId"]),
+    }
     current_generation = target_store.current_generation()
     if reuse_unchanged and current_generation is not None:
         current_manifest = _read_manifest(target_store, current_generation)
@@ -608,8 +641,11 @@ def publish_combined_snapshot(
             == sorted(connection_ids)
             and current_manifest.get("sourceRunIds")
             == sorted(source_runs)
+            and current_manifest.get("sourceProvenance") == source_provenance
         ):
-            return current_manifest
+            return target_store.verify_combined_activation_generation(
+                str(current_manifest["runId"])
+            )
     now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     run_id = f"activation-{uuid.uuid4()}"
     datasets = {
@@ -636,6 +672,7 @@ def publish_combined_snapshot(
             "queryVersion": COMBINED_ACTIVATION_QUERY_VERSION,
             "sourceConnectionIds": sorted(connection_ids),
             "sourceRunIds": sorted(source_runs),
+            "sourceProvenance": source_provenance,
         },
         ontology=generate_ontology_metadata(graph.entities),
         **({"assert_lock_held": assert_lock_held} if assert_lock_held is not None else {}),
