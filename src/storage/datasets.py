@@ -8,6 +8,7 @@ import sys
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -35,6 +36,7 @@ _POINTER_NAME = "current.json"
 _COMPATIBILITY_ALIAS_VERSION = "ontology-generation-alias/v1"
 _PARQUET_BATCH_SIZE = 512
 COMBINED_ACTIVATION_QUERY_VERSION = "combined-subscription-connections-v1"
+SOURCE_PROVENANCE_CONTRACT = "combined-source-provenance/v1"
 _MANIFEST_DERIVED_FIELDS = frozenset(
     {"changedDatasets", "contentHash", "datasets", "integrityHash"}
 )
@@ -447,6 +449,12 @@ class DatasetStore:
             )
         _validate_dataset_names(datasets)
         _validate_source_partitions(datasets)
+        if "sourceProvenance" in run_metadata:
+            _validate_source_provenance(
+                run_metadata,
+                _required_unique_nonempty_strings(run_metadata, "sourceConnectionIds"),
+                _required_nonempty_strings(run_metadata, "sourceRunIds"),
+            )
 
         old_hashes = self._load_hashes()
         new_hashes: dict[str, str] = dict(old_hashes)
@@ -629,11 +637,49 @@ class DatasetStore:
         Resolution is pinned to ``generations/<generation_id>`` and never
         consults the mutable current pointer.
         """
+        manifest = self.verify_generation(generation_id)
+        if manifest.get("queryVersion") != COMBINED_ACTIVATION_QUERY_VERSION:
+            raise ValueError("Dataset generation query version is invalid")
+        source_ids = _required_unique_nonempty_strings(
+            manifest, "sourceConnectionIds"
+        )
+        source_run_ids = _required_nonempty_strings(
+            manifest, "sourceRunIds"
+        )
+        if len(source_run_ids) != len(source_ids):
+            raise ValueError(
+                "Dataset generation source provenance cardinality is invalid"
+            )
+        _validate_source_provenance(manifest, source_ids, source_run_ids)
+        return manifest
+
+    def verify_generation(self, generation_id: str) -> dict[str, Any]:
+        """Verify retained snapshot bytes and metadata without changing current.
+
+        Integrity hashes detect inconsistency, not an authenticated provider
+        signature. Verification does not qualify source acquisition completeness.
+        """
+        return self.read_verified_generation(generation_id)[0]
+
+    def read_verified_generation(
+        self, generation_id: str, *, expected_run_id: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+        """Return the exact rows verified against one retained generation.
+
+        Callers consume these rows rather than resolving current again or
+        reopening artifacts after their integrity check. A selected writer-generated
+        directory may have a sanitized/suffixed name; expected_run_id then binds its
+        unchanged manifest identity without resolving a different generation.
+        """
         name = _safe_generation_id(generation_id)
         generation = self.generation_path(name)
         if generation is None:
             raise FileNotFoundError(
                 f"Requested dataset generation does not exist: {name}"
+            )
+        if not self.is_remote:
+            Path(generation).resolve(strict=True).relative_to(
+                Path(self.root).resolve(strict=True)
             )
 
         manifest = self._read_required_json_object(
@@ -642,23 +688,8 @@ class DatasetStore:
         )
         if manifest.get("status") != "completed":
             raise ValueError("Dataset generation is not completed")
-        if manifest.get("runId") != name:
+        if manifest.get("runId") != (name if expected_run_id is None else expected_run_id):
             raise ValueError("Dataset generation manifest does not match requested ID")
-
-        if manifest.get("queryVersion") != COMBINED_ACTIVATION_QUERY_VERSION:
-            raise ValueError("Dataset generation query version is invalid")
-        source_ids = _required_unique_nonempty_strings(
-            manifest,
-            "sourceConnectionIds",
-        )
-        source_run_ids = _required_unique_nonempty_strings(
-            manifest,
-            "sourceRunIds",
-        )
-        if len(source_run_ids) != len(source_ids):
-            raise ValueError(
-                "Dataset generation source provenance cardinality is invalid"
-            )
 
         declared = manifest.get("datasets")
         if not isinstance(declared, Mapping) or not declared:
@@ -668,6 +699,7 @@ class DatasetStore:
             raise ValueError("Dataset generation ontology declaration is missing")
 
         declared_hashes: dict[str, str] = {}
+        verified_rows: dict[str, list[dict[str, Any]]] = {}
         for dataset_name, details in sorted(declared.items()):
             if not isinstance(dataset_name, str) or not isinstance(details, Mapping):
                 raise TypeError("Dataset generation declaration is invalid")
@@ -704,6 +736,7 @@ class DatasetStore:
                     f"Dataset generation artifact hash mismatch: {dataset_name}"
                 )
             declared_hashes[dataset_name] = expected_hash
+            verified_rows[dataset_name] = rows
 
         expected_overall = hashlib.sha256(
             json.dumps(declared_hashes, sort_keys=True).encode()
@@ -716,7 +749,7 @@ class DatasetStore:
         )
         if _manifest_integrity_hash(manifest) != expected_integrity_hash:
             raise ValueError("Dataset generation overall integrity hash mismatch")
-        return manifest
+        return manifest, verified_rows
 
     def _read_required_text(
         self,
@@ -1172,6 +1205,16 @@ def _required_unique_nonempty_strings(
     manifest: Mapping[str, Any],
     field: str,
 ) -> list[str]:
+    values = _required_nonempty_strings(manifest, field)
+    if len(values) != len(set(values)):
+        raise ValueError(f"Dataset generation {field} contain duplicates")
+    return values
+
+
+def _required_nonempty_strings(
+    manifest: Mapping[str, Any],
+    field: str,
+) -> list[str]:
     values = manifest.get(field)
     if (
         not isinstance(values, list)
@@ -1179,8 +1222,6 @@ def _required_unique_nonempty_strings(
         or not all(isinstance(value, str) and bool(value.strip()) for value in values)
     ):
         raise TypeError(f"Dataset generation {field} are invalid")
-    if len(values) != len(set(values)):
-        raise ValueError(f"Dataset generation {field} contain duplicates")
     return values
 
 
@@ -1328,6 +1369,92 @@ def _canonical_hash(value: Any) -> str:
     for chunk in encoder.iterencode(value):
         digest.update(chunk.encode())
     return digest.hexdigest()
+
+
+def _validate_source_provenance(
+    manifest: Mapping[str, Any],
+    connection_ids: list[str],
+    run_ids: list[str],
+) -> None:
+    if "sourceProvenance" not in manifest:
+        return
+    provenance = manifest["sourceProvenance"]
+    if (
+        not isinstance(provenance, dict)
+        or set(provenance) != {"contract", "sources"}
+        or provenance["contract"] != SOURCE_PROVENANCE_CONTRACT
+    ):
+        raise ValueError("Dataset generation source provenance contract is invalid")
+    sources = provenance["sources"]
+    if not isinstance(sources, list) or len(sources) != len(connection_ids):
+        raise ValueError("Dataset generation source provenance cardinality is invalid")
+    observed_connections: list[str] = []
+    observed_runs: list[str] = []
+    for source in sources:
+        if not isinstance(source, dict) or set(source) != {
+            "connectionId",
+            "runId",
+            "manifestIntegrityHash",
+            "startedAt",
+            "completedAt",
+            "subscriptions",
+            "queryVersion",
+            "representation",
+        }:
+            raise ValueError("Dataset generation source provenance fields are invalid")
+        connection = source["connectionId"]
+        run = source["runId"]
+        if (
+            not isinstance(connection, str)
+            or not connection.strip()
+            or not isinstance(run, str)
+            or not run.strip()
+            or source["representation"] != "normalized_snapshot"
+        ):
+            raise ValueError("Dataset generation source provenance identity is invalid")
+        _required_sha256(
+            source["manifestIntegrityHash"],
+            field="Source manifest integrity hash",
+        )
+        subscriptions = source["subscriptions"]
+        if subscriptions is not None and (
+            not isinstance(subscriptions, list)
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in subscriptions
+            )
+            or len(set(subscriptions)) != len(subscriptions)
+        ):
+            raise ValueError("Source provenance subscription scope is invalid")
+        version = source["queryVersion"]
+        if version is not None and (
+            not isinstance(version, str) or not version.strip()
+        ):
+            raise ValueError("Source provenance query version is invalid")
+        timestamps = []
+        for field in ("startedAt", "completedAt"):
+            value = source[field]
+            if value is None:
+                timestamps.append(None)
+                continue
+            try:
+                stamp = datetime.fromisoformat(value)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("Source provenance timestamps are invalid") from exc
+            if stamp.tzinfo is None:
+                raise ValueError("Source provenance timestamps require timezone")
+            timestamps.append(stamp)
+        started, completed = timestamps
+        if started is not None and completed is not None and completed < started:
+            raise ValueError("Source provenance timestamp ordering is invalid")
+        observed_connections.append(connection)
+        observed_runs.append(run)
+    if (
+        sorted(observed_connections) != sorted(connection_ids)
+        or sorted(observed_runs) != sorted(run_ids)
+        or len(set(observed_connections)) != len(observed_connections)
+    ):
+        raise ValueError("Dataset generation source provenance identities mismatch")
 
 
 def _manifest_integrity_hash(manifest: Mapping[str, Any]) -> str:
