@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+from azure.core.exceptions import AzureError
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import ValidationError
@@ -942,14 +944,107 @@ def _json_file(path: str) -> Callable[[], Mapping[str, Any] | None]:
     return read
 
 
+def _read_key_vault_trust_config(
+    secret_id: str,
+    managed_identity_client_id: str,
+    client_factory: Callable[[str, str], Any] | None = None,
+) -> Mapping[str, Any]:
+    """Load a version-pinned public config secret through a user-assigned MI."""
+
+    try:
+        parsed = urlsplit(secret_id)
+        hostname = parsed.hostname or ""
+        host_parts = hostname.split(".")
+        if (
+            parsed.scheme != "https"
+            or parsed.username
+            or parsed.password
+            or parsed.port is not None
+            or parsed.query
+            or parsed.fragment
+            or len(host_parts) != 4
+            or host_parts[1:] != ["vault", "azure", "net"]
+            or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,22}[a-z0-9]", host_parts[0])
+        ):
+            raise MaintenanceConfigError("maintenance_trust_secret_id_invalid")
+        path = parsed.path.split("/")
+        if (
+            len(path) != 4
+            or path[0] != ""
+            or path[1] != "secrets"
+            or not re.fullmatch(r"[A-Za-z0-9-]{1,127}", path[2])
+            or not re.fullmatch(r"[A-Fa-f0-9]{32}", path[3])
+        ):
+            raise MaintenanceConfigError("maintenance_trust_secret_id_invalid")
+    except ValueError:
+        raise MaintenanceConfigError("maintenance_trust_secret_id_invalid") from None
+    if not managed_identity_client_id:
+        raise MaintenanceConfigError("maintenance_trust_managed_identity_missing")
+
+    credential = None
+    client = None
+    try:
+        if client_factory is None:
+            from azure.identity import ManagedIdentityCredential
+            from azure.keyvault.secrets import SecretClient
+
+            credential = ManagedIdentityCredential(client_id=managed_identity_client_id)
+            client = SecretClient(
+                vault_url=f"{parsed.scheme}://{hostname}",
+                credential=credential,
+            )
+        else:
+            client = client_factory(
+                f"{parsed.scheme}://{hostname}", managed_identity_client_id
+            )
+        try:
+            secret = client.get_secret(path[2], path[3])
+        except (AzureError, OSError, ValueError):
+            raise MaintenanceConfigError(
+                "maintenance_trust_config_secret_unavailable"
+            ) from None
+        value = getattr(secret, "value", None)
+        if not isinstance(value, str) or not value:
+            raise MaintenanceConfigError("maintenance_trust_secret_empty")
+        try:
+            config = json.loads(value)
+        except json.JSONDecodeError:
+            raise MaintenanceConfigError("maintenance_trust_config_invalid") from None
+        if not isinstance(config, Mapping):
+            raise MaintenanceConfigError("maintenance_trust_config_invalid")
+        return config
+    except MaintenanceConfigError:
+        raise
+    except (AzureError, OSError, ValueError, TypeError):
+        raise MaintenanceConfigError(
+            "maintenance_trust_config_secret_unavailable"
+        ) from None
+    finally:
+        for resource in (client, credential):
+            close = getattr(resource, "close", None)
+            if callable(close):
+                close()
+
+
 def _keys(raw: object, role_field: str = "roles") -> dict[str, TrustedKey]:
     out: dict[str, TrustedKey] = {}
     if not isinstance(raw, Mapping):
         raise MaintenanceConfigError("maintenance_trust_keys_invalid")
     for identity, item in raw.items():
-        if not isinstance(item, Mapping) or item.get("origin") in {"test", "offline"}:
+        if not isinstance(item, Mapping):
+            raise MaintenanceConfigError("maintenance_trust_keys_invalid")
+        if item.get("origin") in {"test", "offline"}:
             raise MaintenanceConfigError("maintenance_trust_origin_rejected")
+        if (
+            not {"key_id", "public_key_b64", role_field}.issubset(item)
+            or not set(item).issubset(
+                {"key_id", "public_key_b64", role_field, "origin"}
+            )
+        ):
+            raise MaintenanceConfigError("maintenance_trust_keys_invalid")
         try:
+            if not isinstance(item[role_field], list) or not item[role_field]:
+                raise ValueError
             public = base64.b64decode(str(item["public_key_b64"]), validate=True)
             Ed25519PublicKey.from_public_bytes(public)
             out[str(identity)] = TrustedKey(
@@ -966,19 +1061,53 @@ def build_production_reader(
     environ: Mapping[str, str] | None = None,
     *,
     clock: Callable[[], datetime] | None = None,
+    key_vault_secret_client_factory: Callable[[str, str], Any] | None = None,
 ) -> MaintenanceReleaseReader | None:
-    """Default-off.  Returns ``None`` unless server-owned config selects it.
+    """Build the default-off reader from a local file or pinned Key Vault secret.
 
     Production purpose is fixed to ``live-release``; offline/test trust is a
-    startup error.  No caller or model value reaches this function.
+    startup error.  No caller or model value reaches this function. Key Vault
+    access uses only the configured user-assigned managed identity.
+
+    ``key_vault_secret_client_factory`` is an injection seam for isolated tests;
+    production callers should leave it unset.
     """
 
     env = os.environ if environ is None else environ
     config_path = str(env.get("ONTOLOGY_MAINTENANCE_TRUST_CONFIG") or "").strip()
-    if not config_path:
+    secret_id = str(
+        env.get("ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID") or ""
+    ).strip()
+    if config_path and secret_id:
+        raise MaintenanceConfigError("maintenance_trust_config_source_ambiguous")
+    if not config_path and not secret_id:
         return None
     try:
-        config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+        if secret_id:
+            config = _read_key_vault_trust_config(
+                secret_id,
+                str(env.get("AZURE_CLIENT_ID") or "").strip(),
+                key_vault_secret_client_factory,
+            )
+        else:
+            config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+        if not isinstance(config, Mapping):
+            raise MaintenanceConfigError("maintenance_trust_config_invalid")
+        allowed_config_fields = {
+            "purpose",
+            "environment",
+            "implementation_digest",
+            "identity_digest",
+            "template_digest",
+            "root_capability_digest",
+            "issuers",
+            "approvers",
+            "artifact_root",
+            "release_path",
+            "control_path",
+        }
+        if not set(config).issubset(allowed_config_fields):
+            raise MaintenanceConfigError("maintenance_trust_config_invalid")
         if config.get("purpose") != PURPOSE_LIVE:
             raise MaintenanceConfigError("maintenance_purpose_not_live")
         trust = TrustContext(

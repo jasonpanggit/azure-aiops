@@ -656,6 +656,14 @@ resource "azurerm_container_app" "api" {
         value = azurerm_user_assigned_identity.apps.client_id
       }
 
+      dynamic "env" {
+        for_each = var.ontology_maintenance_trust_config_secret_id != "" ? [1] : []
+        content {
+          name  = "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID"
+          value = var.ontology_maintenance_trust_config_secret_id
+        }
+      }
+
       env {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
         value = azurerm_application_insights.main.connection_string

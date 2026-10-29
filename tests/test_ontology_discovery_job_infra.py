@@ -177,6 +177,38 @@ def test_api_container_has_no_competing_ontology_schedule() -> None:
     assert "ontology-discovery" not in container_apps
 
 
+def test_maintenance_trust_secret_wiring_is_optional_and_limited_to_readers() -> None:
+    job_terraform = JOB_TF.read_text(encoding="utf-8")
+    api_terraform = CONTAINER_APPS_TF.read_text(encoding="utf-8")
+    variables = VARIABLES_TF.read_text(encoding="utf-8")
+    variable = variables.split(
+        'variable "ontology_maintenance_trust_config_secret_id"', maxsplit=1
+    )[1].split("\n}", maxsplit=1)[0]
+    coordinator = _resource(
+        job_terraform,
+        "azurerm_container_app_job",
+        "ontology_discovery",
+    )
+    publisher = _resource(
+        job_terraform,
+        "azurerm_container_app_job",
+        "ontology_publisher",
+    )
+    validator = _resource(
+        job_terraform,
+        "azurerm_container_app_job",
+        "ontology_rbac_validation",
+    )
+    api = _resource(api_terraform, "azurerm_container_app", "api")
+
+    assert 'default     = ""' in variable
+    assert "version-pinned public-cloud Key Vault secret URI" in variable
+    for workload in (api, coordinator, publisher):
+        assert 'name  = "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID"' in workload
+        assert "var.ontology_maintenance_trust_config_secret_id" in workload
+    assert "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID" not in validator
+
+
 def test_rbac_validator_job_is_manual_only_and_selects_exactly_three_uais() -> None:
     terraform = JOB_TF.read_text(encoding="utf-8")
     job = _resource(
