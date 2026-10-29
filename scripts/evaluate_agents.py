@@ -2115,6 +2115,9 @@ _CONTROLLED_CASE_FIELDS = (
     "snapshot_schema_ok",
     "citation_reference_integrity_ok",
 )
+_CONTEXT_SNAPSHOT_PAGES = frozenset(
+    {"network", "vulnerability", "patch", "incident", "governance", "resource"}
+)
 _DETERMINISTIC_RESULT_FIELDS = {
     "scope_isolation": "scope_ok",
     "mutation_denied": "mutation_denied",
@@ -2169,6 +2172,7 @@ def _deterministic_applicable_case_ids(
             case.case_id
             for case in cases
             if case.disposition == "integrated"
+            and case.page_kind in _CONTEXT_SNAPSHOT_PAGES
         ],
         "citation_reference_integrity": [
             case.case_id
@@ -2184,7 +2188,7 @@ def result_to_release_evidence(result: Result, case: EvalCase) -> dict[str, Any]
     static_disposition = result.orchestration_runtime == "static_route_disposition"
     tool_correctness = result.tool_correctness
     snapshot_schema_ok = None
-    if not static_disposition and case.disposition == "integrated":
+    if not static_disposition and case.page_kind in _CONTEXT_SNAPSHOT_PAGES:
         snapshot_schema_ok = (
             result.snapshot_schema_ok
             if result.snapshot_schema_ok is not None
