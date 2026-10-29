@@ -92,7 +92,7 @@ resource "azurerm_container_app_environment" "main" {
     name                  = "api-d4"
     workload_profile_type = "D4"
     minimum_count         = 0
-    maximum_count         = 2
+    maximum_count         = 3
   }
 
   tags = local.tags

@@ -639,6 +639,12 @@ variable "enable_apim" {
   default     = false
 }
 
+variable "enable_foundry_mcp_gateway_grant" {
+  description = "Grant the Foundry project identity reader access to the API through the Operations MCP gateway. Requires explicit authorization."
+  type        = bool
+  default     = false
+}
+
 variable "apim_name" {
   description = "Existing or approved APIM service name. Empty derives one from the deployment name."
   type        = string
