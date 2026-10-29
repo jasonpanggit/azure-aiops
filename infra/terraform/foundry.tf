@@ -1025,24 +1025,6 @@ resource "azurerm_role_assignment" "deployer_foundry_manager" {
   }
 }
 
-# Preserve the configured Foundry role recipient while granting the Terraform
-# deployment SPN the project access required for agent version writes.
-resource "azurerm_role_assignment" "deployer_spn_foundry_manager" {
-  count = (
-    (var.enable_role_assignments || var.enable_foundry_role_assignments) &&
-    local.deployer_object_id != local.foundry_deployer_object_id
-  ) ? 1 : 0
-
-  scope                            = azurerm_cognitive_account_project.ops.id
-  role_definition_name             = "Foundry Project Manager"
-  principal_id                     = local.deployer_object_id
-  skip_service_principal_aad_check = true
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
 # ---------------------------------------------------------------------------
 # Prompt agent
 #
@@ -1193,7 +1175,6 @@ resource "terraform_data" "foundry_agent" {
     azurerm_cognitive_deployment.chat,
     azurerm_cognitive_account_project.ops,
     azurerm_role_assignment.deployer_foundry_manager,
-    azurerm_role_assignment.deployer_spn_foundry_manager,
     azapi_resource.foundry_mcp_connection,
     azapi_resource.foundry_specialist_identity_mcp_connection,
     azapi_resource.foundry_ai_search_connection,
@@ -1255,7 +1236,6 @@ resource "terraform_data" "foundry_coordinator_candidate" {
     azurerm_cognitive_deployment.chat,
     azurerm_cognitive_account_project.ops,
     azurerm_role_assignment.deployer_foundry_manager,
-    azurerm_role_assignment.deployer_spn_foundry_manager,
     azurerm_container_app.api,
   ]
 }
@@ -1303,7 +1283,6 @@ resource "terraform_data" "foundry_ontology_curator_agent" {
     azurerm_cognitive_deployment.chat,
     azurerm_cognitive_account_project.ops,
     azurerm_role_assignment.deployer_foundry_manager,
-    azurerm_role_assignment.deployer_spn_foundry_manager,
     azapi_resource.foundry_mcp_connection,
   ]
 }
