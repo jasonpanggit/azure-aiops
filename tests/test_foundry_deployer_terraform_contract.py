@@ -28,3 +28,21 @@ def test_foundry_deployment_roles_preserve_existing_recipient() -> None:
         block = block.split("\n}", 1)[0]
         assert "principal_id         = local.foundry_deployer_object_id" in block
         assert "prevent_destroy = true" in block
+
+
+def test_foundry_deployer_spn_gets_project_role_without_replacing_existing_recipient() -> None:
+    source = (ROOT / "foundry.tf").read_text(encoding="utf-8")
+    block = source.split(
+        'resource "azurerm_role_assignment" "deployer_spn_foundry_manager" {', 1
+    )[1]
+    block = block.split("\n}", 1)[0]
+
+    assert "local.deployer_object_id != local.foundry_deployer_object_id" in block
+    assert "scope                            = azurerm_cognitive_account_project.ops.id" in block
+    assert 'role_definition_name             = "Foundry Project Manager"' in block
+    assert "principal_id                     = local.deployer_object_id" in block
+    assert "skip_service_principal_aad_check = true" in block
+    assert "prevent_destroy = true" in block
+    assert (
+        source.count("azurerm_role_assignment.deployer_spn_foundry_manager,") == 3
+    )

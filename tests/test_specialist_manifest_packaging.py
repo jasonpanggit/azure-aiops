@@ -2220,6 +2220,19 @@ def test_live_parity_azure_cli_mode_does_not_require_client_secret_env(tmp_path)
     assert report["reason"] == "candidate_mapping_invalid"
 
 
+def test_live_parity_accepts_client_credentials_auth_mode(tmp_path):
+    module = _parity_module()
+    report = module.run_live(
+        env=_live_env(
+            FOUNDRY_AUTH_MODE="client_credentials",
+            FOUNDRY_CANDIDATE_MAPPING=str(tmp_path / "missing.json"),
+        )
+    )
+
+    assert report["status"] == "fail"
+    assert report["reason"] == "candidate_mapping_invalid"
+
+
 def test_live_parity_blocks_disabled_ai_search_configuration(tmp_path):
     module = _parity_module()
     report = module.run_live(
@@ -2253,9 +2266,12 @@ def test_live_parity_rejects_partial_ai_search_configuration():
     "missing_name",
     ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"],
 )
-def test_live_parity_client_secret_mode_requires_all_credentials(missing_name):
+@pytest.mark.parametrize("auth_mode", ["client_secret", "client_credentials"])
+def test_live_parity_client_auth_modes_require_all_credentials(
+    missing_name, auth_mode
+):
     module = _parity_module()
-    env = _live_env()
+    env = _live_env(FOUNDRY_AUTH_MODE=auth_mode)
     env[missing_name] = ""
 
     report = module.run_live(env=env)

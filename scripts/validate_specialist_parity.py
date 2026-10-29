@@ -1161,7 +1161,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
     env = dict(os.environ if env is None else env)
     missing = [name for name in LIVE_REQUIRED_ENV if not env.get(name, "").strip()]
     auth_mode = env.get("FOUNDRY_AUTH_MODE", "client_secret")
-    if auth_mode == "client_secret":
+    if auth_mode in {"client_secret", "client_credentials"}:
         missing.extend(
             name
             for name in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
