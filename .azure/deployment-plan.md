@@ -7468,3 +7468,175 @@ advisory/navigation requests remain disclosed; no universal UI/provider all-clea
 Final closure files/release390/closure.json SHA256
 cc99892b7bd14661988327f39a35baeb21318e0052ef5d32478ad5d701a71661.
 Bounded release and independent acceptance complete; no patch execution occurred.
+
+## Publication authority permission commissioning - 2026-10-30
+
+Status: Deployed - permission commissioning verified only.
+This is separate from the completed application release; authority runtime
+and publication trust activation remain disabled.
+
+Authorization: the user directed unblocking and granting the necessary MI
+permissions. The plan was presented through ask_user; it returned that the user
+was unavailable and to work autonomously. The bounded separate-identity option
+was selected under that existing direction, not as a fabricated explicit vote.
+
+Purpose: satisfy the user's request to give the MI the necessary publication
+authority permissions without substituting a publisher, coordinator, or broker
+identity, generating signatures, or enabling publication.
+
+Verified target:
+- Subscription: `890c9bfc-d09c-4143-9ce5-465e75e3eecc`; Australia East.
+- Identity resource group: `aiops-pub-dev-rg`.
+- Manual proof-job resource group: `aiops-pub-dev-service-rg`.
+- Fabric workspace: `4938f885-3e79-41b1-810a-80b55c01dbb7`.
+- SQLDatabase: `b003a6fb-eb2a-4226-b079-6033be2ff354`, live type SQLDatabase.
+- SQL database: `aiops_publication_control_dev-b003a6fb-eb2a-4226-b079-6033be2ff354`.
+- SQL server: `o45cujtupwcencjxrf6zruvbpi-qx4dqslzh2yudaikqc2vyao3w4.database.fabric.microsoft.com,1433`.
+- Capacity is Active. CLI-authenticated encrypted SQL catalog reads succeed;
+  the current caller can manage users and roles.
+- Live RecordGrant, Revoke, ReadControl, and ReadAttempt procedures exist.
+  The authority and reader roles do not yet exist. Existing broker and verifier
+  roles/memberships must remain untouched.
+
+Proposed bounded changes:
+1. Create dedicated UAIs `aiops-pub-dev-authority-id` and
+   `aiops-pub-dev-reader-id`. Record each principalId, clientId, and ARM ID.
+2. Grant each identity exactly Read on this SQLDatabase through its item-sharing
+   UI, with all additional data/analytics/OneLake permissions unchecked.
+   Do not grant workspace access.
+3. Add only the missing `publication_authority` and `publication_reader` SQL
+   roles. Grant authority EXECUTE on RecordGrant/Revoke only, reader EXECUTE
+   on ReadControl/ReadAttempt only, and deny SELECT/INSERT/UPDATE/DELETE on
+   SCHEMA::publication for both. Create contained users using each UAI client
+   ID as binary16 SID and add exactly the corresponding single role membership.
+   Do not run packaged bootstrap scripts or modify existing procedures/tables.
+4. Create a manual-only `aiops-pub-dev-authority-check` job in the existing
+   isolated publication environment. Bind the two new UAIs plus the existing
+   registry-pull identity; do not attach authority to an existing worker/broker.
+   Reuse immutable broker image
+   `sha256:6d9478ab8877efb97c92e7c39d40dce92e589f61416a91b7a9b4aa61795195bd`
+   for a finite Python ODBC18/TLS permission/read probe, not the broker server.
+   Limit to one replica, 0.5 CPU/1 GiB, 180 seconds, zero retries, no schedule.
+5. Verify item Read-only grants, exact SID/client bindings, memberships,
+   effective object EXECUTE rights, direct-data denials, job identity binding,
+   and separate MI read calls. Never invoke RecordGrant or Revoke as a test.
+   Preserve and compare publication table counts before/after.
+
+Excluded: app rebuild/deployment; source handoff integration; issuer/approver
+key creation or enrollment; trust activation; Key Vault changes; retention or
+Blob changes; AuthorityGrant/Attempt/session mutations; schema bootstrap;
+broker/session/admin/DDL permissions for either new identity.
+
+Corrected preflight finding: publisher principal
+`b0f361ce-de36-417a-a2e9-5488743ee847` already has Key Vault Secrets User.
+That assignment is not changed. Its principalName is its client ID, not its
+principal/object ID. This does not populate missing trust configuration.
+
+- [x] Verify exact live item, connection properties, capacity, and SQL contracts.
+- [x] Present the bounded plan and record the autonomous continuation decision.
+- [x] Validate the bounded plan and selected immutable proof image.
+- [x] Provision separate identities and least-privilege item/SQL access.
+- [x] Run identity-bound read-only verification and preserve receipts.
+
+Permission-commissioning validation steps (AZCLI, no template deployment):
+- [x] All validation checks pass:
+  - [x] Core CLI authentication, exact target, management permissions, and
+    object-scoped SQL contract checks.
+  - [x] Build verification: reuse the existing verified immutable broker image;
+    no application changes, container build, or Bicep/template deployment applies.
+  - [x] Azure Policy validation for both isolated resource groups.
+  - [x] Static role review: two exact object grants per identity, direct-DML
+    DENYs, no workspace/admin/broker membership, unchanged registry-pull role.
+
+### Permission commissioning validation proof
+
+Live Fabric REST returned the exact workspace and SQLDatabase type/server/name.
+The capacity is Active F8. After one transient database-unavailable response,
+Go sqlcmd with ActiveDirectoryAzCli and encryption successfully read the
+commissioned database and confirmed ALTER ANY USER / ALTER ANY ROLE for the
+current operator. No operator elevation was performed. Live procedure bodies
+match the intended authority/read boundaries. Existing broker/verifier grants
+and memberships were read and will remain unchanged.
+
+The immutable image digest exists in ACR and is already configured on the
+isolated broker and manual worker-probe job. No image build or application
+deployment is part of this permission operation. No Bicep/ARM template is
+submitted, so template build/validate/what-if are not applicable. The existing
+hosting environment and registry-pull identity are reused without role changes.
+Inherited Azure Policy assignments for `aiops-pub-dev-rg` are empty.
+Inherited assignments for `aiops-pub-dev-service-rg` are also empty. The
+operator's existing effective management actions cover both scopes, with no
+notActions; no operator role change is required.
+
+Static role verification: the proposed authority and reader have separate
+SQL users, exactly two corresponding procedure grants each, four explicit
+schema-level direct-data DENYs each, and item Read only. No Azure resource
+roles are created for these identities. The job reuses the already assigned
+registry-pull identity solely for the existing immutable image. There are no
+new Bicep/Terraform role-assignment resources to review. No validation errors
+remain; the initial SQL availability response cleared without a capacity or
+database mutation. Local ODBC library loading failed, so the authenticated
+catalog inspection used the supported Go sqlcmd alternative.
+
+Commissioned identity/access readback:
+- Authority UAI `aiops-pub-dev-authority-id`, principal
+  `20c5be48-acf4-45e3-937e-f0d25791fb1a`, client
+  `dafc75c0-45b5-4b6a-b761-da231fb6239d`.
+- Separate reader UAI `aiops-pub-dev-reader-id`, principal
+  `484638f7-e024-4dd3-9ca7-9ca43ec5c87d`, client
+  `ad01e219-c3f5-40c7-85c3-7060a86a5bd7`.
+- Both ARM IDs are under the specified subscription and
+  `resourceGroups/aiops-pub-dev-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/`
+  with their corresponding identity names.
+- Entra readback confirms both are ManagedIdentity service principals with
+  those exact client/object mappings.
+- Fabric Manage permissions shows exactly Read and no workspace role for
+  each identity. All three additional-data permission checkboxes were
+  unchecked. REST workspace role readback and Azure role-assignment readback
+  for both new principals are empty.
+- Targeted transaction created only the two missing roles, two client-SID
+  users, exact procedure grants, direct-DML DENYs, and one corresponding role
+  membership per identity. No packaged bootstrap was executed.
+- Publication counts remain Target1; AuthorityGrant/Attempt/Revocation/
+  Operation/Audit/Receipt0. The proof job is manual-only and provisioned
+  successfully with the authority, reader, and existing registry-pull UAIs.
+- Initial permission probe reached the intended direct-SELECT denial after
+  all authority effective-permission checks passed. Fabric uses native error
+  373 for that denial; the measurement initially expected only SQL Server
+  229. Only the probe assertion was corrected, with exact SQLSTATE/message
+  checks; the first failed measurement remains retained.
+
+Final proof: execution `aiops-pub-dev-authority-check-445tpwe` Succeeded,
+2026-10-30T09:14:02Z through 09:14:44Z. Both distinct real MI tokens mapped
+to the correct contained SQL users/client SIDs. Authority can execute only
+RecordGrant/Revoke; reader can execute only ReadControl/ReadAttempt. Direct
+SELECT was denied with Fabric native373 for both; schema-wide EXECUTE,
+direct DML, DDL, broker/verifier/admin rights were absent. Normal contained
+user CONNECT grants were read back, with no other direct user grants.
+Reader ReadControl returned the actual target at epoch0/revision0 with no
+active attempt. ReadAttempt was authorized but correctly rejected a
+nonexistent retained attempt with51012; this is not retained-data success.
+No RecordGrant/Revoke procedure was invoked. All seven publication table
+counts match the baseline exactly, and no proof execution remains Running.
+
+The proof exposed token-based ODBC pooling reusing the authority session
+for the separate reader. Pooling was disabled before either proof connection;
+the subsequent live identity/SID checks succeeded independently. The final
+probe also drains TDS result sets to observe ReadAttempt's deferred error.
+Three failed measurement attempts and their exact source/config remain
+retained, not represented as permission successes.
+
+Final probe SHA256:
+`a72f95ff8202e675be44da5e0d53d3b02fb6cb16ecdcd8e5c5b6518696645082`.
+Evidence root:
+`/Users/jasonmba/.copilot/session-state/f13dff91-b486-4191-a5ce-95039edefbf5/files/publication-authority-permissions/`.
+The receipt verifier checks exact item/SQL grants, principal bindings,
+unchanged broker/verifier memberships, job source/image/resources, actual
+ODBC results, and before/after counts.
+
+Remaining gates: actual issuer/three-approver public trust pins/config source
+were not supplied or configured by this operation. The unapplied v3 SQL
+adapter must isolate credential identities in its ODBC pool before authority
+runtime activation; its same-DSN token connections lack that protection.
+That source finding was sent to Fabric. No authority runtime, signatures,
+retention, or publication execution has been enabled or claimed complete.
