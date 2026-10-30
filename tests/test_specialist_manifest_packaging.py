@@ -425,6 +425,48 @@ def test_live_catalog_comparison_rejects_extra_missing_and_mutation_grants():
     )
 
 
+def test_live_catalog_comparison_allows_manifest_tools_hidden_from_generic_catalog():
+    module = _parity_module()
+    manifest = load_specialist_manifest()
+    specialist_tools = {
+        tool
+        for specialist in manifest.specialists
+        for tool in specialist.operations_mcp_tools
+    }
+    catalog_exemptions = specialist_tools - set(
+        manifest.legacy_operations_mcp_tools
+    )
+
+    assert catalog_exemptions == {
+        "governance_summary",
+        "identity_summary",
+        "finops_summary",
+    }
+    assert (
+        module.compare_grants(
+            specialist_id="governance",
+            server="operations-mcp",
+            expected=("governance_summary",),
+            granted=("governance_summary",),
+            live_catalog=tuple(manifest.legacy_operations_mcp_tools),
+            catalog_exemptions=tuple(catalog_exemptions),
+        )
+        == []
+    )
+
+    missing_generic = module.compare_grants(
+        specialist_id="network",
+        server="operations-mcp",
+        expected=("network_topology",),
+        granted=("network_topology",),
+        live_catalog=(),
+        catalog_exemptions=tuple(catalog_exemptions),
+    )
+    assert [failure["kind"] for failure in missing_generic] == [
+        "nonexistent_live_tool"
+    ]
+
+
 def test_parity_cli_offline_exits_zero_and_live_unconfigured_exits_blocked():
     offline = subprocess.run(
         [sys.executable, "scripts/validate_specialist_parity.py", "--offline"],

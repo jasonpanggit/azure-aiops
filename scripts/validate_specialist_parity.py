@@ -177,18 +177,21 @@ def compare_grants(
     expected: tuple[str, ...] | list[str],
     granted: tuple[str, ...] | list[str],
     live_catalog: tuple[str, ...] | list[str],
+    catalog_exemptions: tuple[str, ...] | list[str] = (),
 ) -> list[dict[str, Any]]:
     """Compare one specialist's effective grants against the reviewed set.
 
     Fails on a grant the manifest does not authorize, a manifest grant that is
     absent from the deployment, a grant naming a tool the live server does not
-    publish, and any mutation-capable tool in either set. A mismatch never
-    widens to the broader set -- it is reported and the promotion is held.
+    publish (unless the tool is intentionally absent from the generic catalog),
+    and any mutation-capable tool in either set. A mismatch never widens to the
+    broader set -- it is reported and the promotion is held.
     """
 
     expected_set = set(expected)
     granted_set = set(granted)
     live_set = set(live_catalog)
+    exempt_set = set(catalog_exemptions)
     failures: list[dict[str, Any]] = []
 
     extra = sorted(granted_set - expected_set)
@@ -205,7 +208,7 @@ def compare_grants(
             )
         )
 
-    nonexistent = sorted((expected_set | granted_set) - live_set)
+    nonexistent = sorted((expected_set | granted_set) - live_set - exempt_set)
     if nonexistent:
         failures.append(
             _failure(
@@ -1305,6 +1308,17 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
                 "failures": [failure],
             }
 
+    operations_catalog_exemptions = tuple(
+        sorted(
+            {
+                tool
+                for specialist in manifest.specialists
+                for tool in specialist.operations_mcp_tools
+            }
+            - set(manifest.legacy_operations_mcp_tools)
+        )
+    )
+
     try:
         connection_payload = _get_json(
             f"{endpoint}/connections?api-version={api_version}",
@@ -1623,6 +1637,7 @@ def run_live(env: dict[str, str] | None = None) -> dict[str, Any]:
                 expected=specialist.operations_mcp_tools,
                 granted=granted[OPERATIONS_SERVER_LABEL],
                 live_catalog=catalogs[OPERATIONS_SERVER_LABEL],
+                catalog_exemptions=operations_catalog_exemptions,
             )
         )
         observed.append(

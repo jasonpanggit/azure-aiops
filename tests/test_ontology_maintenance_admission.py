@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from azure.core.exceptions import HttpResponseError
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -889,6 +890,185 @@ def test_runtime_reader_is_read_only_and_production_refuses_test_trust(tmp_path,
         control_source=lambda: authority.control, clock=lambda: NOW,
     )
     assert live_reader.check() == "purpose_mismatch"
+
+
+def test_production_reader_loads_versioned_key_vault_config_with_user_assigned_identity(
+    authority,
+):
+    secret_id = (
+        "https://example-vault.vault.azure.net/secrets/"
+        "ontology-maintenance-trust/0123456789abcdef0123456789abcdef"
+    )
+    config = {
+        "purpose": "live-release",
+        "environment": ENVIRONMENT,
+        "implementation_digest": IMPL,
+        "identity_digest": "identity-digest",
+        "template_digest": "template-digest",
+        "root_capability_digest": "root-capability-digest",
+        "issuers": {},
+        "approvers": {},
+        "artifact_root": str(authority.root),
+        "release_path": "release.json",
+        "control_path": "control.json",
+    }
+    calls = []
+
+    class SecretClient:
+        def get_secret(self, name, version):
+            calls.append(("get_secret", name, version))
+            return SimpleNamespace(value=json.dumps(config))
+
+        def close(self):
+            calls.append(("close",))
+
+    client = SecretClient()
+
+    def factory(vault_url, managed_identity_client_id):
+        calls.append(("factory", vault_url, managed_identity_client_id))
+        return client
+
+    reader = build_production_reader(
+        {
+            "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID": secret_id,
+            "AZURE_CLIENT_ID": "11111111-2222-3333-4444-555555555555",
+        },
+        key_vault_secret_client_factory=factory,
+    )
+
+    assert reader is not None
+    assert reader.purpose == "live-release"
+    assert calls == [
+        ("factory", "https://example-vault.vault.azure.net",
+         "11111111-2222-3333-4444-555555555555"),
+        ("get_secret", "ontology-maintenance-trust", "0123456789abcdef0123456789abcdef"),
+        ("close",),
+    ]
+
+
+def test_production_reader_rejects_private_key_fields_in_key_vault_config():
+    config = {
+        "purpose": "live-release",
+        "environment": ENVIRONMENT,
+        "implementation_digest": IMPL,
+        "identity_digest": "identity-digest",
+        "template_digest": "template-digest",
+        "root_capability_digest": "root-capability-digest",
+        "issuers": {
+            "issuer": {
+                "key_id": "release-key",
+                "public_key_b64": "cHVibGlj",
+                "roles": ["release_attestor"],
+                "origin": "operator-managed",
+                "private_key_b64": "not-a-real-private-key",
+            }
+        },
+        "approvers": {},
+        "artifact_root": "/unused",
+        "release_path": "release.json",
+        "control_path": "control.json",
+    }
+
+    class SecretClient:
+        def get_secret(self, *_):
+            return SimpleNamespace(value=json.dumps(config))
+
+        def close(self):
+            pass
+
+    with pytest.raises(MaintenanceConfigError, match="maintenance_trust_keys_invalid"):
+        build_production_reader(
+            {
+                "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID": (
+                    "https://example-vault.vault.azure.net/secrets/"
+                    "trust/0123456789abcdef0123456789abcdef"
+                ),
+                "AZURE_CLIENT_ID": "11111111-2222-3333-4444-555555555555",
+            },
+            key_vault_secret_client_factory=lambda *_: SecretClient(),
+        )
+
+
+@pytest.mark.parametrize(
+    "secret_id",
+    [
+        "https://example-vault.vault.azure.net/secrets/trust",
+        "https://example.com/secrets/trust/0123456789abcdef0123456789abcdef",
+        "http://example-vault.vault.azure.net/secrets/trust/0123456789abcdef0123456789abcdef",
+        "https://example-vault.vault.azure.net/secrets/trust/0123456789abcdef0123456789abcdef?version=latest",
+    ],
+)
+def test_production_reader_rejects_unpinned_or_untrusted_secret_id(secret_id):
+    with pytest.raises(MaintenanceConfigError, match="maintenance_trust_secret_id_invalid"):
+        build_production_reader(
+            {
+                "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID": secret_id,
+                "AZURE_CLIENT_ID": "11111111-2222-3333-4444-555555555555",
+            },
+            key_vault_secret_client_factory=lambda *_: pytest.fail(
+                "invalid secret IDs must not trigger Key Vault access"
+            ),
+        )
+
+
+def test_production_reader_secret_config_requires_explicit_managed_identity():
+    with pytest.raises(
+        MaintenanceConfigError, match="maintenance_trust_managed_identity_missing"
+    ):
+        build_production_reader(
+            {
+                "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID": (
+                    "https://example-vault.vault.azure.net/secrets/"
+                    "trust/0123456789abcdef0123456789abcdef"
+                )
+            }
+        )
+
+
+def test_production_reader_rejects_ambiguous_file_and_key_vault_sources(tmp_path):
+    path = tmp_path / "trust.json"
+    path.write_text("{}")
+    with pytest.raises(
+        MaintenanceConfigError, match="maintenance_trust_config_source_ambiguous"
+    ):
+        build_production_reader(
+            {
+                "ONTOLOGY_MAINTENANCE_TRUST_CONFIG": str(path),
+                "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID": (
+                    "https://example-vault.vault.azure.net/secrets/"
+                    "trust/0123456789abcdef0123456789abcdef"
+                ),
+                "AZURE_CLIENT_ID": "11111111-2222-3333-4444-555555555555",
+            }
+        )
+
+
+def test_production_reader_sanitizes_key_vault_failures():
+    secret_id = (
+        "https://example-vault.vault.azure.net/secrets/"
+        "private-name/0123456789abcdef0123456789abcdef"
+    )
+
+    class FailingSecretClient:
+        def get_secret(self, *_):
+            raise HttpResponseError(
+                message=f"untrusted provider response for {secret_id}"
+            )
+
+        def close(self):
+            pass
+
+    with pytest.raises(
+        MaintenanceConfigError, match="maintenance_trust_config_secret_unavailable"
+    ) as exc_info:
+        build_production_reader(
+            {
+                "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID": secret_id,
+                "AZURE_CLIENT_ID": "11111111-2222-3333-4444-555555555555",
+            },
+            key_vault_secret_client_factory=lambda *_: FailingSecretClient(),
+        )
+    assert secret_id not in str(exc_info.value)
 
 
 @pytest.mark.parametrize("field", ["prompt_hash", "schema_hash", "agent_version", "provider"])

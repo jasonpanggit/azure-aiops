@@ -308,15 +308,49 @@ requires the whole saved envelope, including signatures, to equal the freshly
 read server-pinned envelope. Each invocation reloads release/control and time.
 There is no cached CLI authorization and no CLI-specific prerequisite parser.
 
-The CLI accepts no trust, key, control, clock or artifact-root arguments. Only
-the existing operator/server-owned `ONTOLOGY_MAINTENANCE_TRUST_CONFIG` public
-configuration is used by `build_production_reader`. It pins purpose=live-release,
+The CLI accepts no trust, key, control, clock or artifact-root arguments. The
+operator/server-owned configuration is loaded by `build_production_reader` from
+exactly one source: the existing local-file
+`ONTOLOGY_MAINTENANCE_TRUST_CONFIG`, or the optional version-pinned
+`ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID` Key Vault secret URI. The latter
+requires `AZURE_CLIENT_ID` for a user-assigned managed identity and access to
+that vault's private endpoint. Its versioned URI has the form
+`https://<vault>.vault.azure.net/secrets/<name>/<32-hex-version>`. No grant or
+secret is created by this code path. The JSON pins purpose=live-release,
 environment, immutable implementation, identity/template/root capabilities,
 issuer/approver public keys, artifact root, release path and control path.
 Offline/test purpose or key origins are rejected by production composition.
 Do not supply private keys, browser tokens, passwords or credentials in this
-configuration, request or output. Access to the server configuration remains
-an operator security boundary, not a client-supplied authorization mechanism.
+configuration, request or output. Key Vault reads use only the configured
+managed identity and fail closed on missing access or malformed configuration.
+Access to the server configuration remains an operator security boundary, not
+a client-supplied authorization mechanism.
+
+Terraform exposes this as the optional
+`ontology_maintenance_trust_config_secret_id` input. When non-empty, the exact
+versioned URI is passed to the API app, ontology coordinator Job, and ontology
+publisher Job; the default is empty, so the feature remains off. Terraform
+does not create the trust secret or add Key Vault grants through this input.
+Each workload's existing managed identity must already have secret-read
+permission and private-endpoint reachability. Supplying the URI only transports
+the public config; it does not select or authorize the issuer, approvers,
+release/control records, or artifact sources.
+
+This URI alone does not activate maintenance. The coordinator additionally
+requires an approved first-admission ledger and explicit budget ledger, pricing,
+cost, duration, and token-overhead bindings. The publisher CLI currently rejects
+configured production trust until its independent observer bindings are approved;
+its production maintenance composition is deliberately fail-closed. Do not set
+the Terraform input until those runtime gates have an approved implementation
+and the operator-owned public trust binding is available.
+
+The verifier consumes Ed25519 public keys. Azure Key Vault managed key types
+are RSA and EC (P-256, P-384, P-521, and P-256K); Key Vault cannot directly
+provide an Ed25519 signing key for this verifier. Its Secrets service could
+store the public configuration, but that does not supply or validate the
+operator's signer and approver choices. Any signing provider must independently
+support Ed25519 and be selected by the operator. See Microsoft's
+[Key Vault key types](https://learn.microsoft.com/en-us/azure/key-vault/keys/about-keys).
 
 Attestations use Ed25519, a pinned release-attestor identity, separate role keys
 for `ontology_steward`, `security_owner`, `fabric_governance_steward`, exact

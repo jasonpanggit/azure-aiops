@@ -3831,14 +3831,25 @@ def test_full_canonical_corpus_real_planner_can_promote(monkeypatch):
     )
 
 
-def test_every_integrated_fixture_is_snapshot_schema_gated():
+def test_snapshot_schema_gate_only_applies_to_context_snapshot_pages():
     evaluate_agents = _load_evaluate_agents()
+    context_snapshot_pages = {
+        "network",
+        "vulnerability",
+        "patch",
+        "incident",
+        "governance",
+        "resource",
+    }
     cases = [
         case
         for case in evaluate_agents.load_cases(_CASES_PATH)
         if case.disposition == "integrated"
     ]
 
+    applicable_case_ids = evaluate_agents._deterministic_applicable_case_ids(cases)[
+        "snapshot_schema"
+    ]
     for case in cases:
         evidence = evaluate_agents.result_to_release_evidence(
             evaluate_agents.Result(
@@ -3849,7 +3860,12 @@ def test_every_integrated_fixture_is_snapshot_schema_gated():
             ),
             case,
         )
-        assert evidence["snapshot_schema_ok"] is True, case.case_id
+        if case.page_kind in context_snapshot_pages:
+            assert case.case_id in applicable_case_ids
+            assert evidence["snapshot_schema_ok"] is True, case.case_id
+        else:
+            assert case.case_id not in applicable_case_ids
+            assert evidence["snapshot_schema_ok"] is None, case.case_id
 
 
 def test_main_release_run_executes_cases_from_the_external_corpus(

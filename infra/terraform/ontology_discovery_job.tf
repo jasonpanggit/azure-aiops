@@ -193,6 +193,13 @@ resource "azurerm_container_app_job" "ontology_discovery" {
         name  = "AZURE_CLIENT_ID"
         value = azurerm_user_assigned_identity.ontology_coordinator.client_id
       }
+      dynamic "env" {
+        for_each = var.ontology_maintenance_trust_config_secret_id != "" ? [1] : []
+        content {
+          name  = "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID"
+          value = var.ontology_maintenance_trust_config_secret_id
+        }
+      }
       env {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
         value = azurerm_application_insights.main.connection_string
@@ -338,6 +345,13 @@ resource "azurerm_container_app_job" "ontology_publisher" {
       env {
         name  = "AZURE_CLIENT_ID"
         value = azurerm_user_assigned_identity.ontology_publisher.client_id
+      }
+      dynamic "env" {
+        for_each = var.ontology_maintenance_trust_config_secret_id != "" ? [1] : []
+        content {
+          name  = "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID"
+          value = var.ontology_maintenance_trust_config_secret_id
+        }
       }
       env {
         name  = "AIOPS_ONTOLOGY_PUBLISHER_CLIENT_ID"

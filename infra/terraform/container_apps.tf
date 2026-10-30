@@ -92,7 +92,7 @@ resource "azurerm_container_app_environment" "main" {
     name                  = "api-d4"
     workload_profile_type = "D4"
     minimum_count         = 0
-    maximum_count         = 2
+    maximum_count         = 3
   }
 
   tags = local.tags
@@ -654,6 +654,14 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "AZURE_CLIENT_ID"
         value = azurerm_user_assigned_identity.apps.client_id
+      }
+
+      dynamic "env" {
+        for_each = var.ontology_maintenance_trust_config_secret_id != "" ? [1] : []
+        content {
+          name  = "ONTOLOGY_MAINTENANCE_TRUST_CONFIG_SECRET_ID"
+          value = var.ontology_maintenance_trust_config_secret_id
+        }
       }
 
       env {

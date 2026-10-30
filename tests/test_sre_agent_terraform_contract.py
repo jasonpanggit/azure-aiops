@@ -90,9 +90,14 @@ def test_sre_agent_keeps_mcp_urls_in_a_blocked_connector_contract() -> None:
 def test_sre_principals_receive_no_premature_gateway_grants() -> None:
     sre_terraform = _read(SRE_TERRAFORM)
     container_apps = _read(CONTAINER_APPS_TERRAFORM)
+    variables = _read(REPO_ROOT / "infra" / "terraform" / "variables.tf")
 
     assert "effective_api_gateway_grants_json" not in sre_terraform
     assert "sre_agent_api_gateway_grants" not in sre_terraform
+    gateway_grant_toggle = variables.split(
+        'variable "enable_foundry_mcp_gateway_grant"', 1
+    )[1].split("\n}", 1)[0]
+    assert "default     = false" in gateway_grant_toggle
     assert (
         "value = jsonencode(merge(jsondecode(var.entra_grants_json), "
         "local.foundry_mcp_gateway_grants, "
@@ -104,6 +109,7 @@ def test_sre_principals_receive_no_premature_gateway_grants() -> None:
     gateway_grants = foundry.split("foundry_mcp_gateway_grants =", 1)[1].split(
         "foundry_azure_mcp_connection_name", 1
     )[0]
+    assert "var.enable_apim && var.enable_foundry_mcp_gateway_grant" in gateway_grants
     assert "azurerm_cognitive_account_project.ops.identity[0].principal_id" in gateway_grants
     assert 'role  = "reader"' in gateway_grants
     assert "sre_agent" not in gateway_grants

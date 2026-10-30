@@ -287,6 +287,23 @@ variable "ontology_publisher_schedule_enabled" {
   default     = true
 }
 
+variable "ontology_maintenance_trust_config_secret_id" {
+  description = "Optional version-pinned Key Vault secret URI for the public ontology maintenance trust config. Empty keeps live maintenance trust disabled; grants are managed separately."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.ontology_maintenance_trust_config_secret_id == "" ||
+      can(regex(
+        "^https://[a-z0-9][a-z0-9-]{1,22}[a-z0-9]\\.vault\\.azure\\.net/secrets/[A-Za-z0-9-]{1,127}/[A-Fa-f0-9]{32}$",
+        var.ontology_maintenance_trust_config_secret_id
+      ))
+    )
+    error_message = "ontology_maintenance_trust_config_secret_id must be empty or a version-pinned public-cloud Key Vault secret URI."
+  }
+}
+
 variable "api_image_repository" {
   description = "Repository name for the Operations API image."
   type        = string
@@ -618,6 +635,12 @@ variable "api_external_ingress" {
 
 variable "enable_apim" {
   description = "Whether to provision the approved Operations MCP APIM facade."
+  type        = bool
+  default     = false
+}
+
+variable "enable_foundry_mcp_gateway_grant" {
+  description = "Grant the Foundry project identity reader access to the API through the Operations MCP gateway. Requires explicit authorization."
   type        = bool
   default     = false
 }
