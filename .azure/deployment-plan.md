@@ -115,21 +115,29 @@ deployment-specific checks are still required before validation can complete.
       assignment, Fabric Data Agent/workspace, APIM, or Job change is included
       in the narrowed app-only rollout.
 
-### Static role assignment verification — four-app scope
+### Role assignment verification — four-app scope
 
-- Status: Verified by static Terraform review; the targeted plan has no role
-  assignment changes.
-- API/web use the existing shared app identity. Its ACR pull is scoped to the
-  registry; Key Vault Secrets Officer is vault-scoped for the onboarding
-  secret-write path; Virtual Machine Contributor remains at the application
-  resource-group scope for the existing VM `installPatches` path.
-- The MCP identity retains its existing read-only Reader access to configured
-  onboarded subscriptions and vault-scoped Key Vault Secrets User. Azure MCP
-  retains its configured Reader and Monitoring Reader access. Their ACR pull
-  roles are not assigned while `enable_role_assignments=false`.
-- These grants are existing baseline permissions and are not changed by this
-  rollout. No deployer-SPN gateway grant or new role assignment is included.
-  Live role state remains a post-deployment check.
+- The targeted Terraform plan contains no role-assignment resources or changes.
+  No role assignment was mutated by this rollout.
+- The API/web shared identity's seven live assignment triples exactly match
+  the preserved pre-deployment snapshot: registry-scoped `AcrPull`, project-
+  scoped Foundry Agent Consumer / Foundry Project Runtime User / custom prompt
+  runtime roles, account-scoped custom response runtime, vault-scoped Key Vault
+  Secrets Officer, and Fabric-capacity Reader. The snapshot does not contain a
+  Virtual Machine Contributor assignment; the earlier static expectation for
+  that role was not supported by live state.
+- The post-deployment read of the MCP identity returned vault-scoped Key Vault
+  Secrets User and no Reader assignment in this subscription. Other
+  subscriptions were not assessed by this read. The Azure MCP identity returned
+  registry-scoped `AcrPull` plus subscription-scoped Reader and Monitoring
+  Reader. The protected pre-deployment role snapshot covers only the shared
+  API/web identity, so equality to a pre-deployment MCP/Azure MCP snapshot is
+  not claimed.
+- These readbacks correct the earlier static expectations; they are not
+  evidence of release-caused drift. The four apps retain username/password
+  registry configuration, so the existing managed-identity `AcrPull`
+  propagation gate is not applicable. No deployer-SPN gateway grant or new
+  role assignment is included.
 - Azure pre-deploy context: current subscription
   `ME-MngEnvMCAP448721-pangj-1`
   (`890c9bfc-d09c-4143-9ce5-465e75e3eecc`) matches the validated Terraform
@@ -185,12 +193,12 @@ deployment-specific checks are still required before validation can complete.
 
 ## Release execution gates (after merge)
 
-- [ ] Build all four application images once from the final merged `main`
+- [x] Build all four application images once from the final merged `main`
       commit.
-- [ ] Generate and review the exact post-build targeted plan. Proceed only if
+- [x] Generate and review the exact post-build targeted plan. Proceed only if
       it has no creates or destroys and preserves API 4 CPU/16 GiB, NVD,
       native-ontology, Network, and gateway-grant invariants.
-- [ ] Verify deployed digests, healthy revisions, live role assignments, API
+- [x] Verify deployed digests, healthy revisions, live role assignments, API
       sizing, and Network behavior. Do not claim release completion until these
       checks pass.
 
@@ -199,6 +207,37 @@ repository's `build-and-push.sh` once for all four application images, then
 `deploy.sh apply`. Verify the deployed API/web digests, healthy revisions,
 baseline API sizing, Network behavior, and runtime readiness. Do not rebuild or
 deploy any candidate until the final merged `main` commit is known.
+
+### Post-deployment verification (2026-10-30)
+
+- Source: merged `main` commit `ee7dcceccb7952e6405a8312d3f2875c60d80c63`.
+  The four images were built once with tag
+  `release-ee7dcce-20261030-052958`. The reviewed targeted apply contained
+  0 additions, 5 in-place changes, and 0 destructions.
+- All four latest-ready revisions are provisioned, Healthy, have one ready
+  replica, and receive 100% traffic:
+
+  | App | Revision | Image digest | Resources |
+  | --- | --- | --- | --- |
+  | API | `aiops-dev-api--0000013` | `sha256:d647ed2f17c892ac442a801a8afd71e94e9d437dc8dbc3bb53d5b5b0ac30cbd0` | 4 CPU / 16 GiB |
+  | Web | `aiops-dev-web--0000029` | `sha256:40626158ca36d2cc170c32910ea0e386dfb7462403c4aeb702128ed645fe7846` | 0.5 CPU / 1 GiB |
+  | MCP server | `aiops-dev-mcp-server--0000007` | `sha256:04849072f7332a9e7b2a992c301ed38b4ca004bfaf12f6448009d9ed314da1e6` | 0.5 CPU / 1 GiB |
+  | Azure MCP | `aiops-dev-azure-mcp--0000001` | `sha256:4a77d0fb457f3c6c041f5e5dd3ce800497d314df51d2c3f22075f95658baf6f4` | 0.5 CPU / 1 GiB |
+
+- API `/health` is ready; web `/` returns HTTP 200; MCP `/health` reports
+  healthy. Azure MCP's HTTP `/health` returns 405 by design; its revision is
+  Healthy under the configured TCP health check. An authenticated
+  `/api/v1/network/summary` read returned HTTP 200 without warnings, and
+  `tests/test_api_network.py` passed against the merged release source.
+- The API remains 4 CPU / 16 GiB. Live shared API/web identity assignments
+  exactly match the saved pre-deployment assignment snapshot (7 of 7; no
+  additions or removals). MCP and Azure MCP live assignments are recorded in
+  the role-verification section above; no role changes were part of the plan.
+- The unused zero-traffic API revision `aiops-dev-api--r420-99193f04` was
+  deactivated only to free the existing profile slot; the healthy
+  `aiops-dev-api--f03-b841d1ce` fallback was retained. No profile increase,
+  broad Terraform apply, role mutation, or Network configuration change was
+  made. The API's `RunningAtMaxScale` state is Healthy with one ready replica.
 
 ### Validation attempt (2026-10-29)
 
