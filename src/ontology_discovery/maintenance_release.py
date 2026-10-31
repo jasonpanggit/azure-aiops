@@ -884,6 +884,11 @@ class MaintenanceReleaseReader:
         self._corpus_validation = _CorpusValidation()
 
     @property
+    def trust_context(self) -> TrustContext:
+        """Return the server-owned trust context used by this reader."""
+        return self._trust
+
+    @property
     def purpose(self) -> str:
         return self._trust.purpose
 

@@ -36,6 +36,7 @@ test = [
 
 [project.scripts]
 aiops-inventory = "onboarding.cli:main"
+aiops-publication-validate = "ontology_discovery.publication_authority_cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27"]
@@ -54,6 +55,8 @@ packages = ["src/fabric", "src/fabric_pipelines", "src/storage", "src/ontology",
 "src/operations/copilot_canary_authorization.v1.json" = "operations/copilot_canary_authorization.v1.json"
 "src/operations/copilot_default_authorization.v1.json" = "operations/copilot_default_authorization.v1.json"
 "src/fabric/catalogs/governed_remediation_catalog.v1.json" = "fabric/catalogs/governed_remediation_catalog.v1.json"
+"src/ontology_discovery/sql_control/schema.sql" = "ontology_discovery/sql_control/schema.sql"
+"src/ontology_discovery/sql_control/permissions.sql" = "ontology_discovery/sql_control/permissions.sql"
 
 [tool.uv]
 # Phoenix's evaluation-only pydantic-ai/OpenAI dependency line is not runtime
