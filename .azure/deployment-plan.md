@@ -1,5 +1,361 @@
 # Azure Deployment Plan
 
+## Publication authority read-only validation enhancement
+
+> **Status:** Source/package verification complete; runtime deployment blocked
+> because no supported consumer or authorized runtime composition exists.
+
+The reviewed source-only `validate(operation)` enhancement is already
+integrated at commit `716edb6308b856c2d957abea7a7f767a67892b17` on
+`fix/fabric-validation-access`; its parent is
+`32aa903978008fa39b449776667f667a00a0a436`. The three changed files match
+the sealed manifest output hashes. The sealed patch SHA-256 is
+`3ba26574860a9f53ce6003d9b16a8ea871751824dd3c61334c195efebe10921f`;
+its manifest SHA-256 is
+`9f4c032fbfebdcdfd734540aa8690fef52762fb825e719241bb603df33328709`.
+
+- [x] Exact source, tests and runbook match the manifest's updated SHA-256s:
+      `3be133e7b5d1ae511d45b16b01f21fa9d2d76aa622224905f507a45706450f68`,
+      `49e9f3df1749ac968dd620051050a90a2cc35b85fe416c4d22493583f9375bb3`,
+      and
+      `84fe5b4b712ce2bce3f601f6f1984e620747e3783dff3b7309a0ab8f5ba31ee4`.
+- [x] Focused publication authority tests: 56 passed; Ruff lint and format
+      checks passed.
+- [x] Built wheel
+      `aiops_azure_resource_graph-0.1.0-py3-none-any.whl`, SHA-256
+      `08f2a4aa1d3593a5b7ee8ef261548e609011a0bd94c8a05fe0cbb186badb8abe`.
+      Installed into an isolated target and imported the packaged issuer;
+      the imported module hash matches the manifest.
+- [x] Scope validation recorded 2026-10-31 15:31 UTC:
+      `pytest tests/test_publication_authority.py` passed 56 tests;
+      Ruff check and format check passed; `uv build --wheel` succeeded; an
+      isolated wheel install/import resolved the issuer from the wheel and
+      verified the exact module hash. `git diff --check` passed.
+- [x] Runtime consumer search found only the `PublicationAuthorityIssuer`
+      class definition; no API, worker, job or script invokes it. The API
+      Dockerfile copies `src/`, so a future API build would contain the module,
+      but rolling that unrelated API would not activate or verify this
+      enhancement. The existing proof-only image is not an authority runtime.
+- [x] Determined Azure runtime deployment and deployed-code verification are
+      blocked until an existing authorized consumer and its supported runtime
+      composition/target are identified. Do not invent a listener/job, trust
+      source, public keys, signed review, retained catalog or session to create
+      an artificial consumer.
+- [x] No cloud deployment, application rollout, permission change, grant or
+      publication activation was performed. The successful v4 identity proof
+      and existing permission job remain unchanged.
+
+Authority grant/revocation, retention, additional permissions, publication
+activation, and production cutover are outside this scope. The prior proof-only
+image is not an authority runtime.
+
+## Proposed DEV publication v4 identity proof
+
+> **Status:** Validated
+
+This is a new, proof-only scope. The user approved the reviewed capacity and
+one-job proof request in the Fabric session at 2026-10-31 02:29:26 UTC. The
+prior four-app release's validation below does not validate this job.
+
+### Objective and boundaries
+
+Qualify the committed v4 SQL client's identity checks with the two already
+commissioned managed identities against the existing Fabric SQLDatabase's
+TLS-protected OLTP endpoint from the existing internal Container Apps
+environment. This does not claim that the Fabric endpoint is private.
+The proof is read-only: two wrong-client-pin refusals, six paired identity
+observations, and three `ReadControl` calls. It does not issue or revoke grants,
+acquire sessions, write data, bootstrap SQL, alter identities or permissions,
+configure signer trust, change retention, or activate publication.
+
+The proposed target is subscription `890c9bfc-d09c-4143-9ce5-465e75e3eecc`,
+Australia East. The new job would be in `aiops-pub-dev-service-rg`; its existing
+managed environment `aiops-pub-dev-cae` is in the distinct
+`aiops-pub-dev-rg` resource group. The approved existing resource names resolve
+to this subscription and location; no alternative subscription or region is
+being selected. The existing `aiops-pub-dev-authority-check` job and all
+application resources must remain unchanged.
+
+### Inputs and planned resources
+
+- Sealed local build context:
+  `/Users/jasonmba/.copilot/session-state/d8b8e9bb-fc77-4f27-83dd-22f0a30b0761/files/publication-v4-transport`.
+  Its `manifest-v2.json` SHA-256 is
+  `3406d2d21ed60aa1772cb03a6838874f0cf9d8b9f862f4092012de3a034ee1aa`.
+- Committed SQL module: commit `32aa903978008fa39b449776667f667a00a0a436`,
+  SHA-256 `232c32d1c5f00f5368d7f8a6e8bfa12d47ff72e9dda0a6f228f614105e2edc0d`.
+  Probe SHA-256:
+  `59e4654d2007710eff473a610ae4c7d8987e12623a35b7cbed8cba062f3adcca`.
+- Base image: `aiopsdevacr7h0ih3.azurecr.io/aiops-publication-broker` at
+  digest `sha256:6d9478ab8877efb97c92e7c39d40dce92e589f61416a91b7a9b4aa61795195bd`.
+  Build a separate `linux/amd64` proof-only image in the
+  `aiops-publication-v4-proof` repository of the same registry with a unique,
+  non-overwriting tag; use its resolved immutable digest for the job.
+- Create one separate manual-only Container Apps Job, proposed name
+  `aiops-pub-dev-v4-isolation-proof`, only after confirming that name is unused.
+  Use one replica, parallelism and completion count one, zero retries, a
+  1260-second job timeout, the launcher's 1200-second child deadline, and the
+  existing proof job's 0.5 CPU / 1 GiB resource size. Do not override its
+  entrypoint, add a schedule, ingress, mounts, or secrets.
+- Attach only the existing `aiops-pub-dev-authority-id`,
+  `aiops-pub-dev-reader-id`, and registry-pull `aiops-pub-dev-registry-id`
+  user-assigned identities. No new role assignments are in scope.
+- Resource inventory: one `Microsoft.App/jobs` resource and one proof-only
+  image; no new managed environment, identity, network, SQL, or storage
+  resource. A job-definition count limit was not exposed by the environment
+  usage response or specified in the reviewed official quota documentation;
+  provisioning availability cannot be guaranteed from the checks below.
+- The scope-specific ARM template is
+  `/Users/jasonmba/.copilot/session-state/f13dff91-b486-4191-a5ce-95039edefbf5/files/publication-v4-proof-job-template.json`,
+  SHA-256 `606362c1d7d040a62ceebcb1be11423e3c3c4e30990ecf840bdc83884a4b9b4a`.
+  It defines exactly one manual job and no role assignments. Its image
+  parameter must be the final proof image digest, not a mutable tag. The
+  corresponding Bicep source and parameter file are session-local
+  `publication-v4-proof-job.bicep` and
+  `publication-v4-proof-job.parameters.json`. Preliminary structural
+  validation used the existing base digest; the parameter now names the built
+  proof image's immutable registry digest.
+
+### Azure preflight and offline image checks (2026-10-30 UTC)
+
+- The current enabled Azure subscription matches the proposed ID. The service
+  resource group and the registry are in Australia East; the registry reports
+  `Succeeded`. The three proposed user-assigned identities exist and their
+  client and principal IDs match the earlier permission receipt. The registry
+  identity has `AcrPull` scoped to that registry; the accepted permission job
+  currently attaches the same three identities and uses 0.5 CPU / 1 GiB.
+- The local Docker daemon is available, and inspection of the already cached
+  base digest reports `linux/amd64` and user `10001:10001`. This is base-image
+  metadata only: no proof image was built or pulled. The installed Container
+  Apps CLI exposes the planned manual-trigger, timeout, retry, replica, and
+  user-assigned registry identity options.
+- An isolated, network-disabled, read-only run of that cached base mounted the
+  sealed inputs read-only and verified all five manifest file hashes, the
+  actual SQL import path and hash, the probe's source check, ODBC Driver 18,
+  launcher constants, and UID `10001`. The `linux/amd64` container ran under
+  emulation on an ARM64 host. It did not invoke the proof's `main`, obtain a
+  credential, or connect to SQL. It is not a built-image or live-runtime proof.
+- A second isolated run exercised the exact SQL module and proof orchestration
+  using fake credentials and a mocked ODBC connect function. It observed the
+  expected 11 simulated connections, 20 simulated statements, two wrong-pin
+  refusals, six identity observations, three `ReadControl` results, and two
+  concurrently held simulated sessions; all fake sessions and credentials
+  closed. No actual SQL connection or Azure credential was created. This is
+  additional offline evidence, not live qualification. The offline receipt is
+  `/Users/jasonmba/.copilot/session-state/f13dff91-b486-4191-a5ce-95039edefbf5/files/publication-v4-offline-transport-preflight.json`.
+- The managed environment is
+  `/subscriptions/890c9bfc-d09c-4143-9ce5-465e75e3eecc/resourceGroups/aiops-pub-dev-rg/providers/Microsoft.App/managedEnvironments/aiops-pub-dev-cae`.
+  It reports `Succeeded`, internal networking, and a Consumption profile.
+  The service group contains the existing worker and authority-check jobs; the
+  proposed new job name is absent. A subscription-wide job read found those
+  same two jobs attached to this exact environment.
+- `az quota list` and `az quota usage list` could not run because
+  `Microsoft.Quota` is `NotRegistered`; no provider registration was attempted.
+  The documented read-only `az containerapp env list-usages` reports
+  Consumption cores at 0.5 used / 500 limit. One proposed 0.5-CPU replica would
+  bring the observed total to 1.0 / 500, subject to concurrent usage and
+  actual regional capacity. The service's regional usage endpoint reports
+  two managed environments / 50 limit; this plan creates none. The
+  [Container Apps quota documentation](https://learn.microsoft.com/en-us/azure/container-apps/quotas)
+  does not specify a job-definition count limit, and the environment usage
+  response did not return one.
+- Recheck job-name availability, identities, permissions, environment health,
+  and quota immediately before execution. These reads are not deployment
+  validation or user approval.
+- At 2026-10-30 17:24 UTC, workspace
+  `4938f885-3e79-41b1-810a-80b55c01dbb7` was still bound to capacity
+  `517c0d4e-9472-4288-8e61-343060396887`. Fabric reported that capacity
+  `Inactive`, and ARM reported `aiopsdevcap7h0ih3` as `Paused`. Both the
+  SQLDatabase list and exact-item reads failed with `CapacityNotActive`, so
+  the target's current type and connection properties could not be verified.
+  Capacity resumption is not assumed to be authorized; it requires a separate
+  user decision and may incur running charges. ARM activity records show a
+  successful resume at 03:52 UTC followed by a successful suspend at 16:37
+  UTC; the earlier resume is not the current state.
+
+### Current read-only recheck (2026-10-31 02:30 UTC)
+
+- ARM now reports the existing `aiopsdevcap7h0ih3` F8 capacity `Active`; this
+  session did not resume it.
+- The Fabric SQLDatabase list and exact-item reads both returned workspace
+  `4938f885-3e79-41b1-810a-80b55c01dbb7`, item
+  `b003a6fb-eb2a-4226-b079-6033be2ff354`, the expected OLTP server on port
+  1433, and database
+  `aiops_publication_control_dev-b003a6fb-eb2a-4226-b079-6033be2ff354`.
+- The enabled subscription matches the proposed target, the separate job name
+  remains unused, and the manifest and all five sealed input hashes match.
+- The authority, reader, and registry identities match their commissioned
+  principal/client pins. The registry identity retains registry-scoped
+  `AcrPull`; the existing permission job is `Succeeded`, manual, and still
+  attached to those identities. Consumption usage is 0.5 / 500 cores.
+- The user-authored `approve` message and the preceding bounded proof request
+  were independently verified in the Fabric session's event history. A
+  duplicate confirmation prompt in this session returned unavailable; it was
+  not treated as an approval or a rejection.
+- The Fabric administrator item-access API returned `InsufficientScopes` for
+  the current identity; the browser access page requires sign-in. No admin
+  scope was added, and the accepted prior item/SQL permission receipt was not
+  re-probed. Live proof failures must remain failures, not permission evidence.
+- The exact proof and transport offline test suites passed 18 tests, and Ruff
+  passed for the transport and tests. An independent template check verified
+  one job, the three exact UAI resource IDs, the existing environment, the
+  registry identity, manual trigger, bounds, resource size, and absence of
+  command, argument, mount, secret, and ingress overrides. Live identity
+  listing also matched all three commissioned client and principal IDs.
+- A fresh `az quota list` still reports `Microsoft.Quota` as `NotRegistered`.
+  The provider was not registered; the environment usage metric and documented
+  quota limitations above remain the available capacity evidence.
+- The preliminary ARM validation passed. Machine-readable what-if showed one
+  job to create and three existing resources ignored. The helper's textual
+  create count included its legend; the structured result is authoritative.
+- The proof image was built for `linux/amd64` and pushed to the separate
+  `aiops-publication-v4-proof` repository at immutable digest
+  `sha256:b6250836648a686fa56a254fa5ddaefaa9cdc036bfc54a86fe10061250cf9ae1`.
+  The local image ID and registry manifest digest match. Built-image inspection
+  verified UID `10001:10001`, the entrypoint, no inherited command or health
+  check, and expected environment. A network-disabled, read-only container
+  verified all three code hashes, the SQL import path, and ODBC Driver 18
+  without running the proof. Docker build disabled networking for `RUN`
+  instructions; BuildKit did contact the registry for base metadata.
+
+### Preparation and execution gates
+
+- [x] Review the sealed source-only transport and offline tests; no live proof
+      or job has been executed.
+- [x] Read current subscription, existing resource and identity configuration,
+      job-name availability, and available quota metrics without mutations.
+- [x] Check the available job-definition quota documentation and usage
+      response; neither exposes a numeric limit, so availability is not
+      guaranteed.
+- [x] Verify the capacity is already active and the exact SQLDatabase type,
+      item, server, and database properties match the reviewed target.
+- [x] Verify direct user approval of the bounded proof and resolve the approved
+      existing resource names to their subscription and Australia East region.
+- [x] Prepare and statically check the single-job template and rerun the
+      bounded transport tests; mark this scope ready for validation.
+- [x] Repeat capacity, quota, identities, registry pull, environment, and
+      job-name collision checks immediately before execution. Preserve the
+      accepted historical item/SQL permission receipt without re-probing it.
+- [x] Complete scope-specific `azure-validate`; record actual commands and
+      timestamps in a new validation proof before marking this proposal
+      Validated. Historical app-only proof is not sufficient. Repeat ARM
+      validation and what-if with the final immutable image digest.
+- [x] After approval and preliminary structural validation, build the sealed
+      image, verify its import location and module/probe/launcher hashes, push
+      it, and resolve its immutable registry digest.
+- [x] Create and read back the separate manual job with exactly the reviewed
+      settings and identities; the accepted permission job remains unchanged.
+- [x] Run the new job and capture terminal status and safe output. The initial
+      execution failed before Azure retained a replica; after the user
+      requested recovery, one bounded recovery execution succeeded. Both
+      receipts are recorded below.
+- [x] Report only the narrow identity/read-only proof; do not claim signer
+      trust, retained catalog, retention, authority grants, or publication
+      readiness.
+
+### Validation proof
+
+Recorded 2026-10-31 02:47 UTC for this proof job only:
+
+- The scoped `validate-deployment.sh --scope group` passed Azure CLI
+  authentication, Bicep compilation, ARM validation, and what-if both before
+  and after replacing the preliminary image parameter with the exact proof
+  digest. Bicep 0.41.2 emitted `BCP081` because it lacks local types for the
+  `2026-07-01` API; the target ARM provider accepted the template.
+- The final machine-readable what-if, SHA-256
+  `0df52aa3b439a03090d504bbf2a5b82796a612b39e3d330510073b3bb58c5dee`,
+  contains one `Create` for the proof job and three `Ignore` entries for
+  existing resources. It pins the exact image digest, environment, three
+  identities, manual trigger, timeout, retry and replica settings, and has no
+  command, argument, volume, secret or ingress overrides.
+- Bicep source SHA-256:
+  `5edd094fcfd949cda6d3c8b364288f66b8924b13b36e37b7e8c75e830bca242b`;
+  final parameters SHA-256:
+  `3003d67baf0d61f5132d987fe3a83cd4d7c4455a23a52d84df5c4462b05c6b64`.
+  The compiled resource matches the reviewed one-job ARM template.
+- The registry manifest's raw SHA-256 equals image digest
+  `b6250836648a686fa56a254fa5ddaefaa9cdc036bfc54a86fe10061250cf9ae1`.
+  It contains one `linux/amd64` image and one `unknown/unknown` attestation.
+  Built-image import, ODBC18, entrypoint, UID and SQL/probe/launcher hashes
+  passed without executing the proof.
+- `pytest` passed 18 offline proof/transport tests and `ruff check` passed.
+  These checks and the built-image inspection are not live SQL qualification.
+- The capacity is `Active`, the environment is `Succeeded` and internal, the
+  exact listed and fetched SQLDatabase endpoint is TLS-protected, Consumption
+  usage is 0.5 / 500 cores, and the proposed job name remains unused. The
+  registry UAI has registry-scoped `AcrPull`; the existing permission job
+  matches its accepted receipt. `Microsoft.Quota` remains unregistered, so
+  no unsupported job-count limit or guaranteed capacity is asserted.
+- The template creates no role assignments. It attaches only the previously
+  commissioned authority, reader and registry identities; their prior item
+  and SQL permission evidence is preserved, not re-probed or broadened.
+
+The initial execution failure did not establish live v4 ODBC behavior. A
+subsequent bounded recovery execution succeeded and established the narrow
+identity/read-only result documented below. Publication activation has not
+occurred.
+
+At 2026-10-31 02:48 UTC the separate manual job was created and read back as
+`Succeeded` / `Ready` with the exact image, three identity bindings, bounds,
+and no command, argument, volume or secret overrides. Its readback SHA-256 is
+`abad81500555f4e875ba955c9b21229bf21debb42ea4197c58698d925a1a6055`;
+the deployment result SHA-256 is
+`e4c8fc8c8f64d3f7fe59b64b7410334cb0a446c7cbc2c1bb23a32af6935e9f18`.
+No execution existed at that point, and the accepted permission job's
+configuration and identity bindings remained unchanged.
+
+The initial authorized execution was started at 2026-10-31 02:50:23 UTC as
+`aiops-pub-dev-v4-isolation-proof-7q7gha0`. Its start response SHA-256 is
+`76f50f9a66556bba4d2177e64be615372495561ed91a3824a0e6823b60720bbb`.
+ARM terminal readback reports `Failed`, reason `BackoffLimitExceeded`, and
+message `Job has reached the specified backoff limit`. The execution's replica
+list is empty; Container Apps returns `No replicas found for execution` when
+logs are requested. The managed environment has no configured app-log
+destination or Log Analytics configuration. Consequently, no container stdout
+or application-level SQL result is available, and it is not established
+whether the proof process reached its first SQL call. The exact execution
+failure receipt is
+`/Users/jasonmba/.copilot/session-state/f13dff91-b486-4191-a5ce-95039edefbf5/files/publication-v4-live-execution-failure.json`.
+Receipt SHA-256:
+`c625217960f75f04ac508b9d8ca04f7d42da2d4b05381942a0df022bff2a3679`.
+At that point no recovery execution had been started. After the user asked to
+fix the failure, one bounded recovery execution was performed; its result
+supersedes the initial failure as the current qualification outcome. No further
+execution has been started.
+
+The recovery execution `aiops-pub-dev-v4-isolation-proof-ayeyis0` ran from
+2026-10-31 06:02:17 to 06:03:09 UTC and terminated `Succeeded`. Its replica
+`aiops-pub-dev-v4-isolation-proof-ayeyis0-7pkgn` exited with code 0. Captured
+container stdout reports `PASS` for the exact module pin and target database:
+two wrong-client-pin refusals, six server-observed identity/database/user
+observations over three interleaved authority/reader cycles, three
+`ReadControl` calls, and zero mutating procedures invoked. The stdout reports
+authority client `dafc75c0-45b5-4b6a-b761-da231fb6239d` as SQL user
+`aiops-pub-dev-authority-id` and reader client
+`ad01e219-c3f5-40c7-85c3-7060a86a5bd7` as
+`aiops-pub-dev-reader-id` on every observation. Job readback confirms manual
+trigger, parallelism and completion count one, retry limit zero, 1260-second
+timeout, 0.5 CPU / 1 GiB, the exact immutable image digest, and only the
+authority, reader, and registry-pull identities. The accepted
+`aiops-pub-dev-authority-check` job still reads back its original image and
+three identity bindings. The complete bounded result is recorded in
+`.azure/publication-v4-live-execution-success.json`.
+
+This qualifies only the v4 SQL client's identity isolation and read-only
+`ReadControl` path against the pinned DEV database. It does not qualify signed
+trust, retained catalog, retention, authority grant/revocation, or publication
+acceptance, and does not authorize further runs or production activation.
+
+### All validation checks pass
+
+- [x] 1. Core Validation (CLI, auth, build, validate, what-if) — run the
+      AZCLI `validate-deployment` script against the scope-specific Bicep.
+- [x] 2. Docker Build — build and inspect the sealed proof-only image.
+- [x] 3. Azure Policy Validation — check inherited assignments and template
+      validation at the target resource group.
+- [x] Repeat validation and what-if with the final immutable proof image
+      digest; only the new proof job may be created or changed.
+
 ## Coordinated release (2026-10-30)
 
 Status: Validated
