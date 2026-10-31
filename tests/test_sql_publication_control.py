@@ -312,7 +312,7 @@ def test_admin_provision_is_closed_and_create_only():
         UID,
         {"tenant_id": "expected"},
         account_resource_id="/approved/account",
-        blob_endpoint="https://approved.blob.core.windows.net",
+        blob_endpoint="https://example.blob.core.windows.net",
         container="snapshot",
         retain_until=datetime(2030, 1, 1, tzinfo=UTC),
     )
