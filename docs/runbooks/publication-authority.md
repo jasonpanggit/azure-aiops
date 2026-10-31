@@ -85,6 +85,17 @@ evaluation and live evidence floors; this adapter cannot waive them.
 
 ## Fresh validation and SQL boundary
 
+`validate(operation)` performs the complete signed-review and live-provider
+checks below but never invokes the authority client. It returns only the
+signed-envelope digest for operator diagnostics. It does not create a grant,
+reserve a session or produce a reusable authorization token. `issue(operation)`
+always repeats all checks from fresh sources; a previously successful validation
+cannot bypass later expiry, revocation, review changes or session changes.
+Read-only validation still requires actual operator trust, live release evidence
+and a sealed retained catalog. Missing inputs fail closed rather than producing
+a success-shaped readiness result. This method does not manufacture missing
+provenance or turn offline fixture evidence into live authorization.
+
 `issue(operation)` reads the server-selected review, verifies all signatures,
 deployment pins, operation, freshness, target and approvals. It requires a fresh
 revocation snapshot with exactly `kill`, integer `revocation_revision`,

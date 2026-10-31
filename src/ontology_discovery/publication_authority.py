@@ -187,6 +187,33 @@ class PublicationAuthorityIssuer:
         an uncertain SQL write. Revoke uses the existing separate SQL authority
         client and must be dispatched by the operator's fresh revocation policy.
         """
+        envelope_digest, payload = self._validate_review(operation)
+        self._authority.record_grant(
+            self._target_id,
+            payload["session_id"],
+            payload["epoch"],
+            catalog_digest=payload["catalog_digest"],
+            operation=operation,
+            authority_digest=envelope_digest,
+            evidence_digest=payload["evidence_digest"],
+            valid_from=_time(payload["valid_from"]),
+            valid_until=_time(payload["valid_until"]),
+        )
+        return envelope_digest
+
+    def validate(self, operation: str) -> str:
+        """Validate fresh signed bindings without invoking the authority client.
+
+        Return the signed-envelope digest for operator diagnostics, not an
+        authorization token. Issuance always repeats the complete validation;
+        a successful read-only check does not reserve or authorize a later grant.
+        This reads the live release, revocation, session and sealed catalog
+        providers; it is not an offline fixture mode or a prerequisite bypass.
+        """
+        envelope_digest, _ = self._validate_review(operation)
+        return envelope_digest
+
+    def _validate_review(self, operation: str) -> tuple[str, dict[str, Any]]:
         _require(
             type(operation) is str and operation in {"admit", "restore"},
             "operation_invalid",
@@ -336,15 +363,4 @@ class PublicationAuthorityIssuer:
         self._session(payload, final_now)
         self._revocations(payload, envelope_digest)
         _require(start <= self._clock() < end, "review_expired")
-        self._authority.record_grant(
-            self._target_id,
-            payload["session_id"],
-            payload["epoch"],
-            catalog_digest=payload["catalog_digest"],
-            operation=operation,
-            authority_digest=envelope_digest,
-            evidence_digest=payload["evidence_digest"],
-            valid_from=start,
-            valid_until=end,
-        )
-        return envelope_digest
+        return envelope_digest, payload

@@ -181,6 +181,68 @@ def scenario(tmp_path):
 
 
 @pytest.mark.parametrize("operation", ["admit", "restore"])
+def test_read_only_validation_checks_all_bindings_without_authority(
+    scenario, operation
+):
+    s = scenario
+    s.payload["operation"] = operation
+    s.sign()
+    assert s.issuer.validate(operation) == digest(s.envelope)
+    assert not s.authority.mock_calls
+    assert s.control.read_control.call_count == 2
+    assert s.control.read_attempt.call_count == 1
+    assert s.reader.read.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "failure", ["revocation", "signature", "catalog", "session", "release"]
+)
+def test_read_only_validation_does_not_relax_live_gates(scenario, failure):
+    s = scenario
+    if failure == "revocation":
+        s.state["kill"] = True
+    elif failure == "signature":
+        s.envelope["signature"] = base64.b64encode(b"wrong" * 13).decode()
+    elif failure == "catalog":
+        s.control.read_attempt.return_value = {"catalog_json": "{}"}
+    elif failure == "session":
+        s.control.read_control.return_value["epoch"] = 2
+    else:
+        s.reader.read.side_effect = MaintenanceDenied("maintenance_release_absent")
+    with pytest.raises(MaintenanceDenied):
+        s.issuer.validate("admit")
+    assert not s.authority.mock_calls
+
+
+@pytest.mark.parametrize("change", ["revocation", "expiry", "review", "session"])
+def test_issuance_never_reuses_a_successful_validation(scenario, change):
+    s = scenario
+    s.issuer.validate("admit")
+    assert not s.authority.mock_calls
+    if change == "revocation":
+        s.state["kill"] = True
+    elif change == "expiry":
+        s.clock.return_value = s.now + timedelta(minutes=2)
+    elif change == "review":
+        s.envelope.clear()
+    else:
+        s.control.read_control.return_value["epoch"] = 2
+    with pytest.raises(MaintenanceDenied):
+        s.issuer.issue("admit")
+    assert not s.authority.mock_calls
+
+
+def test_issue_revalidates_and_dispatches_once_after_read_only_check(scenario):
+    s = scenario
+    checked = s.issuer.validate("admit")
+    assert s.issuer.issue("admit") == checked
+    assert s.control.read_control.call_count == 4
+    assert s.control.read_attempt.call_count == 2
+    assert s.reader.read.call_count == 4
+    s.authority.record_grant.assert_called_once()
+
+
+@pytest.mark.parametrize("operation", ["admit", "restore"])
 def test_exact_signed_review_records_only_separate_authority_grant(scenario, operation):
     s = scenario
     s.payload["operation"] = operation
