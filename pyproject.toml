@@ -36,6 +36,7 @@ test = [
 
 [project.scripts]
 aiops-inventory = "onboarding.cli:main"
+aiops-publication-validate = "ontology_discovery.publication_authority_cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27"]

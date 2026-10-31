@@ -194,6 +194,27 @@ def test_read_only_validation_checks_all_bindings_without_authority(
     assert s.reader.read.call_count == 2
 
 
+def test_read_only_issuer_cannot_issue_without_authority_client(scenario):
+    s = scenario
+    issuer = PublicationAuthorityIssuer(
+        trust=s.trust,
+        release_reader=s.reader,
+        control=s.control,
+        target_id=TARGET_ID,
+        expected_target=s.payload["target"],
+        review_source=lambda: s.envelope,
+        revocation_source=lambda: s.state,
+        clock=s.clock,
+    )
+
+    assert issuer.validate("admit") == digest(s.envelope)
+    with pytest.raises(MaintenanceDenied, match="authority_client_unavailable"):
+        issuer.issue("admit")
+    assert s.control.read_control.call_count == 2
+    assert s.control.read_attempt.call_count == 1
+    assert not s.authority.mock_calls
+
+
 @pytest.mark.parametrize(
     "failure", ["revocation", "signature", "catalog", "session", "release"]
 )

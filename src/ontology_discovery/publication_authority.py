@@ -101,12 +101,13 @@ def _sql_deadline(value: Any) -> datetime:
 
 
 class PublicationAuthorityIssuer:
-    """Verify fresh independently signed review before a separate SQL grant.
+    """Verify fresh signed review, optionally with a separate SQL grant client.
 
     All dependencies are server/operator-owned. No default credentials, listener,
     signing keys or bootstrap are installed. The authority credential must never
     be the worker, broker, verifier or artifact credential. SQL permissions remain
     the deployment-enforced boundary; constructor injection cannot establish them.
+    A missing authority client permits read-only ``validate`` only.
     """
 
     def __init__(
@@ -115,7 +116,7 @@ class PublicationAuthorityIssuer:
         trust: TrustContext,
         release_reader: MaintenanceReleaseReader,
         control: SqlPublicationControl,
-        authority: SqlPublicationAuthority,
+        authority: SqlPublicationAuthority | None = None,
         target_id: str,
         expected_target: Mapping[str, str],
         review_source: Callable[[], Mapping[str, Any] | None],
@@ -187,8 +188,13 @@ class PublicationAuthorityIssuer:
         an uncertain SQL write. Revoke uses the existing separate SQL authority
         client and must be dispatched by the operator's fresh revocation policy.
         """
+        authority = self._authority
+        if authority is None:
+            raise MaintenanceDenied(
+                "publication_authority:authority_client_unavailable"
+            )
         envelope_digest, payload = self._validate_review(operation)
-        self._authority.record_grant(
+        authority.record_grant(
             self._target_id,
             payload["session_id"],
             payload["epoch"],

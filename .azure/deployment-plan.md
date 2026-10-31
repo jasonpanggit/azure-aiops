@@ -2,8 +2,9 @@
 
 ## Publication authority read-only validation enhancement
 
-> **Status:** Source/package verification complete; runtime deployment blocked
-> because no supported consumer or authorized runtime composition exists.
+> **Status:** Source/package verification complete; operational execution and
+> Azure deployment withheld because commissioned trust inputs and runtime
+> configuration are not available.
 
 The reviewed source-only `validate(operation)` enhancement is already
 integrated at commit `716edb6308b856c2d957abea7a7f767a67892b17` on
@@ -31,16 +32,45 @@ its manifest SHA-256 is
       Ruff check and format check passed; `uv build --wheel` succeeded; an
       isolated wheel install/import resolved the issuer from the wheel and
       verified the exact module hash. `git diff --check` passed.
-- [x] Runtime consumer search found only the `PublicationAuthorityIssuer`
-      class definition; no API, worker, job or script invokes it. The API
-      Dockerfile copies `src/`, so a future API build would contain the module,
-      but rolling that unrelated API would not activate or verify this
-      enhancement. The existing proof-only image is not an authority runtime.
-- [x] Determined Azure runtime deployment and deployed-code verification are
-      blocked until an existing authorized consumer and its supported runtime
-      composition/target are identified. Do not invent a listener/job, trust
-      source, public keys, signed review, retained catalog or session to create
-      an artificial consumer.
+- [x] Reviewed and integrated the default-off manual CLI patch based on
+      `716edb6308b856c2d957abea7a7f767a67892b17`. Patch SHA-256:
+      `f90a0e0adecb0174b43d8d2d79cab6301d618ad92c7725197764cc6b870a55e9`;
+      manifest SHA-256:
+      `55f21d5a15fa967504602635ef1c6a1b0bc8be2b3a5dc51f3dc6af9c7a9d86b9`.
+      All seven changed files match the sealed manifest.
+- [x] The CLI `aiops-publication-validate` has no authority client, accepts no
+      operation arguments, pins configuration to the reader UAI and exact
+      Fabric SQLDatabase metadata, disables ODBC pooling before provider
+      setup, and calls only `validate("admit")`. Missing configuration exits
+      fail-closed before credentials or SQL.
+- [x] CLI/authority/SQL targeted suites passed 138 tests; Ruff lint passed and
+      the changed Python files passed Ruff format checks. Built wheel
+      `aiops_azure_resource_graph-0.1.0-py3-none-any.whl`, SHA-256
+      `32f41aaa3ffcb5799efac060d56be280a594fd7e16549db267a96406c38f0874`;
+      wheel metadata contains the CLI entrypoint and the packaged CLI module
+      matches manifest SHA-256
+      `3c8d704aaf501113a5a90f79aaee8c18e17ad7e91a7834da28c6b36cd9f58b19`.
+- [x] PR backend CI exposed a missing test extra: the identity test imports
+      `pyodbc`, but CI installed only `[test,api]` while `pyodbc` is declared
+      in `[fabric-sql]`. Updated the backend CI install to include
+      `[test,api,fabric-sql]`; no production dependency or lock resolution
+      changed. Awaiting the rerun before claiming CI green.
+- [x] Local default-off/no-config behavior returned only
+      `{"status":"FAIL","reason":"publication_validation_config_required"}`
+      with exit code 2; no trust config, credential, or SQL connection was
+      supplied. No configured live validation was run.
+- [x] Runtime search before the CLI patch found no API, worker, job or script
+      consumer. The new manual operator CLI is now the source-level consumer;
+      it is not installed into a commissioned runtime and no trusted runtime
+      configuration was found. The API Dockerfile copies `src/`, but rolling
+      that unrelated API would not activate the CLI. The existing proof-only
+      image is not an authority runtime.
+- [x] Do not deploy or invoke the configured validator until real
+      operator-owned trust, signed review/revocation, live session/catalog
+      inputs and an explicitly commissioned runtime target/config exist.
+      Those prerequisites were not found. Do not create a listener/job,
+      signed evidence, session, catalog, or deployment identity to bypass
+      this gate.
 - [x] No cloud deployment, application rollout, permission change, grant or
       publication activation was performed. The successful v4 identity proof
       and existing permission job remain unchanged.
