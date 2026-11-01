@@ -365,6 +365,52 @@ def test_exposure_readiness_uses_stable_sanitized_failure_codes(
     assert "test-token-never-reported" not in rendered
 
 
+@pytest.mark.parametrize(
+    ("failure", "reason_code", "sensitive_fragment"),
+    [
+        (
+            RuntimeError("Fabric capacity is inactive for this workspace"),
+            "fabric_capacity_inactive",
+            "inactive for this workspace",
+        ),
+        (
+            RuntimeError("Login failed for user private-principal"),
+            "fabric_sql_login_denied",
+            "private-principal",
+        ),
+    ],
+)
+def test_exposure_readiness_classifies_sql_connectivity_failures_safely(
+    failure, reason_code, sensitive_fragment
+):
+    result = probe_exposure_readiness(
+        ENDPOINT,
+        _Credential(),
+        module_loader=_module_loader,
+        connect=_Script({"SELECT 1 AS probe": failure}),
+    )
+
+    rendered = str(result.to_dict())
+    assert reason_code in result.reason_codes
+    assert sensitive_fragment not in rendered
+    assert "private-principal" not in rendered
+
+
+def test_exposure_readiness_classifies_missing_openssl_runtime_safely():
+    def missing_openssl(_name):
+        raise ImportError("dlopen failed: libssl.3.dylib image not found")
+
+    result = probe_exposure_readiness(
+        ENDPOINT,
+        _Credential(),
+        module_loader=missing_openssl,
+    )
+
+    rendered = str(result.to_dict())
+    assert "openssl_runtime_library_missing" in result.reason_codes
+    assert "libssl.3.dylib" not in rendered
+
+
 def test_exposure_readiness_reports_token_failure_without_connecting():
     script = _Script(_ready_responses())
 

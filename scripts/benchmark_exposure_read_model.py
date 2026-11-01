@@ -26,9 +26,12 @@ import resource
 import sys
 import time
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
+
+from azure.identity import AzureCliCredential
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "src"
@@ -1066,6 +1069,53 @@ def probe_production_adapter(config_path: Path) -> dict[str, Any]:
     ).to_dict()
 
 
+def probe_azure_cli_diagnostic(
+    config_path: Path,
+    tenant_id: str,
+) -> dict[str, Any]:
+    """Run read-only SQL readiness with an explicitly tenant-scoped Azure CLI identity.
+
+    This operator diagnostic is intentionally separate from production auth
+    and never produces benchmark or release certification evidence.
+    """
+    explicit_tenant_id = str(tenant_id or "").strip()
+    if not explicit_tenant_id:
+        raise ValueError("an explicit diagnostic tenant ID is required")
+
+    config = _load_yaml(config_path)
+    endpoint, endpoint_source = _endpoint_metadata(config)
+    credential = AzureCliCredential(tenant_id=explicit_tenant_id)
+    try:
+        readiness = probe_exposure_readiness(
+            endpoint,
+            credential,
+            endpoint_source=endpoint_source,
+        ).to_dict()
+    finally:
+        close = getattr(credential, "close", None)
+        if callable(close):
+            with suppress(Exception):
+                close()
+
+    diagnostic_ready = bool(readiness.get("ready"))
+    return {
+        "schema_version": readiness.get("schema_version", "1.0.0"),
+        "probe": "operator_azure_cli_read_only_diagnostic",
+        "diagnostic_only": True,
+        "diagnostic_adapter": FABRIC_SQL_ADAPTER_ID,
+        "diagnostic_status": "ready" if diagnostic_ready else "not_ready",
+        "diagnostic_ready": diagnostic_ready,
+        "credential_source": "azure_cli",
+        "tenant_id_supplied": True,
+        "checks": readiness.get("checks", []),
+        "reason_codes": readiness.get("reason_codes", []),
+        "production_certified": False,
+        "production_scale_certified": False,
+        "release_evidence_eligible": False,
+        "sanitized": True,
+    }
+
+
 def _require_production_reader(config_path: Path) -> Any:
     config = _load_yaml(config_path)
     endpoint, endpoint_source = _endpoint_metadata(config)
@@ -1103,11 +1153,18 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _nonempty_tenant_id(value: str) -> str:
+    tenant_id = value.strip()
+    if not tenant_id:
+        raise argparse.ArgumentTypeError("tenant ID must not be empty")
+    return tenant_id
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Generate deterministic Exposure scale data, benchmark the local "
-            "correctness harness, or probe the selected Fabric SQL adapter."
+            "correctness harness, or run a Fabric SQL readiness probe."
         )
     )
     parser.add_argument("--rows", type=_positive_int, default=DEFAULT_ROWS)
@@ -1138,8 +1195,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--generation-id",
         default=os.environ.get("EXPOSURE_BENCHMARK_GENERATION_ID", ""),
     )
-    parser.add_argument("--probe-production-adapter", action="store_true")
     readiness = parser.add_mutually_exclusive_group()
+    readiness.add_argument(
+        "--diagnose-azure-cli",
+        action="store_true",
+        help=(
+            "Run a read-only diagnostic with Azure CLI identity; this is not "
+            "production benchmark or release certification."
+        ),
+    )
+    parser.add_argument(
+        "--diagnostic-tenant-id",
+        type=_nonempty_tenant_id,
+        help="Explicit target tenant for --diagnose-azure-cli; no fallback is used.",
+    )
+    readiness.add_argument(
+        "--probe-production-adapter",
+        action="store_true",
+        help="Probe readiness with the configured production identity.",
+    )
     readiness.add_argument(
         "--allow-not-ready",
         action="store_true",
@@ -1155,10 +1229,42 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    supplied_arguments = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(supplied_arguments)
+    if args.diagnostic_tenant_id and not args.diagnose_azure_cli:
+        parser.error("--diagnostic-tenant-id requires --diagnose-azure-cli")
+    if args.diagnose_azure_cli and not args.diagnostic_tenant_id:
+        parser.error("--diagnose-azure-cli requires --diagnostic-tenant-id")
+    benchmark_options = (
+        "--rows",
+        "--seed",
+        "--page-size",
+        "--warmups",
+        "--measurements",
+        "--tenant-id",
+        "--connection-id",
+        "--subscription-id",
+        "--generation-id",
+    )
+    if args.diagnose_azure_cli and any(
+        argument == option or argument.startswith(f"{option}=")
+        for argument in supplied_arguments
+        for option in benchmark_options
+    ):
+        parser.error("--diagnose-azure-cli cannot be combined with benchmark options")
+
     config_path = Path(args.config)
     if not config_path.is_absolute():
         config_path = REPO_ROOT / config_path
+
+    if args.diagnose_azure_cli:
+        diagnostic = probe_azure_cli_diagnostic(
+            config_path,
+            args.diagnostic_tenant_id,
+        )
+        _emit(diagnostic, as_json=args.json)
+        return 0 if diagnostic["diagnostic_ready"] else 2
 
     if args.probe_production_adapter or args.require_ready or args.allow_not_ready:
         readiness_report = probe_production_adapter(config_path)

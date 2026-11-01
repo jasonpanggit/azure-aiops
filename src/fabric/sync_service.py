@@ -4191,6 +4191,7 @@ class FabricSyncService:
     ) -> None:
         from intelligence.vulnerability.workload_inventory import (
             WORKLOAD_QUERY_FAMILIES,
+            WORKLOAD_REQUIRED_FAMILIES,
             normalize_digest,
             workload_checkpoint_key,
         )
@@ -4227,9 +4228,10 @@ class FabricSyncService:
                 raise ValueError(
                     "Usable workload checkpoint lacks an effective generation"
                 )
-        required_families = set(WORKLOAD_QUERY_FAMILIES)
+        required_families = set(WORKLOAD_REQUIRED_FAMILIES)
         if any(
-            families != required_families for families in workspace_families.values()
+            not required_families <= families <= set(WORKLOAD_QUERY_FAMILIES)
+            for families in workspace_families.values()
         ):
             raise ValueError("Workload checkpoint family set is incomplete")
         for row in [*observations, *deployments]:

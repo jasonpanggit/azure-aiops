@@ -728,6 +728,118 @@ def test_exact_digest_and_observation_time_produce_one_deployment() -> None:
 
 
 @pytest.mark.parametrize(
+    ("family", "field", "value", "reason"),
+    [
+        ("container", "ImageID", "", "no_exact_digest_observation"),
+        ("container", "ImageID", "acr1.azurecr.io/api:v1", "no_exact_digest_observation"),
+        ("container", "ImageID", DIGEST_B, "no_exact_digest_observation"),
+        ("container", "ContainerID", "", "no_workload_observation"),
+        ("pod", "ContainerID", "", "no_workload_observation"),
+        ("both", "ContainerID", "", "no_workload_observation"),
+        ("pod", "ContainerID", "other-container", "no_workload_observation"),
+        ("container", "TimeGenerated", "", "missing_workload_provider_event_time"),
+        ("pod", "TimeGenerated", "", "missing_workload_provider_event_time"),
+        ("container", "TimeGenerated", "invalid", "malformed_workload_provider_event_time"),
+        ("pod", "TimeGenerated", "invalid", "malformed_workload_provider_event_time"),
+        ("container", "TimeGenerated", "2026-09-02T00:15:01Z", "stale_digest_observation"),
+        ("pod", "TimeGenerated", "2026-09-02T00:15:01Z", "stale_digest_observation"),
+    ],
+)
+def test_default_stream_proof_fails_closed_on_invalid_required_evidence(
+    family: str, field: str, value: str, reason: str,
+) -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    if family == "both":
+        containers[0][field] = value
+        pods[0][field] = value
+    else:
+        (containers if family == "container" else pods)[0][field] = value
+    # Even an exact digest in Image or supplemental inventory cannot repair ImageID.
+    containers[0]["Image"] = f"acr1.azurecr.io/api@{DIGEST_A}"
+    result = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[_defender_assessment_image_row()],
+        kube_pod_rows=pods,
+        container_rows=containers,
+        image_rows=images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+
+    assert result.deployments == ()
+    assert result.unknown_reasons == (reason,)
+
+
+@pytest.mark.parametrize("empty_family", ["container", "pod"])
+def test_healthy_empty_required_family_is_not_deployment_proof(empty_family: str) -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    result = normalize_workload_evidence(
+        connection_id="connection-1",
+        workspace_id="workspace-1",
+        defender_rows=[_defender_image_row()],
+        kube_pod_rows=[] if empty_family == "pod" else pods,
+        container_rows=[] if empty_family == "container" else containers,
+        image_rows=images,
+        attempted_generation="generation-2",
+        completed_at=OBSERVED,
+    )
+
+    assert result.deployments == ()
+    assert result.unknown_reasons == (
+        "no_exact_digest_observation" if empty_family == "container"
+        else "no_workload_observation",
+    )
+
+
+@pytest.mark.parametrize("image_case", ["empty", "stale", "missing-time", "invalid-time", "mismatch", "fresh"])
+def test_image_inventory_is_only_fresh_optional_corroboration(image_case: str) -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        normalize_workload_evidence,
+    )
+
+    pods, containers, images = _workload_rows()
+    if image_case == "empty":
+        images = []
+    elif image_case == "stale":
+        images[0]["TimeGenerated"] = "2026-09-01T00:00:00Z"
+    elif image_case == "missing-time":
+        images[0].pop("TimeGenerated")
+    elif image_case == "invalid-time":
+        images[0]["TimeGenerated"] = "invalid"
+    elif image_case == "mismatch":
+        images[0]["ImageID"] = DIGEST_B
+
+    common = {
+        "connection_id": "connection-1",
+        "workspace_id": "workspace-1",
+        "defender_rows": [_defender_image_row()],
+        "kube_pod_rows": pods,
+        "container_rows": containers,
+        "attempted_generation": "generation-2",
+        "completed_at": OBSERVED,
+    }
+    baseline = normalize_workload_evidence(**common, image_rows=[])
+    result = normalize_workload_evidence(**common, image_rows=images)
+    assert len(result.deployments) == 1
+    assert result.unknown_reasons == ()
+    deployment = result.deployments[0]
+    assert deployment["deployment_id"] == baseline.deployments[0]["deployment_id"]
+    assert deployment["observed_at"] == OBSERVED
+    provenance = json.loads(deployment["provenance_json"])
+    assert bool(provenance["image_observation_id"]) is (image_case == "fresh")
+    assert deployment["tag"] == ("v1" if image_case == "fresh" else "")
+
+
+@pytest.mark.parametrize(
     ("offset_seconds", "expected_match", "expected_reason"),
     [
         (899, True, ""),
@@ -1011,10 +1123,12 @@ def test_workload_schemas_are_additive_and_preserve_approval_role_ids() -> None:
         ("defender_subassessments", _defender_image_row()),
     ],
 )
+@pytest.mark.parametrize("optional_image_available", [False, True])
 def test_ingestion_service_persists_the_exact_workload_slice(
     tmp_path: Path,
     defender_query_name: str,
     defender_row: dict[str, Any],
+    optional_image_available: bool,
 ) -> None:
     from onboarding.config import ConnectorConfig
     from onboarding.ingestion_service import IngestionService
@@ -1056,6 +1170,8 @@ def test_ingestion_service_persists_the_exact_workload_slice(
 
         def query_container_image_inventory(self, workspace_id):
             assert workspace_id == "workspace-1"
+            if not optional_image_available:
+                raise RuntimeError("Optional image inventory is unavailable")
             return images
 
     service = IngestionService(

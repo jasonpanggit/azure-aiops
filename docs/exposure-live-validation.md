@@ -93,6 +93,50 @@ Before any shadow or canary stage, prove all of the following:
 8. The shared primitive, Overview, CVE, KB, risk-dialog, remediation, and
    browser continuity suites pass for the exact release.
 
+### Read-only Fabric SQL diagnosis (not release certification)
+
+The benchmark CLI offers an explicitly selected Azure CLI identity diagnostic
+for troubleshooting an operator's local SQL access. It requires a separate,
+explicit target tenant and performs only the existing read-only readiness
+queries. It does not change production authentication, run the benchmark, or
+qualify a release. A `ready` diagnostic is not production certification.
+
+Before running it, verify the active Azure CLI profile and the effective Fabric
+SQL endpoint locally. Check `az account show --query
+'{tenantId:tenantId,userType:user.type}' -o json` and compare the tenant to the
+intended target; pass that target explicitly even if the CLI has a different
+default tenant. Confirm `FABRIC_SQL_SERVER`, `FABRIC_SQL_DATABASE`, and
+`FABRIC_SQL_SCHEMA` are either unset or match the approved endpoint. Any
+environment endpoint override takes precedence over the YAML endpoint; do not
+rely on historical deployment defaults.
+
+Run from the repository root with the already provisioned project environment
+and ODBC Driver 18:
+
+```bash
+uv run --frozen --no-sync python scripts/benchmark_exposure_read_model.py \
+  --config /verified/path/fabric.config.yaml \
+  --diagnose-azure-cli \
+  --diagnostic-tenant-id '<authorized-target-tenant-id>' \
+  --json
+```
+
+The diagnostic mode is mutually exclusive with production readiness and
+benchmark modes, requires a nonempty `--diagnostic-tenant-id`, and emits
+`diagnostic_only: true`, `production_scale_certified: false`, and
+`release_evidence_eligible: false`. Do not add `--require-ready` or interpret
+this result as the Plan 03.1 100k release benchmark. Release qualification still
+requires the production managed identity, exact generation-bound live evidence,
+the qualified benchmark, and the independent canary/rollback gates above.
+
+On macOS, if the project Python reports an OpenSSL dynamic-library load failure,
+first verify the matching OpenSSL runtime path and use `DYLD_LIBRARY_PATH` only
+for that one command invocation, for example
+`DYLD_LIBRARY_PATH=/verified/openssl/lib uv run --frozen --no-sync ...`.
+Do not add it to shell startup files or otherwise change global shell
+configuration. The diagnostic reports a stable failure code without exposing
+the raw driver, endpoint, credential, or provider error.
+
 ## Source hierarchy
 
 Readiness follows this order; a later layer cannot repair a missing earlier
