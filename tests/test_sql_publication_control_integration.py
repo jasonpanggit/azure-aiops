@@ -28,6 +28,8 @@ from ontology_discovery.sql_publication_control import (
 )
 
 pyodbc = pytest.importorskip("pyodbc", reason="Existing .[fabric-sql] extra is required for SQL engine tests")
+# Bootstrap and runtime use different transaction modes; never reuse their sessions.
+pyodbc.pooling = False
 DRIVER = "ODBC Driver 18 for SQL Server"
 
 
@@ -59,7 +61,9 @@ def local_sql():
     )
 
     def connect(*, admin=False):
-        return pyodbc.connect(text, autocommit=not admin, timeout=3)
+        connection = pyodbc.connect(text, autocommit=not admin, timeout=3)
+        connection.timeout = 3
+        return connection
 
     try:
         admin = connect(admin=True)
@@ -101,7 +105,7 @@ def publication(local_sql):
     setup = SqlPublicationSetup(target, None, connect=connect)
     setup.provision_target(
         target_id, expected, account_resource_id="/synthetic/account",
-        blob_endpoint="https://synthetic.blob.core.windows.net", container="snapshots",
+        blob_endpoint="https://synthetic-example.blob.core.windows.net", container="snapshots",
         retain_until=now + timedelta(days=3),
     )
     ctl = SqlPublicationControl(target, None, connect=connect)
@@ -109,8 +113,11 @@ def publication(local_sql):
     authority = SqlPublicationAuthority(target, None, connect=connect)
     session = ctl.acquire(target_id, owner, expected_revision=0, lease_seconds=300)
 
-    def prepare(current=session, *, evidence_change=None, catalog_change=None):
-        request = str(uuid4())
+    def prepare(
+        current=session, *, evidence_change=None, catalog_change=None,
+        artifact_change=None, request_id=None,
+    ):
+        request = request_id or str(uuid4())
         candidate = {
             "generation_id": "generation", "source_generation": "source", "content_hash": "content",
             "staged_manifest_digest": "staged", "validation_digest": "validation",
@@ -123,11 +130,13 @@ def publication(local_sql):
         )
         body = b'{"rows":[]}'
         obj = {
-            "account_resource_id": "/synthetic/account", "endpoint": "https://synthetic.blob.core.windows.net",
+            "account_resource_id": "/synthetic/account", "endpoint": "https://synthetic-example.blob.core.windows.net",
             "container": "snapshots", "object_name": f"attempts/{attempt}/ontology_entities.json",
             "length": len(body), "content_digest": hashlib.sha256(body).hexdigest(),
             "etag": '"synthetic-etag"', "version_id": None,
         }
+        if artifact_change:
+            artifact_change(obj)
         catalog = {
             "protocol": "immutable-attempt/v1", "attempt_id": attempt, "candidate": candidate,
             "products": {"ontology_entities": {
@@ -250,12 +259,53 @@ def test_engine_invalid_storage_evidence_rejects_before_activation(publication, 
 
 
 def test_engine_catalog_destination_substitution_and_seal_conflict(publication):
-    _admin, _ctl, _authority, _verifier, _a, prepare, _grant, _args, _expected = publication
+    _admin, ctl, _authority, _verifier, a, prepare, _grant, _args, _expected = publication
+    before = ctl.read_control(a["target_id"])
     with pytest.raises(SqlPublicationError):
         prepare(catalog_change=lambda catalog: catalog["products"]["ontology_entities"]["artifact"].update(
             container="production",
         ))
-    prepare()
+    assert ctl.read_control(a["target_id"]) == before
+    with pytest.raises(SqlPublicationError):
+        prepare(artifact_change=lambda artifact: artifact.update(container="production"))
+    assert ctl.read_control(a["target_id"]) == before
+    request_id = str(uuid4())
+    attempt, digest = prepare(request_id=request_id)
+    original = ctl.read_attempt(a["target_id"], attempt, digest)
+    assert prepare(request_id=request_id) == (attempt, digest)
+    with pytest.raises(SqlPublicationError):
+        prepare(request_id=request_id, catalog_change=lambda catalog: catalog["products"]["ontology_entities"].update(
+            rows=1,
+        ))
+    assert ctl.read_attempt(a["target_id"], attempt, digest) == original
+    assert ctl.read_control(a["target_id"]) == before
+
+
+def test_engine_bootstrap_runtime_transaction_isolation(local_sql):
+    _admin, connect = local_sql
+    assert pyodbc.pooling is False
+    for _ in range(3):
+        bootstrap = connect(admin=True)
+        try:
+            bootstrap_database(bootstrap)
+            cursor = bootstrap.cursor()
+            try:
+                cursor.execute("SELECT SYSUTCDATETIME()").fetchone()
+            finally:
+                cursor.close()
+            bootstrap.commit()
+        finally:
+            bootstrap.close()
+        connection = connect()
+        try:
+            assert connection.autocommit is True
+            cursor = connection.cursor()
+            try:
+                assert tuple(cursor.execute("SELECT @@TRANCOUNT, @@OPTIONS & 2").fetchone()) == (0, 0)
+            finally:
+                cursor.close()
+        finally:
+            connection.close()
 
 
 def test_engine_procedure_only_role_has_no_raw_dml_or_grant_route(local_sql):

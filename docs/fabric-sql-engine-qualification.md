@@ -12,6 +12,15 @@ Its `FABRIC_PUBLICATION_SQL_REQUIRED=1` setting turns missing connection
 configuration, an unavailable ODBC driver or an unreachable engine into failures
 instead of skips. A JUnit gate also rejects skipped, failed or missing cases.
 The disposable container is removed by an unconditional cleanup step.
+Pytest stops on the first failure, emits verbose traces and a 60-second
+faulthandler stack, and is bounded by a ten-minute timeout with a 30-second
+termination grace. Logs and JUnit are uploaded even after a step failure;
+external hard cancellation can still prevent artifact upload.
+The local fixture disables ODBC pooling before opening any connection to isolate
+transactional bootstrap sessions from autocommit runtime sessions. An engine
+regression checks zero entry transaction count across that lifecycle; catalog
+coverage rejects coherent destination substitution and conflicting reseals of
+the same attempt while preserving the target and the original seal.
 The suite also executes a five-second `WAITFOR` through the production SQL
 client with a one-second statement timeout and requires the expected ODBC
 timeout, one execution, a sanitized failure and closed resources.

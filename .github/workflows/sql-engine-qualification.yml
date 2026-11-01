@@ -119,16 +119,21 @@ jobs:
         env:
           FABRIC_PUBLICATION_SQL_REQUIRED: "1"
         run: |
-          python -m pytest -v --tb=short -rA \
+          set -euo pipefail
+          mkdir -p sql-engine-results
+          timeout --signal=INT --kill-after=30s 10m \
+            python -m pytest -x -vv -s --tb=long -rA \
+            -o faulthandler_timeout=60 \
             --junitxml=sql-engine-results/results.xml \
             tests/test_sql_publication_control_integration.py \
             tests/test_sql_control_engine_adversarial.py \
             tests/test_sql_control_engine_ownership_chain.py \
             tests/test_sql_reserved_identifiers.py \
-            tests/test_sql_publication_timeout_engine.py
+            tests/test_sql_publication_timeout_engine.py \
+            2>&1 | tee sql-engine-results/pytest.log
 
       - name: Reject skipped or missing engine cases
-        if: always() && hashFiles('sql-engine-results/results.xml') != ''
+        if: always()
         run: |
           python - <<'PY'
           import sys
@@ -141,7 +146,7 @@ jobs:
           failures = sum(int(suite.attrib.get("failures", 0)) for suite in suites)
           errors = sum(int(suite.attrib.get("errors", 0)) for suite in suites)
           print(f"SQL engine cases: tests={tests} skipped={skipped} failures={failures} errors={errors}")
-          if tests < 22 or skipped or failures or errors:
+          if tests < 23 or skipped or failures or errors:
               sys.exit("SQL engine test run incomplete or unsuccessful")
           PY
 
@@ -150,7 +155,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sql-engine-results-${{ github.run_id }}-${{ github.run_attempt }}
-          path: sql-engine-results/results.xml
+          path: sql-engine-results/
           if-no-files-found: warn
           retention-days: 7
 
