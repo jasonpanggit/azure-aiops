@@ -8139,3 +8139,52 @@ adapter must isolate credential identities in its ODBC pool before authority
 runtime activation; its same-DSN token connections lack that protection.
 That source finding was sent to Fabric. No authority runtime, signatures,
 retention, or publication execution has been enabled or claimed complete.
+
+### PR #431 immediate deployed-image test (2026-11-01)
+
+The user explicitly superseded waiting for the natural schedule with
+"dont wait for schedule. test it now." Exactly one execution of the existing
+inventory publisher was started, without a template override, after verifying
+zero active executions and parity with the sealed identity, command, resources,
+environment-value hashes (including the corrected Fabric target), registry,
+schedule, timeout, and retry settings.
+
+- Execution `aiops-dev-inventory-publication-8melbhk` succeeded from
+  `2026-11-01T22:46:17Z` to `2026-11-01T23:00:16Z`. Its execution template
+  contains the deployed immutable image
+  `sha256:50d35f31ac2aefcfe12ceb1a993b7990a0c6a545f9f44ee9155a75d56f8001c9`.
+- The emitted summary reports connection `demo` completed, publication
+  completed with 201 tables, and graph refresh `Completed`, all bound to
+  `activation-76badb8a-5233-4982-8a20-251e98b1d1b0`.
+- The immutable combined manifest identifies source run
+  `0ec7af97-6ae7-441c-abe4-3f939bc69d8d`, acquired during this execution.
+  Publication run `02a4d89a-17ab-4525-91f4-2595409be0d3` completed at
+  `2026-11-01T22:54:57.828343Z`.
+- Exact-generation source counts are 113 ImageDigest rows, 113
+  ContainerImageExposure rows, zero workload observations, zero workload
+  deployments, and 12 workload checkpoints (four workspaces, three queried
+  families). Every checkpoint is fresh, not carried forward, and
+  `healthy-empty`; supplemental image inventory is not a required family.
+- Direct corrected-target SQL readback using explicitly tenant-scoped
+  `AzureCliCredential` at `2026-11-01T23:00:24Z` confirms source-run-qualified
+  counts of zero observations, zero deployments, and 12 checkpoints. This
+  proves empty-source persistence parity, not exact workload traversal.
+- Read-only ARM inspection found the validation AKS cluster `Stopped`, and
+  a fresh 15-minute source query returned no required-family rows. Thus
+  nonempty exact Defender/container/pod digest, ContainerID, and provider-time
+  linkage remains **BLOCKED**. Successful execution does not close that gate.
+
+The first local ODBC read failed to load OpenSSL. Repeating the same read with
+the already installed OpenSSL library path succeeded; no package, grant, or
+cloud configuration change was made. No second publisher execution was started.
+The natural schedule remains `30 14 * * *`; API/web/MCP/Network and Terraform
+were not changed. The 100k, exact traversal, canary, rollback, and acceptance
+gates remain separate and unproven by this test.
+
+Sanitized receipts are retained under session `f13dff91` at
+`files/release-431-a2262b1/authorized-immediate-test-` with suffixes
+`start.json`, `execution.json`, `source-readback.json`, `sql-readback.json`,
+and `publication-summary.json`. The source manifest SHA-256 is
+`a1358322ce01c67d05b1e0f23124365fb368be8da2e103894cb2b0d855696f16`;
+the checkpoint JSONL SHA-256 is
+`2ccded011252e48eacec96a6c1f9d14901a84d25f152795c3b970bb574e590c4`.
