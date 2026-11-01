@@ -32,6 +32,8 @@ synthetic and test-local. The workflow performs no Azure, Fabric, Blob or Entra
 operations and grants no deployed identity. Its artifacts are test reports, not
 publication, WORM, runtime, deployment or production-acceptance evidence.
 
-The SQL/Blob broker metadata engine test is intentionally excluded until its
-composition module and associated tests are integrated into the same source
-revision. The workflow cannot qualify code that is absent from that revision.
+The SQL/Blob broker metadata test is included once the broker composition is
+present in this revision. It exercises metadata retention semantics against
+the same disposable SQL engine. Earlier engine-workflow evidence predates
+this case and does not qualify it; a fresh successful native x86-64 run is
+required to qualify the added case.

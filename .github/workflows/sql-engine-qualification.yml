@@ -7,6 +7,10 @@ on:
       - "pyproject.toml"
       - "src/ontology_discovery/sql_control/**"
       - "src/ontology_discovery/sql_publication_control.py"
+      - "src/ontology_discovery/sql_blob_broker.py"
+      - "src/ontology_discovery/immutable_attempt.py"
+      - "tests/test_sql_blob_broker.py"
+      - "tests/test_sql_blob_broker_engine.py"
       - "tests/test_sql_publication_control.py"
       - "tests/test_sql_publication_control_integration.py"
       - "tests/test_sql_control_engine_adversarial.py"
@@ -20,6 +24,10 @@ on:
       - "pyproject.toml"
       - "src/ontology_discovery/sql_control/**"
       - "src/ontology_discovery/sql_publication_control.py"
+      - "src/ontology_discovery/sql_blob_broker.py"
+      - "src/ontology_discovery/immutable_attempt.py"
+      - "tests/test_sql_blob_broker.py"
+      - "tests/test_sql_blob_broker_engine.py"
       - "tests/test_sql_publication_control.py"
       - "tests/test_sql_publication_control_integration.py"
       - "tests/test_sql_control_engine_adversarial.py"
@@ -130,6 +138,7 @@ jobs:
             tests/test_sql_control_engine_ownership_chain.py \
             tests/test_sql_reserved_identifiers.py \
             tests/test_sql_publication_timeout_engine.py \
+            tests/test_sql_blob_broker_engine.py \
             2>&1 | tee sql-engine-results/pytest.log
 
       - name: Reject skipped or missing engine cases
@@ -146,7 +155,7 @@ jobs:
           failures = sum(int(suite.attrib.get("failures", 0)) for suite in suites)
           errors = sum(int(suite.attrib.get("errors", 0)) for suite in suites)
           print(f"SQL engine cases: tests={tests} skipped={skipped} failures={failures} errors={errors}")
-          if tests < 23 or skipped or failures or errors:
+          if tests != 26 or skipped or failures or errors:
               sys.exit("SQL engine test run incomplete or unsuccessful")
           PY
 

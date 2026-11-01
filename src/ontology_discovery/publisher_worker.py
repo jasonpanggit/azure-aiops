@@ -27,6 +27,7 @@ from .publisher import (
     OntologyGenerationPublisher,
     PostCheckRollbackError,
     PublicationSafetyError,
+    _fixed_table_materializer,
 )
 
 
@@ -47,6 +48,8 @@ class PublisherWorker:
         drill_control: PublisherDrillControl | None = None,
         maintenance_authorizer: Any | None = None,
     ) -> None:
+        if not _fixed_table_materializer(materialize):
+            raise PublicationSafetyError("immutable_attempt:legacy_worker_protocol_forbidden")
         if maintenance_authorizer is not None and not getattr(
             consumer_check, "maintenance_observer", False
         ):

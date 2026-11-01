@@ -25,17 +25,33 @@ import re
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pyarrow as pa
 
+from fabric.maintenance_output import (
+    GenerationOutputContext,
+    GenerationOutputPolicy,
+    output_digest,
+)
 from fabric.schema_registry import schema_for
 from fabric.sync_service import _generation_catalog, ontology_generation_products
 from storage.onelake_documents import DocumentConflictError, OneLakeDocumentStore
 
+from .immutable_attempt import (
+    PROTOCOL as ATTEMPT_PROTOCOL,
+)
+from .immutable_attempt import (
+    AttemptBoundary,
+    AttemptControl,
+    AttemptReference,
+    AttemptSession,
+    ImmutableAttemptProtocol,
+)
 from .maintenance_consumers import CONSUMER_FAMILIES, ConsumerObservation
 from .publisher import PublicationSafetyError
 
@@ -307,14 +323,22 @@ class PinnedProductReader:
         receipts: ProductReceiptStore,
         delta: Any,
         onelake: Any,
+        attempt_protocol: ImmutableAttemptProtocol | None = None,
     ) -> None:
         self._pointer = read_pointer
         self._receipts = receipts
         self._delta = delta
         self._onelake = onelake
+        self._attempt_protocol = attempt_protocol
         self._cache: tuple[str, str, tuple[list, list]] | None = None
 
     def active(self) -> tuple[str | None, dict[str, Any] | None]:
+        if self._attempt_protocol is not None:
+            reference, catalog = self._attempt_protocol.active()
+            return (
+                reference.generation_id if reference else None,
+                self._attempt_receipt(reference, catalog) if reference and catalog else None,
+            )
         snapshot = self._pointer()
         if snapshot.pointer is None:
             return None, None
@@ -322,6 +346,9 @@ class PinnedProductReader:
         return generation, self._receipts.latest(generation)
 
     def read_table(self, table: str, receipt: Mapping[str, Any]) -> list[dict[str, Any]]:
+        if self._attempt_protocol is not None:
+            reference = AttemptReference.parse(receipt["attempt_reference"])
+            return self._attempt_protocol.read_table(reference, table)
         product = receipt["products"][table]
         layer, logical = table.split("_", 1)
         return self._delta.read(
@@ -330,6 +357,18 @@ class PinnedProductReader:
 
     def verify(self, receipt: Mapping[str, Any]) -> dict[str, str]:
         """Re-read every product at its pinned version and re-hash membership."""
+        if self._attempt_protocol is not None:
+            reference = AttemptReference.parse(receipt["attempt_reference"])
+            catalog = self._attempt_protocol.read_catalog(reference)
+            if (
+                receipt.get("receipt_digest") != reference.catalog_digest
+                or receipt.get("products") != catalog["products"]
+            ):
+                raise PublicationSafetyError("immutable_attempt:receipt")
+            return {
+                name: product["content_digest"]
+                for name, product in catalog["products"].items()
+            }
         digests: dict[str, str] = {}
         for table, product in sorted(receipt["products"].items()):
             rows = self.read_table(table, receipt)
@@ -339,12 +378,29 @@ class PinnedProductReader:
             digests[table] = product["hash"]
         return digests
 
+    @staticmethod
+    def _attempt_receipt(
+        reference: AttemptReference, catalog: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            **catalog["candidate"],
+            "receipt_digest": reference.catalog_digest,
+            "attempt_reference": reference.as_dict(),
+            "protocol": ATTEMPT_PROTOCOL,
+            "products": catalog["products"],
+        }
+
     def read_ontology(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         generation, receipt = self.active()
         if generation is None:
             return [], []
         if receipt is None:
             raise PublicationSafetyError("product_receipt_missing")
+        if self._attempt_protocol is not None:
+            return (
+                self.read_table("ontology_entities", receipt),
+                self.read_table("ontology_relationships", receipt),
+            )
         key = (generation, str(receipt["receipt_digest"]))
         if self._cache is not None and self._cache[:2] == key:
             return list(self._cache[2][0]), list(self._cache[2][1])
@@ -383,7 +439,29 @@ class CandidateGenerationMaterializer:
         definition_fingerprint: Callable[[], str] | None = None,
         lease_ttl: timedelta = timedelta(minutes=5),
         fault: Callable[[str], None] | None = None,
+        isolated_output: bool = False,
+        output_policies: tuple[GenerationOutputPolicy, ...] = (),
+        publication_protocol: str = "fixed-tables/v1",
+        attempt_boundary: AttemptBoundary | None = None,
     ) -> None:
+        if publication_protocol not in {"fixed-tables/v1", ATTEMPT_PROTOCOL}:
+            raise PublicationSafetyError("publication_protocol_unsupported")
+        if publication_protocol == "fixed-tables/v1" and attempt_boundary is not None:
+            raise PublicationSafetyError("attempt_boundary_requires_protocol")
+        self.publication_protocol = publication_protocol
+        if (
+            type(isolated_output) is not bool
+            or type(output_policies) is not tuple
+            or any(type(policy) is not GenerationOutputPolicy for policy in output_policies)
+            or (isolated_output and not output_policies)
+            or len({
+                (policy.context.operation, policy.context.generation_id)
+                for policy in output_policies
+            }) != len(output_policies)
+        ):
+            raise PublicationSafetyError("output_manifest:policies_missing_or_ambiguous")
+        self._isolated_output = isolated_output or bool(output_policies)
+        self._output_policies = output_policies
         if storage is None or documents is None or service is None:
             raise PublicationSafetyError("materializer_unqualified")
         local_root = getattr(getattr(service, "onelake", None), "local_root", None)
@@ -399,6 +477,20 @@ class CandidateGenerationMaterializer:
             else None
         )
         self._definition_fingerprint = definition_fingerprint
+        if publication_protocol == ATTEMPT_PROTOCOL:
+            if not output_policies or attempt_boundary is None:
+                raise PublicationSafetyError("immutable_attempt:boundary_and_policy_required")
+            self._attempt_protocol = ImmutableAttemptProtocol(attempt_boundary)
+            self.reader = PinnedProductReader(
+                read_pointer=storage.read_pointer, receipts=None,
+                delta=service.delta, onelake=service.onelake,
+                attempt_protocol=self._attempt_protocol,
+            )
+            self._attempt_session: AttemptSession | None = None
+            self._attempt_id: str | None = None
+            self._attempt_reference: AttemptReference | None = None
+            self._attempt_request_digests: dict[str, str] = {}
+            return
         self._mutation_lock = _LocalTargetMutationLock(Path(local_root), self._target)
         self._clock = clock
         self._fault = fault or (lambda _point: None)
@@ -430,9 +522,190 @@ class CandidateGenerationMaterializer:
         pointer_etag: str | None,
         runtime_guard: Callable[[], None] | None = None,
     ) -> None:
+        if self.publication_protocol == ATTEMPT_PROTOCOL:
+            raise PublicationSafetyError("immutable_attempt:use_bind_attempt")
         self._ctx = _Context(owner_id, int(fence), predecessor, pointer_etag)
         self._began = False
         self._runtime_guard = runtime_guard
+
+    def bind_attempt(self, session: AttemptSession, *, attempt_id: str) -> None:
+        """Bind an enforcing-boundary session, never a caller-selected fence."""
+        if self.publication_protocol != ATTEMPT_PROTOCOL:
+            raise PublicationSafetyError("immutable_attempt:protocol_not_selected")
+        self._attempt_session, self._attempt_id = session, attempt_id
+        self._attempt_reference = None
+
+    def commit_attempt(
+        self, *, expected_revision: str, request_id: str,
+        authorization_digest: str | None = None,
+    ) -> AttemptControl:
+        """Publish the exact staged attempt via the enforcing commit boundary."""
+        if (
+            self.publication_protocol != ATTEMPT_PROTOCOL
+            or self._attempt_reference is None or self._attempt_session is None
+        ):
+            raise PublicationSafetyError("immutable_attempt:not_materialized")
+        prior_digest = (
+            authorization_digest if authorization_digest is not None
+            else self._attempt_request_digests.get(request_id)
+        )
+        if prior_digest is not None:
+            recovered = self.recover_attempt_outcome(
+                self._attempt_reference, expected_revision=expected_revision, request_id=request_id,
+                operation="admit", authorization_digest=prior_digest,
+            )
+            if recovered is not None:
+                return recovered
+        catalog = self._attempt_protocol.read_catalog(self._attempt_reference)
+        staged = self._staged(self._attempt_reference.generation_id)
+        auth = self._authorization(self._attempt_reference.generation_id, staged, mode="admit")
+        binding = catalog["candidate"]
+        if (
+            auth["authorization_digest"] != binding["authorization_digest"]
+            or auth["attestation_digest"] != binding["attestation_digest"]
+            or output_digest(staged["manifest"]) != binding["staged_manifest_digest"]
+            or output_digest(staged["validation"]) != binding["validation_digest"]
+            or self._target_for(staged, self._attempt_reference.generation_id)
+            != binding["expected_target"]
+            or (prior_digest is not None and prior_digest != auth["authorization_digest"])
+        ):
+            raise PublicationSafetyError("immutable_attempt:authority_changed")
+        self._attempt_request_digests[request_id] = auth["authorization_digest"]
+        return self._attempt_protocol.commit(
+            self._attempt_session, self._attempt_reference,
+            expected_revision=expected_revision, operation="admit",
+            request_id=request_id, authorization_digest=auth["authorization_digest"],
+        )
+
+    def restore_attempt(
+        self, reference: AttemptReference, *, expected_revision: str, request_id: str,
+        authorization_digest: str | None = None,
+    ) -> AttemptControl:
+        """Restore an exact retained catalog without any physical rematerialization."""
+        if self.publication_protocol != ATTEMPT_PROTOCOL or self._attempt_session is None:
+            raise PublicationSafetyError("immutable_attempt:session_missing")
+        prior_digest = (
+            authorization_digest if authorization_digest is not None
+            else self._attempt_request_digests.get(request_id)
+        )
+        if prior_digest is not None:
+            recovered = self.recover_attempt_outcome(
+                reference, expected_revision=expected_revision, request_id=request_id,
+                operation="restore", authorization_digest=prior_digest,
+            )
+            if recovered is not None:
+                return recovered
+        catalog = self._attempt_protocol.read_catalog(reference)
+        candidate = catalog["candidate"]
+        staged = self._staged(reference.generation_id)
+        target = self._target_for(staged, reference.generation_id)
+        if (
+            candidate["staged_manifest_digest"] != output_digest(staged["manifest"])
+            or candidate["expected_target"] != target
+            or candidate["validation_digest"] != output_digest(staged["validation"])
+            or candidate["content_hash"] != staged["manifest"]["content_hash"]
+        ):
+            raise PublicationSafetyError("immutable_attempt:retained_binding")
+        if self._authorizer is None:
+            raise PublicationSafetyError("restore_authority_missing")
+        release = self._authorizer.authorize_restore(expected_target={
+            **target, "generation_id": reference.generation_id,
+            "content_hash": candidate["content_hash"],
+            "authorization_digest": candidate["authorization_digest"],
+        })
+        self._validate_release_target(release, target)
+        if prior_digest is not None and prior_digest != release.attestation_digest:
+            raise PublicationSafetyError("immutable_attempt:authority_changed")
+        self._attempt_request_digests[request_id] = release.attestation_digest
+        return self._attempt_protocol.commit(
+            self._attempt_session, reference, expected_revision=expected_revision,
+            operation="restore", request_id=request_id,
+            authorization_digest=release.attestation_digest,
+        )
+
+    def recover_attempt_outcome(
+        self, reference: AttemptReference, *, expected_revision: str, request_id: str,
+        operation: Literal["admit", "restore"], authorization_digest: str,
+    ) -> AttemptControl | None:
+        """Read an exact authenticated historical outcome without reauthorizing.
+
+        A restarted caller supplies its durably saved ORIGINAL digest and other
+        request fields. This read-only API cannot activate any uncommitted
+        request. Returning a historical pointer does not authorize artifact
+        reads or imply that pointer is still active.
+        """
+        if self.publication_protocol != ATTEMPT_PROTOCOL or self._attempt_session is None:
+            raise PublicationSafetyError("immutable_attempt:session_missing")
+        return self._attempt_protocol.recover_commit(
+            self._attempt_session, reference, expected_revision=expected_revision,
+            request_id=request_id, operation=operation,
+            authorization_digest=authorization_digest,
+        )
+
+    def _materialize_attempt(self, candidate: Any) -> Mapping[str, Any]:
+        if self._attempt_session is None or self._attempt_id is None:
+            raise PublicationSafetyError("immutable_attempt:session_missing")
+        staged = deepcopy(self._staged(candidate.generation_id))
+        if (
+            tuple(staged["entities"]) != tuple(candidate.entities)
+            or tuple(staged["relationships"]) != tuple(candidate.relationships)
+            or staged["manifest"]["source_generation"] != candidate.source_generation
+            or staged["validation"].get("passed") is not True
+        ):
+            raise PublicationSafetyError("candidate_differs_from_immutable_stage")
+        auth = self._authorization(candidate.generation_id, staged, mode="admit")
+        manifest = staged["manifest"]
+        target = self._target_for(staged, candidate.generation_id)
+        context = GenerationOutputContext(
+            operation="admission", generation_id=candidate.generation_id,
+            source_generation=candidate.source_generation, content_hash=manifest["content_hash"],
+            authorization_digest=auth["authorization_digest"],
+            attestation_digest=auth["attestation_digest"],
+            staged_manifest_digest=output_digest(manifest),
+            validation_digest=output_digest(staged["validation"]),
+            expected_target=tuple(sorted(target.items())),
+        )
+        policy = next((p for p in self._output_policies if p.context == context), None)
+        if policy is None:
+            raise PublicationSafetyError("output_manifest:operation_policy_missing")
+        policy.validate_candidate(context, staged["entities"], staged["relationships"])
+        if self._service.ontology_publisher is not None or self._service.ontology_id:
+            raise PublicationSafetyError("output_manifest:native_enabled")
+        products = ontology_generation_products(
+            staged["entities"], staged["relationships"], generation_id=candidate.generation_id,
+            source_generation=candidate.source_generation, content_hash=manifest["content_hash"],
+            **{key: auth[key] for key in ("authorization_digest", "attestation_digest")},
+            validation=staged["validation"],
+        )
+        # Preserve the reviewed complete projection check. Actual attempt
+        # destinations are issued/enforced by the boundary, never these fixed URIs.
+        from fabric.maintenance_output import describe_outputs
+
+        catalog = _generation_catalog(
+            products, {name: {"version": None} for name in products},
+            candidate.generation_id, manifest["content_hash"],
+        )
+        policy.validate_outputs(describe_outputs(products, self._service.onelake, catalog))
+        reference = self._attempt_protocol.stage(
+            self._attempt_session, attempt_id=self._attempt_id,
+            candidate={
+                "generation_id": context.generation_id,
+                "source_generation": context.source_generation,
+                "content_hash": context.content_hash,
+                "authorization_digest": context.authorization_digest,
+                "attestation_digest": context.attestation_digest,
+                "staged_manifest_digest": context.staged_manifest_digest,
+                "validation_digest": context.validation_digest,
+                "expected_target": target,
+            },
+            products=products,
+        )
+        self._attempt_reference = reference
+        return {
+            "status": "completed", "protocol": ATTEMPT_PROTOCOL,
+            "attempt_reference": reference.as_dict(),
+            "receipt_digest": reference.catalog_digest,
+        }
 
     def _context(self) -> _Context:
         if self._ctx is None:
@@ -447,6 +720,10 @@ class CandidateGenerationMaterializer:
             self.lease.acquire(ctx.owner_id, ctx.fence)
 
     def assert_owned(self) -> None:
+        if self.publication_protocol == ATTEMPT_PROTOCOL:
+            if self._attempt_protocol.control().session != self._attempt_session:
+                raise PublicationSafetyError("immutable_attempt:stale_session")
+            return
         self.lease.assert_held()
 
     def assert_restore_authorized(self) -> None:
@@ -458,6 +735,8 @@ class CandidateGenerationMaterializer:
             raise PublicationSafetyError("restore_not_authorized") from exc
 
     def release(self) -> None:
+        if self.publication_protocol == ATTEMPT_PROTOCOL:
+            return  # Boundary owns expiry/session lifecycle; no caller-side lease.
         self.lease.release()
         self._mutation_lock.release()
 
@@ -774,6 +1053,31 @@ class CandidateGenerationMaterializer:
     ) -> dict[str, Any]:
         ctx = self._context()
         manifest = staged["manifest"]
+        output_policy = None
+        output_context = None
+        if self._isolated_output:
+            if kind not in {"materialization", "restoration"}:
+                raise PublicationSafetyError("output_manifest:operation")
+            output_context = GenerationOutputContext(
+                operation="restoration" if kind == "restoration" else "admission",
+                generation_id=generation_id,
+                source_generation=str(manifest["source_generation"]),
+                content_hash=str(manifest["content_hash"]),
+                authorization_digest=auth["authorization_digest"],
+                attestation_digest=auth["attestation_digest"],
+                staged_manifest_digest=output_digest(manifest),
+                validation_digest=output_digest(staged["validation"]),
+                expected_target=tuple(sorted(self._target_for(staged, generation_id).items())),
+            )
+            output_policy = next((
+                policy for policy in self._output_policies
+                if policy.context == output_context
+            ), None)
+            if output_policy is None:
+                raise PublicationSafetyError("output_manifest:operation_policy_missing")
+            output_policy.validate_candidate(
+                output_context, staged["entities"], staged["relationships"]
+            )
         expected = ontology_generation_products(
             staged["entities"],
             staged["relationships"],
@@ -798,6 +1102,10 @@ class CandidateGenerationMaterializer:
             # Ownership may have changed while this process waited for the
             # target-wide OS lock. Never enter a sink write on a stale lease.
             self.lease.assert_held()
+            policy_args = (
+                {"output_policy": output_policy, "output_context": output_context}
+                if output_policy is not None else {}
+            )
             written = self._service.materialize_ontology_generation(
                 entities=staged["entities"],
                 relationships=staged["relationships"],
@@ -808,6 +1116,7 @@ class CandidateGenerationMaterializer:
                 attestation_digest=auth["attestation_digest"],
                 validation=staged["validation"],
                 guard=self._guard_write,
+                **policy_args,
             )
             self.lease.assert_held()
             if kind == "restoration":
@@ -869,6 +1178,8 @@ class CandidateGenerationMaterializer:
             self._mutation_lock.release()
 
     def __call__(self, candidate: Any) -> Mapping[str, Any]:
+        if self.publication_protocol == ATTEMPT_PROTOCOL:
+            return self._materialize_attempt(candidate)
         ctx = self._context()
         self._acquire()
         reconciled = self.reconcile()
@@ -946,6 +1257,8 @@ class CandidateGenerationMaterializer:
 
     def verify_before_cas(self, candidate: Any) -> dict[str, Any]:
         """Candidate, stage, authorization and observed products must agree."""
+        if self.publication_protocol == ATTEMPT_PROTOCOL:
+            raise PublicationSafetyError("immutable_attempt:use_commit_attempt")
         self.lease.assert_held()
         if self._runtime_guard is not None:
             self._runtime_guard()
@@ -1009,6 +1322,8 @@ class CandidateGenerationMaterializer:
         Never writes the caller's predecessor over a different winner: the
         pointer is re-read and the exact authorized winner is reconciled.
         """
+        if self.publication_protocol == ATTEMPT_PROTOCOL:
+            raise PublicationSafetyError("immutable_attempt:use_restore_attempt")
         self._context()
         try:
             self._acquire()
@@ -1096,6 +1411,8 @@ class CandidateGenerationMaterializer:
 
     def reconcile(self) -> dict[str, Any]:
         """Restart reconciliation of a non-terminal journal against real state."""
+        if self.publication_protocol == ATTEMPT_PROTOCOL:
+            raise PublicationSafetyError("immutable_attempt:retry_exact_request")
         self._acquire()
         current = self.journal.read()
         if current is None or current.get("phase") in TERMINAL_PHASES:

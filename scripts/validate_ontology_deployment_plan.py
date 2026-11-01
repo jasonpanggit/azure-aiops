@@ -357,6 +357,25 @@ def validate_saved_plan(
 ) -> dict[str, Any]:
     """Validate one Terraform JSON plan and return sanitized evidence."""
 
+    return _validate_saved_plan(
+        plan,
+        environment=environment,
+        expected_image_digests=expected_image_digests,
+        worker_image_digests={
+            name: str(expected_image_digests.get("api") or "")
+            for name in (*_WORKER_NAMES, *_FIXTURE_EXPECTATIONS)
+        },
+    )
+
+
+def _validate_saved_plan(
+    plan: Mapping[str, Any],
+    *,
+    environment: str,
+    expected_image_digests: Mapping[str, str],
+    worker_image_digests: Mapping[str, str],
+) -> dict[str, Any]:
+    """Shared plan checks; callers must supply every worker pin explicitly."""
     if environment not in {"production", "validation"}:
         raise PlanValidationError("environment must be production or validation")
     expected = (
@@ -410,7 +429,7 @@ def validate_saved_plan(
                 + name
                 + ("[0]" if name == "ontology_rbac_validation" else "")
             ],
-            api_digest,
+            worker_image_digests[name],
             name,
         )
         for name in _WORKER_NAMES
@@ -466,7 +485,7 @@ def validate_saved_plan(
                 display_name=display_name,
                 argument=argument,
                 coordinator_identity=coordinator_identity,
-                expected_digest=api_digest,
+                expected_digest=worker_image_digests[terraform_name],
             )
     else:
         fixture_addresses = {
