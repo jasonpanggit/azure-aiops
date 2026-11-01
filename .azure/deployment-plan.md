@@ -1675,6 +1675,119 @@ config hash48f22850 retains all91F03thresholds unchanged.
 `files/f05-build-receipt.json` and `f05-packaged-smoke-result.json` retain proof.
 No live Job image mutation has occurred at validation time.
 
+### PR #431 two-required-family publisher image qualification (2026-11-01)
+
+Status: Deployed; next natural publication/readback pending.
+This follow-on qualifies the merged source correction before an image-only update
+to the existing `aiops-dev-inventory-publication` Job. Preserve the corrected
+Fabric target, publisher identity, 2 CPU / 4 GiB, zero retries, command, roots,
+configuration, and `30 14 * * *` schedule. Do not start a manual execution or
+claim live publication, generation-bound counts, workload traversal, benchmark,
+canary, rollback, or Phase 03.1 acceptance from package validation.
+
+Merged source: `a2262b1c78a85ce18f9f1fc9d449fb9f172234d0`.
+Archive SHA-256: `4e11552776000586ec5ffee5a6a823f24d950ea0e6297f16081bf4ad94657eab`.
+The ACR build output is `aiops-api:r431-a2262b1-20261101`, run `cr3h`,
+digest `sha256:50d35f31ac2aefcfe12ceb1a993b7990a0c6a545f9f44ee9155a75d56f8001c9`.
+The image was applied only after the remaining validation and preimage gates
+passed.
+
+#### All validation checks pass — PR #431 follow-on image
+
+- [x] 1. Core validation: confirmed the established subscription, resource group,
+  registry, target Job, and no active execution immediately before rollout.
+  Infrastructure-template validation, what-if, and Terraform apply are
+  inapplicable to this existing-resource image-only update.
+- [x] 2. Docker build and package verification: native `linux/amd64` ACR run
+  `cr3h` succeeded from the exact merged-main archive. An offline, read-only
+  container smoke verifies build metadata, all 491 packaged `src/` files,
+  required `ContainerInventory` and `KubePodInventory` families, optional
+  `ContainerImageInventory`, and the exact `workload_inventory.py`,
+  `sync_service.py`, and diagnostic-script hashes. Source-tree hash:
+  `148d7751d456e90e9e95e129095d51c63a1969f12d5aee11f5c40a6d1d0b032a`.
+- [x] 3. Azure policy validation: inspected applicable policy assignments for
+  the existing target; no policy, role, or identity changes are in scope.
+- [x] Static role verification: reviewed
+  `infra/terraform/inventory_publication_job.tf`; the image-only update changes
+  no role assignment, identity, registry authentication, or Terraform state.
+- [x] 4. Recorded a fresh protected-state preimage and verified that no
+  publisher execution was active. Post-update parity is recorded in the
+  rollout result below.
+
+### Section 7: PR #431 follow-on validation proof (2026-11-01)
+
+`git ls-remote origin refs/heads/main` returned the exact merged source
+`a2262b1c78a85ce18f9f1fc9d449fb9f172234d0`. `az account show`,
+`az group show`, `az containerapp env show`, and `az acr show` confirmed the
+approved subscription `890c9bfc-d09c-4143-9ce5-465e75e3eecc`, tenant
+`262a3a77-7d74-4684-8937-897d98d2a17a`, `aiops-dev-rg` in `australiaeast`,
+and the existing Succeeded Container Apps environment and ACR.
+
+ACR QuickRun `cr3h` succeeded at `2026-11-01T16:49:07.955421Z` on
+`linux/amd64`, producing `aiopsdevacr7h0ih3.azurecr.io/aiops-api` digest
+`sha256:50d35f31ac2aefcfe12ceb1a993b7990a0c6a545f9f44ee9155a75d56f8001c9`.
+An offline `docker run --rm -i --platform linux/amd64 --network none
+--read-only --entrypoint python` check passed build-metadata revision,
+all 491 packaged `src/` file hashes, the required-family matcher
+(`ContainerInventory` and `KubePodInventory`), supplemental
+`ContainerImageInventory`, sync-service parity, and the diagnostic-script
+hash. Archive, manifest, and build/package receipt are sealed under
+`files/release-431-a2262b1/`; the receipt SHA-256 is
+`7ce2a8118bf7e4228f437b599b8fd0971b1c576d859f2aa72431af6427aa959d`.
+
+At `2026-11-01T16:56:34.586720Z`, the existing scheduled Job was Ready and
+still pinned to its previous digest `sha256:acba3e4533737ab841bb04e2d22ce996503327d98f9473c9da756311a54dabf8`.
+The newest natural execution `aiops-dev-inventory-publication-29892390`
+succeeded at `2026-11-01T14:42:14Z`; no execution was active. Policy
+assignments at the resource group were empty. The publisher identity's only
+role assignment remained Key Vault Secrets User at its existing vault scope.
+Static review of `infra/terraform/inventory_publication_job.tf` confirmed the
+image-only change requires no role, identity, or infrastructure modification.
+
+The sanitized protected-state preimage has SHA-256
+`ee76e1091e54b4a7908a54cf6545906f12f329d907c865ecbf643c582c835688` and is
+sealed at `files/release-431-a2262b1/pre-rollout-protected-state.json`. It
+records the full Job template/configuration fingerprint with the image
+redacted, current app and other-job fingerprints, role/policy readbacks, and
+hashes of environment values rather than their contents. No runtime image
+update, manual execution, publication, grant, or Terraform operation has
+occurred as part of this validation.
+
+The protected DEV API readback is revision `aiops-dev-api--0000013` at 4 CPU /
+16 GiB, and the DEV web is `aiops-dev-web--0000029`; neither is a rollout
+target. The selected subscription contains no standalone Network Container
+App. All non-target apps and ten other Jobs are included in the preimage for
+post-update equality checks. No application, Network, API, or web mutation is
+in scope.
+
+### PR #431 follow-on image-only rollout result (2026-11-01)
+
+At `2026-11-01T17:00:28Z`, updated only the existing
+`aiops-dev-inventory-publication` Job container image using
+`az containerapp job update --container-name inventory-publication --image
+<immutable digest>`. Azure returned provisioning state `Succeeded` by
+`2026-11-01T17:01:04Z`; an independent `az containerapp job show` readback
+confirmed the exact image digest, Ready status, unchanged
+`30 14 * * *` schedule, zero retries, 3600-second timeout, existing publisher
+identity, command, and 2 CPU / 4 GiB resources.
+
+The normalized full Job template/configuration fingerprint with the image
+redacted is identical before and after:
+`df8c4667edfde17baec50d4768f625ca9fccff14758dfbdf1e257acc3c0b3add`.
+The four Container Apps, ten other Jobs, policy assignments, and publisher
+role assignment all match the fresh preimage. Rollout receipt:
+`files/release-431-a2262b1/publisher-image-rollout-receipt.json`, SHA-256
+`45040235c208529046bc53d7c87de0dfa9b66000536bfc32af16e452a9ff50c7`.
+No manual execution was requested. The latest execution remains the prior
+natural run `aiops-dev-inventory-publication-29892390`, which succeeded at
+`2026-11-01T14:42:14Z` on the old image; it is not evidence for the new source.
+The next eligible natural run is `2026-11-02T14:30:00Z`.
+
+The Job has no public ingress or endpoint. No API, web, MCP, Network, Terraform
+state, identity, grant, or schedule changes occurred. Wait for the next
+natural execution and perform generation-bound source/readback checks before
+making any publication or Phase 03.1 acceptance claim.
+
 ### F05 rollout complete; future live acceptance pending
 
 Superseding user-directed immediate test (2026-10-28T22:46Z): exactly one
