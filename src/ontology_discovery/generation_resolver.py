@@ -101,6 +101,7 @@ CONSUMER_INVENTORY: tuple[ConsumerInventoryEntry, ...] = (
     _entry("fabric-schema-registry", "fabric", "src/fabric/schema_registry.py", "ontology table schemas", "Fabric schema", "logical schema only", "indirect"),
     _entry("fabric-telemetry", "fabric", "src/fabric/telemetry.py", "ontology metrics", "Fabric telemetry", "post-read aggregate only", "indirect"),
     _entry("fabric-runtime-config", "fabric", "src/fabric/config.py", "ONTOLOGY_TABLES", "Fabric runtime configuration", "logical ontology table declarations consumed by Fabric readers", "indirect"),
+    _entry("fabric-maintenance-output-policy", "fabric", "src/fabric/maintenance_output.py", "GenerationOutputPolicy.__post_init__", "Fabric maintenance output", "frozen schema/type closure validates local output manifests without reading an active generation", "indirect"),
     _entry("fabric-exposure-scalar-migration", "fabric", "src/fabric/exposure_scalar_migration.py", "one-table exposure scalar migration", "Fabric exposure migration", "version-pinned canonical Delta heads; guarded single-table write", "indirect"),
     _entry("fabric-exposure-scalar-migration-cli", "fabric", "src/fabric/exposure_scalar_migration_cli.py", "read-only authority observer and caller", "Fabric exposure migration", "read-only observation of pinned Delta heads and source pointer", "indirect"),
     _entry("operations-tools", "agent", "src/operations/tools.py", "_semantic_result and network tools", "Operations agent", "request provider and evidence alias", "indirect"),

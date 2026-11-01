@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -69,6 +70,15 @@ from .dataset_mapper import (
     temporal_products_from_legacy,
 )
 from .lakehouse_manager import LakehouseManager
+from .maintenance_output import (
+    GenerationOutputContext,
+    GenerationOutputPolicy,
+    LocalDestinationSnapshot,
+    canonical_json,
+    describe_outputs,
+    output_digest,
+    target_fingerprint,
+)
 from .native_registry_mapping import (
     KEY_COLUMNS as NATIVE_MAPPING_KEYS,
 )
@@ -3595,6 +3605,8 @@ class FabricSyncService:
         attestation_digest: str,
         validation: Mapping[str, Any],
         guard: Callable[[], None] | None = None,
+        output_policy: GenerationOutputPolicy | None = None,
+        output_context: GenerationOutputContext | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Write the exact immutable generation's closed product manifest.
 
@@ -3604,6 +3616,30 @@ class FabricSyncService:
         version; no table is ever deleted) so obsolete active rows disappear
         while prior versions stay readable for pinned consumers.
         """
+        onelake, delta = self.onelake, self.delta
+        if output_policy is not None:
+            entities, relationships, validation = deepcopy((entities, relationships, validation))
+            if output_context is None:
+                raise PublicationSafetyError("output_manifest:context_missing")
+            output_policy.validate_candidate(output_context, entities, relationships)
+            if (
+                output_context.generation_id != generation_id
+                or output_context.source_generation != source_generation
+                or output_context.content_hash != content_hash
+                or output_context.authorization_digest != authorization_digest
+                or output_context.attestation_digest != attestation_digest
+                or output_context.validation_digest != output_digest(validation)
+                or dict(output_context.expected_target)["workspace_id"] != onelake.workspace_id
+                or dict(output_context.expected_target)["item_id"] != onelake.lakehouse_id
+            ):
+                raise PublicationSafetyError("output_manifest:candidate_arguments")
+            if self.ontology_publisher is not None or self.ontology_id:
+                raise PublicationSafetyError("output_manifest:native_enabled")
+            target_fingerprint(onelake)  # Reject unsupported remote/custom sinks.
+            onelake = copy(onelake)
+            onelake.storage_options = dict(onelake.storage_options)
+        elif output_context is not None:
+            raise PublicationSafetyError("output_manifest:policy_missing")
         products = ontology_generation_products(
             entities,
             relationships,
@@ -3614,17 +3650,49 @@ class FabricSyncService:
             attestation_digest=attestation_digest,
             validation=validation,
         )
-        written: dict[str, dict[str, Any]] = {}
-        for table_name, rows in products.items():
+        if output_policy is not None:
+            products = deepcopy(products)
+            destinations = {
+                name: onelake.table_uri(*name.split("_", 1)) for name in products
+            }
+            schemas = {name: schema_for(name) for name in products}
+            catalog_template = _generation_catalog(
+                products, {name: {"version": None} for name in products},
+                generation_id, content_hash,
+            )
+            output_policy.validate_outputs(describe_outputs(
+                products, onelake, catalog_template, schemas=schemas,
+            ))
+            destination_snapshot = LocalDestinationSnapshot.freeze([
+                *destinations.values(),
+                str(onelake.local_root / "Files/ontology/metadata/catalog.json"),
+            ])
+            expected_fingerprint = target_fingerprint(onelake)
+
+        def guarded() -> None:
             if guard is not None:
                 guard()
-            layer, logical = table_name.split("_", 1)
-            uri = self.onelake.table_uri(layer, logical)
-            result = self.delta.write(
-                uri,
-                rows,
+            if output_policy is not None and (
+                self.onelake is not original_onelake
+                or self.delta is not delta
+                or target_fingerprint(original_onelake) != expected_fingerprint
+                or self.ontology_publisher is not None
+                or self.ontology_id
+            ):
+                raise PublicationSafetyError("output_manifest:target_changed")
+            if output_policy is not None:
+                destination_snapshot.assert_unchanged()
+
+        original_onelake = self.onelake
+        written: dict[str, dict[str, Any]] = {}
+        for table_name, rows in products.items():
+            guarded()
+            result = (delta if output_policy is not None else self.delta).write(
+                destinations[table_name] if output_policy is not None
+                else self.onelake.table_uri(*table_name.split("_", 1)),
+                deepcopy(rows) if output_policy is not None else rows,
                 mode=DeltaWriteMode.OVERWRITE,
-                schema=schema_for(table_name),
+                schema=schemas[table_name] if output_policy is not None else schema_for(table_name),
             )
             if result.version is None:
                 raise RuntimeError(f"{table_name} write returned no Delta version")
@@ -3632,10 +3700,17 @@ class FabricSyncService:
                 "version": int(result.version),
                 "rows": len(rows),
             }
-        if guard is not None:
-            guard()
-        catalog = _generation_catalog(products, written, generation_id, content_hash)
-        self.onelake.write_json("ontology/metadata/catalog.json", catalog)
+        guarded()
+        if output_policy is not None:
+            # Use the preflighted catalog; only sink-produced versions are added.
+            catalog = json.loads(canonical_json(catalog_template))
+            for table in catalog["tables"]:
+                table["deltaVersion"] = written[table["name"]]["version"]
+        else:
+            catalog = _generation_catalog(products, written, generation_id, content_hash)
+        (onelake if output_policy is not None else self.onelake).write_json(
+            "ontology/metadata/catalog.json", catalog
+        )
         return written
 
 
@@ -4116,6 +4191,7 @@ class FabricSyncService:
     ) -> None:
         from intelligence.vulnerability.workload_inventory import (
             WORKLOAD_QUERY_FAMILIES,
+            WORKLOAD_REQUIRED_FAMILIES,
             normalize_digest,
             workload_checkpoint_key,
         )
@@ -4152,9 +4228,10 @@ class FabricSyncService:
                 raise ValueError(
                     "Usable workload checkpoint lacks an effective generation"
                 )
-        required_families = set(WORKLOAD_QUERY_FAMILIES)
+        required_families = set(WORKLOAD_REQUIRED_FAMILIES)
         if any(
-            families != required_families for families in workspace_families.values()
+            not required_families <= families <= set(WORKLOAD_QUERY_FAMILIES)
+            for families in workspace_families.values()
         ):
             raise ValueError("Workload checkpoint family set is incomplete")
         for row in [*observations, *deployments]:

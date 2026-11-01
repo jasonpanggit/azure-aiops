@@ -148,7 +148,7 @@ class HeaderPrincipalAuthenticator:
 
 
 class EntraJwtAuthenticator:
-    """Validate Entra access tokens and map asserted app roles to grants."""
+    """Validate Entra tokens; optional strict oid subject leaves API defaults intact."""
 
     def __init__(
         self,
@@ -156,11 +156,15 @@ class EntraJwtAuthenticator:
         tenant_id: str,
         audience: str,
         grants_resolver: Callable[[str, list[str]], tuple[Grant, ...]],
+        subject_claim: str = "",
     ) -> None:
         import jwt
 
         self.tenant_id = str(tenant_id or "").strip()
         self.audience = str(audience or "").strip()
+        if subject_claim not in {"", "oid"}:
+            raise ValueError("Unsupported Entra subject claim")
+        self.subject_claim = subject_claim
         if not self.tenant_id or not self.audience:
             raise ValueError("Entra tenant and audience are required")
         # Entra may issue the access token audience as either the app-id URI
@@ -200,11 +204,14 @@ class EntraJwtAuthenticator:
                 ErrorCode.UNAUTHENTICATED, "Entra access token is invalid"
             ) from exc
         subject = str(
-            claims.get("preferred_username")
-            or claims.get("upn")
-            or claims.get("oid")
-            or claims.get("sub")
-            or ""
+            claims.get(self.subject_claim) or ""
+            if self.subject_claim else (
+                claims.get("preferred_username")
+                or claims.get("upn")
+                or claims.get("oid")
+                or claims.get("sub")
+                or ""
+            )
         ).strip()
         roles = [
             str(role).strip().casefold()

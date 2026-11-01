@@ -35,7 +35,7 @@ jobs:
             pyproject.toml
             uv.lock
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[test,api]"
+      - run: python -m pip install -e ".[test,api,fabric-sql]"
       - run: python -m ruff check src tests
       - name: Run backend shard
         run: >-

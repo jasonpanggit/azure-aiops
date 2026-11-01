@@ -351,8 +351,8 @@ Last activity: 2026-09-20 - Completed quick task 260920-f9f: required-first prov
 
 ## Session
 
-**Last session:** 2026-09-12T09:28:01Z
-**Stopped at:** Phase 03.1 closed; ready to plan Phase 4
+**Last session:** 2026-10-31T06:03:09Z
+**Stopped at:** Phase 4 remains ready for planning; the separate DEV publication-v4 identity proof succeeded for the narrow read-only identity-isolation scope, with signer trust, retained catalog, retention, and publication activation still unqualified
 **Resume file:** .planning/phases/03.1-exposure-reliability-and-scale/03.1-20-SUMMARY.md
 
 ## Accumulated Context

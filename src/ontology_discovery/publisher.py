@@ -26,6 +26,13 @@ APPROVED_PUBLICATION_CHECKPOINTS = frozenset(
 CONSUMER_FAMILIES = ("api", "fabric", "agent", "export", "semantic")
 
 
+def _fixed_table_materializer(callback: Any) -> bool:
+    return all(
+        getattr(value, "publication_protocol", "fixed-tables/v1") == "fixed-tables/v1"
+        for value in (callback, getattr(callback, "__self__", None))
+    )
+
+
 class PublicationSafetyError(RuntimeError):
     """Fail-closed refusal to make a candidate reader-visible."""
 
@@ -107,6 +114,10 @@ class OntologyGenerationPublisher:
         rollback_fence_allocator: Callable[[], int] | None = None,
         maintenance_authorizer: Any | None = None,
     ) -> GenerationPointerSnapshot:
+        if not _fixed_table_materializer(materialize_generation):
+            raise PublicationSafetyError(
+                "immutable_attempt:legacy_pointer_publication_forbidden"
+            )
         self._authorize(publisher_identity, checkpoint_ids)
         self._guard_runtime(cancellation_check, lease_guard)
         self._assert_pointer(pointer_conditions)
@@ -282,6 +293,12 @@ class OntologyGenerationPublisher:
                 if materialize_generation is not None
                 else {"status": "not_required"}
             )
+            if (
+                materialization.get("protocol", "fixed-tables/v1") != "fixed-tables/v1"
+                or materialization.get("publication_protocol", "fixed-tables/v1") != "fixed-tables/v1"
+                or "attempt_reference" in materialization
+            ):
+                raise PublicationSafetyError("immutable_attempt:legacy_pointer_protocol_forbidden")
             if materialization.get("status") not in {"completed", "not_required"}:
                 raise PublicationSafetyError("Fabric materialization failed")
             reauthorize("post_materialization")

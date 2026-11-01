@@ -1205,7 +1205,7 @@ def test_workload_tenant_bound_failure_only_carries_same_tenant_lkg(
     )
     failed, _, _ = _workload_outcomes(
         generation="new-generation",
-        fail_family="container_image_inventory",
+        fail_family="kube_pod_inventory",
         fail_workspace="workspace-a",
     )
     second = activate_workload_partitions(
@@ -1221,7 +1221,7 @@ def test_workload_tenant_bound_failure_only_carries_same_tenant_lkg(
     checkpoint = next(
         row for row in second.checkpoints
         if row["workspace_id"] == "workspace-a"
-        and row["source_family"] == "container_image_inventory"
+        and row["source_family"] == "kube_pod_inventory"
     )
 
     assert checkpoint["tenant_id"] == "tenant-a"
@@ -1341,7 +1341,10 @@ def test_workload_acquisition_rejects_caller_authority_fields(forbidden: str) ->
         )
 
 
-def test_failed_workload_family_retains_stale_lkg_and_original_generation() -> None:
+@pytest.mark.parametrize("required_family", ["kube_pod_inventory", "container_inventory"])
+def test_failed_workload_family_retains_stale_lkg_and_original_generation(
+    required_family: str,
+) -> None:
     from intelligence.vulnerability.workload_inventory import (
         activate_workload_partitions,
     )
@@ -1357,7 +1360,7 @@ def test_failed_workload_family_retains_stale_lkg_and_original_generation() -> N
     )
     second_outcomes, second_generation, _ = _workload_outcomes(
         generation="generation-2",
-        fail_family="container_image_inventory",
+        fail_family=required_family,
         fail_workspace="workspace-a",
     )
 
@@ -1375,13 +1378,16 @@ def test_failed_workload_family_retains_stale_lkg_and_original_generation() -> N
         row
         for row in second.checkpoints
         if row["workspace_id"] == "workspace-a"
-        and row["source_family"] == "container_image_inventory"
+        and row["source_family"] == required_family
     )
     healthy_checkpoint = next(
         row
         for row in second.checkpoints
         if row["workspace_id"] == "workspace-a"
-        and row["source_family"] == "container_inventory"
+        and row["source_family"] == (
+            "container_inventory" if required_family == "kube_pod_inventory"
+            else "kube_pod_inventory"
+        )
     )
     retained = next(
         row for row in second.deployments if row["workspace_id"] == "workspace-a"
@@ -1401,7 +1407,10 @@ def test_failed_workload_family_retains_stale_lkg_and_original_generation() -> N
     assert advanced["effective_generation"] == "generation-2"
 
 
-def test_failed_family_cannot_create_a_deployment_absent_from_lkg() -> None:
+@pytest.mark.parametrize("required_family", ["kube_pod_inventory", "container_inventory"])
+def test_failed_family_cannot_create_a_deployment_absent_from_lkg(
+    required_family: str,
+) -> None:
     from intelligence.vulnerability.workload_inventory import (
         activate_workload_partitions,
     )
@@ -1418,7 +1427,7 @@ def test_failed_family_cannot_create_a_deployment_absent_from_lkg() -> None:
     assert first.deployments == ()
     second_outcomes, second_generation, _ = _workload_outcomes(
         generation="generation-2",
-        fail_family="container_image_inventory",
+        fail_family=required_family,
         fail_workspace="workspace-a",
     )
 
@@ -1439,6 +1448,85 @@ def test_failed_family_cannot_create_a_deployment_absent_from_lkg() -> None:
     assert any(
         row["workspace_id"] == "workspace-b" for row in second.deployments
     )
+
+
+@pytest.mark.parametrize("with_lkg", [False, True])
+def test_optional_image_query_failure_does_not_stall_required_generation(
+    with_lkg: bool,
+) -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        activate_workload_partitions,
+    )
+
+    outcomes, generation, digest = _workload_outcomes(generation="generation-1")
+    first = activate_workload_partitions(
+        outcomes=outcomes,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation=generation,
+        completed_at="2026-09-05T00:00:01Z",
+        tenant_id="tenant-a",
+    )
+    failed, _, _ = _workload_outcomes(
+        generation="generation-2",
+        fail_family="container_image_inventory",
+        fail_workspace="workspace-a",
+    )
+    second = activate_workload_partitions(
+        outcomes=failed,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation="generation-2",
+        completed_at="2026-09-05T00:05:01Z",
+        previous_observations=first.observations if with_lkg else (),
+        previous_deployments=first.deployments if with_lkg else (),
+        previous_checkpoints=first.checkpoints if with_lkg else (),
+        tenant_id="tenant-a",
+    )
+    checkpoint = next(
+        row for row in second.checkpoints
+        if row["workspace_id"] == "workspace-a"
+        and row["source_family"] == "container_image_inventory"
+    )
+    deployment = next(
+        row for row in second.deployments if row["workspace_id"] == "workspace-a"
+    )
+    original = next(
+        row for row in first.deployments if row["workspace_id"] == "workspace-a"
+    )
+    assert checkpoint["status"] == ("stale" if with_lkg else "unavailable")
+    assert checkpoint["effective_generation"] == ("generation-1" if with_lkg else "")
+    assert checkpoint["safe_error_code"] == "provider_timeout"
+    assert deployment["deployment_id"] == original["deployment_id"]
+    assert deployment["effective_generation"] == "generation-2"
+    assert deployment["carried_forward"] is False
+    assert deployment["lkg_source_generation"] == ""
+    assert json.loads(deployment["provenance_json"])["image_observation_id"] is None
+    assert second.unknown_reasons == ()
+
+
+@pytest.mark.parametrize("split_field", ["workspace_id", "connection_id"])
+def test_required_workload_families_cannot_join_across_source_partitions(
+    split_field: str,
+) -> None:
+    from intelligence.vulnerability.workload_inventory import (
+        activate_workload_partitions,
+    )
+
+    outcomes, generation, digest = _workload_outcomes(generation="generation-1")
+    selected = tuple(
+        replace(outcome, **{split_field: "different-partition"})
+        if outcome.source_family == "kube_pod_inventory" else outcome
+        for outcome in outcomes
+        if outcome.workspace_id == "workspace-a"
+        and outcome.source_family in {"kube_pod_inventory", "container_inventory"}
+    )
+    result = activate_workload_partitions(
+        outcomes=selected,
+        defender_rows=[_defender_workload_row(digest)],
+        attempted_generation=generation,
+        completed_at="2026-09-05T00:00:01Z",
+    )
+    assert result.deployments == ()
+    assert set(result.unknown_reasons) == {"source_unavailable"}
 
 
 def test_failed_workload_workspace_without_lkg_is_unavailable_and_rowless() -> None:
@@ -1539,7 +1627,10 @@ def test_failed_workload_partition_rejects_checkpoint_without_effective_generati
     assert failed["carried_forward"] is False
 
 
-def test_fabric_sync_validates_workload_references_before_activation(tmp_path) -> None:
+@pytest.mark.parametrize("include_optional_family", [False, True])
+def test_fabric_sync_validates_workload_references_before_activation(
+    tmp_path, include_optional_family: bool,
+) -> None:
     from deltalake import DeltaTable
 
     from fabric.data_quality import DataQualityValidator
@@ -1554,6 +1645,11 @@ def test_fabric_sync_validates_workload_references_before_activation(tmp_path) -
     outcomes, generation, digest = _workload_outcomes(
         generation="generation-1"
     )
+    if not include_optional_family:
+        outcomes = tuple(
+            outcome for outcome in outcomes
+            if outcome.source_family != "container_image_inventory"
+        )
     projection = activate_workload_partitions(
         outcomes=outcomes,
         defender_rows=[_defender_workload_row(digest)],
@@ -1602,6 +1698,18 @@ def test_fabric_sync_validates_workload_references_before_activation(tmp_path) -
     deployments_path = lakehouse / "Tables/silver_workload_deployments"
     before = DeltaTable(str(deployments_path)).to_pyarrow_table().to_pylist()
     assert len(before) == 2
+    incomplete_checkpoints = [
+        row for row in projection.checkpoints
+        if row["source_family"] != "container_inventory"
+    ]
+    with pytest.raises(ValueError, match="family set is incomplete"):
+        service._validate_workload_products(
+            {
+                "metadata_workload_source_checkpoints": incomplete_checkpoints,
+                "silver_workload_observations": list(projection.observations),
+                "silver_workload_deployments": list(projection.deployments),
+            }
+        )
 
     invalid = [dict(row) for row in projection.deployments]
     invalid[0]["checkpoint_key"] = "missing-checkpoint"

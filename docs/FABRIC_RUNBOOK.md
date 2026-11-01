@@ -90,6 +90,32 @@ acquisition, authoritative zero workloads, tenant-qualified coverage, or an
 exact Defender-digest deployment match. Inspect checkpoint scope, source
 status, effective generation and provider observation times independently.
 
+### AMA default-stream workload proof
+
+The [documented AMA default Container Insights stream group](https://learn.microsoft.com/azure/azure-monitor/containers/kubernetes-monitoring-enable)
+includes `ContainerInventory` and `KubePodInventory`, but not
+`ContainerImageInventory`. Deployment proof requires successful acquisition of
+the two supported families in the same connection/workspace generation: an
+exact immutable Defender digest matched to `ContainerInventory.ImageID`, and
+a `KubePodInventory` record linked by the same nonempty `ContainerID`. Both
+workload provider timestamps must be valid and within the existing 15-minute
+window of the real Defender provider timestamp. Tags, repositories and names
+never substitute for digest or container-ID evidence.
+
+`ContainerImageInventory` is still queried independently where available.
+Fresh, time-valid exact-digest image rows may add corroborating provenance and
+repository/tag metadata, but empty, absent, failed or stale supplemental image
+evidence cannot block a valid two-family proof or supply a missing runtime
+digest/pod link. Its query failure and partition LKG remain visible in its
+checkpoint; they do not force fresh supported-family deployments to carry an
+old generation. Failure of either required family retains only its existing
+same-tenant deployment LKG; no LKG means unavailable, and a missing required
+query means no current proof.
+
+This source-contract alignment is not live acceptance. Generation-bound
+connector/projection/persistence/readback evidence, the 100k benchmark,
+canary/rollback, approvals and other release gates remain separate and unchanged.
+
 ## Failed-run recovery
 
 1. Run `Show ingestion status` and locate the failed row.

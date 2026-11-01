@@ -323,6 +323,11 @@ bindings, measures and consumer compatibility, not just a previous item name.
 
 ## 9. Current blockers and boundaries
 
+The opt-in [isolated acceptance contract](fabric-isolated-acceptance-contract.md)
+adds local structural validation only. Draft/reviewed/qualified document types
+do not grant execution authority or replace accepted Plan 19 evidence. Existing
+collector/live-validator/runtime paths and all phase gates remain unchanged.
+
 STATE still records Phase 03.1 `gaps_found`, missing Phase 7 verification,
 Phase 9 `human_needed`, Phase 13 deployed lifecycle failure and missing downstream
 acceptance. Phase 03.7 and 03.8 are not executable merely because their plans

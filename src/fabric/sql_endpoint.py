@@ -409,6 +409,46 @@ def _readiness_check(
     )
 
 
+def _classified_failure_reason(error: Exception, default: str) -> str:
+    """Map known provider/runtime failures to stable codes without retaining details."""
+    messages = getattr(error, "args", ())
+    message = " ".join(value for value in messages if isinstance(value, str)).casefold()
+
+    openssl_missing = (
+        any(marker in message for marker in ("libssl", "libcrypto", "openssl"))
+        and any(
+            marker in message
+            for marker in (
+                "not found",
+                "no such file",
+                "image not found",
+                "cannot open",
+                "could not load",
+                "undefined symbol",
+                "symbol not found",
+            )
+        )
+    )
+    if openssl_missing:
+        return "openssl_runtime_library_missing"
+
+    capacity_inactive = "capacity" in message and any(
+        marker in message
+        for marker in ("inactive", "paused", "suspended", "not active", "stopped")
+    )
+    if capacity_inactive:
+        return "fabric_capacity_inactive"
+
+    login_denied = any(
+        marker in message
+        for marker in ("login failed", "login is denied", "28000", "18456")
+    )
+    if login_denied:
+        return "fabric_sql_login_denied"
+
+    return default
+
+
 def _validated_endpoint(
     endpoint: Mapping[str, str] | SqlEndpoint | None,
 ) -> SqlEndpoint | None:
@@ -456,14 +496,17 @@ def _evaluate_exposure_readiness(
     pyodbc_module: Any | None
     try:
         pyodbc_module = module_loader("pyodbc")
-    except Exception:  # noqa: BLE001 - readiness output must stay sanitized.
+    except Exception as error:  # noqa: BLE001 - readiness output must stay sanitized.
         pyodbc_module = None
+        pyodbc_reason = _classified_failure_reason(error, "pyodbc_not_importable")
+    else:
+        pyodbc_reason = "pyodbc_not_importable"
     module_ready = pyodbc_module is not None
     checks.append(
         _readiness_check(
             "pyodbc_import",
             "ready" if module_ready else "not_ready",
-            "ready" if module_ready else "pyodbc_not_importable",
+            "ready" if module_ready else pyodbc_reason,
             importable=module_ready,
         )
     )
@@ -524,9 +567,17 @@ def _evaluate_exposure_readiness(
                 connect=connect,
             )
             connectivity_ready = bool(reader.query("SELECT 1 AS probe"))
-        except Exception:  # noqa: BLE001 - readiness output must stay sanitized.
+        except Exception as error:  # noqa: BLE001 - readiness output must stay sanitized.
             reader = None
             connectivity_ready = False
+            connectivity_reason = _classified_failure_reason(
+                error,
+                "fabric_sql_connectivity_failed",
+            )
+        else:
+            connectivity_reason = "fabric_sql_connectivity_failed"
+    else:
+        connectivity_reason = "fabric_sql_connectivity_failed"
     checks.append(
         _readiness_check(
             "token_connectivity",
@@ -541,7 +592,7 @@ def _evaluate_exposure_readiness(
                 else (
                     "fabric_sql_connectivity_blocked_by_local_prerequisite"
                     if connectivity_blocked
-                    else "fabric_sql_connectivity_failed"
+                    else connectivity_reason
                 )
             ),
             connected=connectivity_ready,
@@ -561,8 +612,16 @@ def _evaluate_exposure_readiness(
                 if absent:
                     missing_columns[table] = absent
             schema_ready = not missing_tables and not missing_columns
-        except Exception:  # noqa: BLE001 - readiness output must stay sanitized.
+        except Exception as error:  # noqa: BLE001 - readiness output must stay sanitized.
             schema_ready = False
+            schema_reason = _classified_failure_reason(
+                error,
+                "required_gold_schema_missing",
+            )
+        else:
+            schema_reason = "required_gold_schema_missing"
+    else:
+        schema_reason = "required_gold_schema_missing"
     checks.append(
         _readiness_check(
             "required_gold_schema",
@@ -573,7 +632,7 @@ def _evaluate_exposure_readiness(
                 else (
                     "gold_schema_check_blocked_by_connectivity"
                     if not connectivity_ready
-                    else "required_gold_schema_missing"
+                    else schema_reason
                 )
             ),
             missing_tables=missing_tables,
@@ -610,8 +669,16 @@ def _evaluate_exposure_readiness(
                 (probe_generation, probe_subscription, 0, 0, ""),
             )
             bounded_query_ready = True
-        except Exception:  # noqa: BLE001 - readiness output must stay sanitized.
+        except Exception as error:  # noqa: BLE001 - readiness output must stay sanitized.
             bounded_query_ready = False
+            bounded_query_reason = _classified_failure_reason(
+                error,
+                "bound_count_or_page_query_failed",
+            )
+        else:
+            bounded_query_reason = "bound_count_or_page_query_failed"
+    else:
+        bounded_query_reason = "bound_count_or_page_query_failed"
     checks.append(
         _readiness_check(
             "bound_count_and_page_query",
@@ -622,7 +689,7 @@ def _evaluate_exposure_readiness(
                 else (
                     "bound_query_check_blocked_by_schema"
                     if not schema_ready
-                    else "bound_count_or_page_query_failed"
+                    else bounded_query_reason
                 )
             ),
             parameters_bound=True,
