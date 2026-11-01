@@ -25,14 +25,23 @@ def test_engine_owned_seal_exact_retry_and_takeover_refusal(publication):
     target_id = session["target_id"]
     verifier = SqlBrokerVerifier(control._target, None, connect=control._connect)
     record = control.read_attempt(target_id, attempt, digest)
-    original_session = AttemptSession(session["owner_id"], session["session_id"], session["epoch"])
+    original_session = AttemptSession(
+        owner=session["owner_id"],
+        epoch=session["epoch"],
+        session_id=session["session_id"],
+    )
     seal = {
         "catalog": json.loads(record["catalog_json"]), "catalog_digest": digest,
         "inventory": json.loads(record["inventory_json"]), "evidence": json.loads(record["evidence_json"]),
     }
     verifier.seal_owned_attempt(target_id, original_session, attempt, **seal)
     assert control.read_attempt(target_id, attempt, digest) == record
-    winner = control.acquire(target_id, str(uuid4()), expected_revision=session["revision"])
+    winner = control.acquire(
+        target_id,
+        str(uuid4()),
+        expected_revision=session["revision"],
+        lease_seconds=300,
+    )
     with pytest.raises(SqlPublicationError):
         verifier.seal_owned_attempt(target_id, original_session, attempt, **seal)
     assert control.read_attempt(target_id, attempt, digest) == record
