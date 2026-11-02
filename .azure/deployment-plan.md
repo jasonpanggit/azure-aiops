@@ -1807,7 +1807,7 @@ fence, output policies and admission/restoration authority remain unchanged.
 No hosted broker client is automatically wired. SQL-engine test collection
 and in-process wrappers do not qualify a commissioned remote runtime.
 
-All validation checks pass:
+Validation status (remaining gates below):
 
 - [x] 1. Core validation: verified actual Azure tenant/subscription, existing
   australiaeast resource group, Succeeded Container Apps environment and ACR.
