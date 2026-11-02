@@ -1868,6 +1868,48 @@ This proves configured-image adoption and offline package integrity, not a
 successful scheduled execution of this new image. The next natural publication
 and full phase acceptance remain separate gates.
 
+### Isolated immutable worker lifecycle source release (2026-11-02)
+
+Status: Prepared; full regression, exact-head CI and deployment gates pending.
+Recipe: existing publisher-only immutable image update, after normal source
+merge. No application, Network, API, web, Terraform, identity, grant, schedule
+or runtime activation change is included.
+
+The six-path source handoff applies after the already merged protocol injection:
+patch SHA-256 `5c1d56ce000a84f67d588bd8d2f2e49343e14e5ce0bc98dd5f2e8ff8bbbd4f20`,
+then target-CAS correction
+`8f582206cd1e8d057c33dafbe22c61d096ab078924d0f99d8e657c33d95d84f4`.
+All three existing source preimages matched the sealed prerequisite outputs
+on main; all six final source/test/doc files match the reviewed output hashes.
+Independent source review and offline evidence accompany the owner handoff.
+Unrelated user Terraform-plan bytes are excluded and preserved.
+
+The source-only worker binds one trusted dispatch, target, existing client,
+immutable materializer and separate journal. It acquires for at most 300
+seconds without renewal, persists allocation/staging intent and ambiguous
+HOLD, serializes target ownership through create-only/ETag CAS, preserves
+per-dispatch receipts, and recovers commit outcomes read-only with exact
+original pins. Restore requires separate current authority and new pins.
+Cancellation/deadline guards run after token acquisition immediately before
+HTTP mutation sends. No CLI/legacy worker, reader/pointer, consumer graph or
+production journal is wired; no endpoint, root, credential or grant is guessed.
+
+Validation status:
+
+- [x] Coupled worker/protocol/recovery/schema/materializer/client/transport/
+  SQL-Blob regressions: 370 tests, zero skips/failures/errors; repository Ruff.
+- [x] Required web lint-fix, 151 files / 1,993 tests, production build; no web
+  source changes.
+- [ ] Full local backend regression and exact-final-head CI/native SQL engine.
+- [ ] Normal merge with exact reviewed-head/tree/CI provenance binding.
+- [ ] One merged-main amd64 build and complete immutable source-package parity.
+- [ ] Authoritative predeploy validation, fresh protected-state/idle guards,
+  one image-only adoption and independent full postimage comparison.
+
+No lifecycle image has yet been built or deployed. These are source/library
+checks, not a commissioned production journal, remote broker/runtime, hosted
+SQL service, scheduled-execution or phase-acceptance qualification.
+
 ### Qualified workload source and additive typed graph proof (2026-11-02)
 
 The user-authorized bounded validation execution
