@@ -1938,13 +1938,79 @@ Receipts are retained under the integrator's
 | `workload-graph-target-sql-gql-parity.json` | `af137f62f9447519e84abfb20f54e3d8e6b3ff4b97e5dfd0f7270d0275a62f5c` |
 | `workload-graph-provider-cleanup.json` | `79241a283f7cf130f10171ded997063b1398d11c76509aea64a336b5b169d8c8` |
 
-This proves the historical bounded-test source linkage and the final typed
+At this checkpoint, this proved the historical bounded-test source linkage and the final typed
 digest-to-deployment edge only. The disposable workload is no longer live.
-Full CVE traversal, explicit application mapping, mixed 100k qualification,
+Full CVE traversal was then unproven; the subsequent qualified extension is
+recorded below. Explicit application mapping, mixed 100k qualification,
 live canary, rollback exercise and Phase 03.1 acceptance remain unproven.
 Retaining a guarded rollback preimage is not a rollback test. Continue the
 release/enhancement loop and the next natural 14:30Z publisher follow-through;
 do not disable the loop at this evidence handoff.
+
+### Qualified bounded full-CVE typed traversal (2026-11-02)
+
+After PR #433's immutable publisher rollout and documentation-only PR #434,
+the sole operator extended the same commissioned GraphModel with CVE,
+VulnerabilityObservation, identifies and affects. The result has six node
+types and four edge types; all prior bindings and byte-identical platform,
+settings and styling parts were preserved. No additional image build,
+publisher execution, runtime activation or application relationship was needed.
+
+The exact candidate was first accepted, read back, loaded and queried on
+disposable graph `1a85f2e3-3aac-4f51-bb54-114772b4b2b8`. Explicit provider
+normalization was limited to omitted `edgeIdMapping` becoming `null` on the two
+new edge bindings; no unknown fields were ignored. The commissioned six-part
+definition matched its sealed preimage twice, with zero active publisher or
+graph load, before one `updateDefinition` request. Operation
+`ba564d75-c800-4342-ba77-0c952df76704` succeeded at 02:03:56Z; actual
+postimage parity passed. Automatically started load
+`09ba0b97-7d03-45fa-b11b-84a2b4346628` completed at 02:07:15Z without failure.
+No duplicate refresh was submitted.
+
+The supported Delta source schema permits only `path`, not a version selector.
+Instead, all seven actual latest Delta versions and row counts were read
+before and after each load: CVE v8/119, Observation v18/5,233, identifies
+v18/5,233, affects v18/5,233, ImageDigest v20/114, deployedAs v0/1 and
+WorkloadDeployment v0/1. They equal the retained catalog's qualified versions.
+The commissioned source-before read ended at 02:03:16Z, before load start
+02:03:53Z; source-after began at 02:07:30Z, after completion. Catalog
+`Files/ontology/metadata/catalog.json` and completed publication
+`22ae7b68-3cef-49bd-b25b-ff0b4ef4a2ce` contents, hashes and ETags remained
+unchanged across those reads.
+
+CVE identity is legitimately tenant-global: `[tenant_id, resource_id]`, with
+subscription `not-applicable` and its original older ingestion generation.
+No CVE generation was relabeled. identifies maps its destination using
+`[tenant_id, object_id]`; Observation, digest, deployment and all three path
+edges retain explicit tenant/subscription/qualified-generation constraints.
+The bounded `LIMIT 48` query returned exactly 47 unique four-STRING-column
+tuples (`cve_id`, `observation_id`, `digest_id`, `deployment_id`) at 02:09:02Z.
+Their exact ordered-tuple fingerprint equals the pinned-source membership
+fingerprint `ef1937ff91a39e7b0543d28226e836619ec40ebc1949bc52e42f4fdfd2d2dd2f`,
+with status `00000`, no warnings, extra statuses or continuation.
+Independent definition, all 20 scope predicates, source/load bracket and
+exact endpoint-identity verification also passed.
+
+Receipts under the integrator's `files/full-path-graph/`:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `target-update-receipt.json` | `04c52b7004d729a07e76b04fb0113be3eed36514a392809da8cb87715a667aae` |
+| `target-definition.json` | `d19b7bcf22c1b3eafa08ea1c53215a2a9afe699165f7fae2adfbc61298f9ce2e` |
+| `source-target-before.json` | `4538c9e4985aa490119c2c39cbb371f0a01f5ec6606ac504c617d03177043047` |
+| `source-target-after.json` | `7ea1b8e7bba0b8afd2361b701d66a3ff9dc9e5d40c01720510144b7bc93a3bf5` |
+| `target-auto-load.json` | `f72c778ad696d95966e90e08d56cb364a97070b8bf48706be5428af8daebdb1d` |
+| `target-query-response.json` | `a381384a218d8965fe810328ef0a79b0d6edcac5f0a46e45547118d9445aed7e` |
+| `target-full-path-proof.json` | `70800f74252a506cb01376c942c55315f9f3d263e8782e51055585b8eaf4b613` |
+| `cleanup-receipt.json` | `64ff8dffb69b4eed88397c78bbce94fcca68e73cc466b1f7f1991dab3f020de6` |
+
+The exact disposable was removed at 02:10:08Z after fresh six-part identity
+and completed/idle checks; both original workspace graphs remain. The guarded
+commissioned rollback preimage is retained but rollback was not exercised.
+This qualifies historical bounded full-CVE traversal, not current live
+coverage, a latency SLO, governed workload-to-application mapping, mixed 100k
+scale, canary/rollback or Phase 03.1 acceptance. The new publisher image's
+natural 14:30Z execution remains a separate future gate.
 
 ### F05 rollout complete; future live acceptance pending
 
