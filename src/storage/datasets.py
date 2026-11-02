@@ -148,7 +148,63 @@ class GenerationPointerConditions:
         )
 
 
-class AuthoritativeDatasetPublisher:
+class StagedGenerationReader:
+    """Narrow exact staged reads; borrows its document store, never publishes."""
+
+    def __init__(self, documents: OneLakeDocumentStore) -> None:
+        self._documents = documents
+
+    def read_stage_authorization(
+        self,
+        *,
+        target_generation_id: str,
+        owner_id: str,
+        fence: int,
+    ) -> dict[str, Any]:
+        """Read the exact immutable authorization for one fenced stage attempt."""
+        generation = _safe_generation_id(target_generation_id)
+        owner_hash = hashlib.sha256(owner_id.encode()).hexdigest()[:16]
+        snapshot = self._documents.read_snapshot(
+            f"generations/{generation}/stage-authorization-{fence}-{owner_hash}.json"
+        )
+        if not snapshot.exists:
+            raise FileNotFoundError(f"generation {generation} has no stage authorization")
+        return snapshot.payload
+
+    def read_generation(self, generation_id: str) -> dict[str, Any]:
+        generation = _safe_generation_id(generation_id)
+        base = f"generations/{generation}"
+
+        def required(name: str) -> dict[str, Any]:
+            snapshot = self._documents.read_snapshot(f"{base}/{name}.json")
+            if not snapshot.exists:
+                raise FileNotFoundError(
+                    f"generation {generation} missing {name}.json"
+                )
+            return snapshot.payload
+
+        entities = required("entities").get("records")
+        relationships = required("relationships").get("records")
+        if not isinstance(entities, list) or not isinstance(relationships, list):
+            raise TypeError(f"generation {generation} record artifacts are invalid")
+        receipt = self._documents.read_snapshot(f"{base}/audit-result.json")
+        intent = self._documents.read_snapshot(f"{base}/audit-intent.json")
+        return {
+            "manifest": required("manifest"),
+            "entities": entities,
+            "relationships": relationships,
+            "lineage": required("lineage"),
+            "validation": required("validation"),
+            "compatibility": required("compatibility"),
+            "audit": (
+                receipt.payload
+                if receipt.exists
+                else intent.payload if intent.exists else None
+            ),
+        }
+
+
+class AuthoritativeDatasetPublisher(StagedGenerationReader):
     """Publisher-identity-only access to consequential generation primitives."""
 
     def __init__(
@@ -269,22 +325,6 @@ class AuthoritativeDatasetPublisher:
             audit,
         )
 
-    def read_stage_authorization(
-        self,
-        *,
-        target_generation_id: str,
-        owner_id: str,
-        fence: int,
-    ) -> dict[str, Any]:
-        """Read the exact immutable authorization for one fenced stage attempt."""
-        generation = _safe_generation_id(target_generation_id)
-        owner_hash = hashlib.sha256(owner_id.encode()).hexdigest()[:16]
-        snapshot = self._documents.read_snapshot(
-            f"generations/{generation}/stage-authorization-{fence}-{owner_hash}.json"
-        )
-        if not snapshot.exists:
-            raise FileNotFoundError(f"generation {generation} has no stage authorization")
-        return snapshot.payload
 
     def persist_rollback_audit(
         self,
@@ -301,37 +341,6 @@ class AuthoritativeDatasetPublisher:
             audit,
         )
 
-    def read_generation(self, generation_id: str) -> dict[str, Any]:
-        generation = _safe_generation_id(generation_id)
-        base = f"generations/{generation}"
-
-        def required(name: str) -> dict[str, Any]:
-            snapshot = self._documents.read_snapshot(f"{base}/{name}.json")
-            if not snapshot.exists:
-                raise FileNotFoundError(
-                    f"generation {generation} missing {name}.json"
-                )
-            return snapshot.payload
-
-        entities = required("entities").get("records")
-        relationships = required("relationships").get("records")
-        if not isinstance(entities, list) or not isinstance(relationships, list):
-            raise TypeError(f"generation {generation} record artifacts are invalid")
-        receipt = self._documents.read_snapshot(f"{base}/audit-result.json")
-        intent = self._documents.read_snapshot(f"{base}/audit-intent.json")
-        return {
-            "manifest": required("manifest"),
-            "entities": entities,
-            "relationships": relationships,
-            "lineage": required("lineage"),
-            "validation": required("validation"),
-            "compatibility": required("compatibility"),
-            "audit": (
-                receipt.payload
-                if receipt.exists
-                else intent.payload if intent.exists else None
-            ),
-        }
 
     def conditional_promote(
         self,

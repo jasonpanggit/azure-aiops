@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
 from codecs import getincrementaldecoder
@@ -39,7 +40,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from urllib.parse import urlparse
 
 from storage.fs import ONELAKE_HOST, is_onelake_uri
@@ -154,6 +155,15 @@ class OneLakeDocumentStore:
         self._lock = threading.Lock()
         self._file_system_client = None
         self._base = self.root if not self.is_remote else None
+
+    @classmethod
+    def remote(cls, root: str, *, credential: Any) -> ExplicitRemoteDocumentStore:
+        """Open an explicitly credentialed remote store without identity fallback.
+
+        The returned store owns its lazy SDK client but borrows the credential.
+        Legacy constructor behavior is unchanged.
+        """
+        return ExplicitRemoteDocumentStore(root, credential=credential)
 
     def _client(self):
         # Resolved lazily so constructing a store never requires credentials
@@ -778,8 +788,95 @@ class OneLakeDocumentStore:
             return
 
 
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_EXPLICIT_ROOT = re.compile(
+    rf"abfss://(?P<workspace>{_UUID})@onelake\.dfs\.fabric\.microsoft\.com/"
+    rf"(?P<item>{_UUID})/Files/(?P<namespace>[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*)"
+)
+
+
+class ExplicitRemoteDocumentStore(OneLakeDocumentStore):
+    """Pinned remote documents with owned SDK lifetime and borrowed credential."""
+
+    def __init__(self, root: str, *, credential: Any) -> None:
+        matched = _EXPLICIT_ROOT.fullmatch(root) if type(root) is str else None
+        if matched is None:
+            raise ValueError("explicit document root must be canonical UUID OneLake ABFSS")
+        if (
+            credential is None
+            or isinstance(credential, (str, bytes))
+            or not callable(getattr(credential, "get_token", None))
+        ):
+            raise TypeError("explicit document credential is required")
+        self._pinned_root = root
+        self._workspace = matched["workspace"]
+        self._base = f'{matched["item"]}/Files/{matched["namespace"]}'
+        self._credential = credential
+        self._lock = threading.RLock()
+        self._file_system_client = None
+        self._closed = False
+
+    @property
+    def root(self) -> str:
+        """Return the immutable canonical root identity."""
+        return self._pinned_root
+
+    @property
+    def is_remote(self) -> bool:
+        """Always use the explicit remote capability."""
+        return True
+
+    def _assert_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("explicit document store is closed")
+
+    def _client(self):
+        with self._lock:
+            self._assert_open()
+            if self._file_system_client is None:
+                from azure.storage.filedatalake import FileSystemClient
+
+                self._file_system_client = FileSystemClient(
+                    account_url=f"https://{ONELAKE_HOST}",
+                    file_system_name=self._workspace,
+                    credential=self._credential,
+                )
+            return self._file_system_client
+
+    def _path(self, name: str) -> str:
+        self._assert_open()
+        return super()._path(name)
+
+    def read(self, name: str) -> dict[str, Any]:
+        """Read strictly; explicit identity failures never become empty success."""
+        return self.read_snapshot(name).payload
+
+    def ensure_directory(self, name: str) -> None:
+        """Serialize directory creation with owned-client shutdown."""
+        with self._lock:
+            self._assert_open()
+            super().ensure_directory(name)
+
+    def close(self) -> None:
+        """Close the owned SDK client once; never close the borrowed credential."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self._file_system_client is not None:
+                self._file_system_client.close()
+
+    def __enter__(self) -> Self:
+        self._assert_open()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
 __all__ = [
     "DocumentConflictError",
     "DocumentSnapshot",
+    "ExplicitRemoteDocumentStore",
     "OneLakeDocumentStore",
 ]

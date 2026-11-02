@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
+from ontology_discovery.attempt_projection import ReadOnlyAttemptProjector
 from ontology_discovery.immutable_attempt import AttemptReference, AttemptSession
 from ontology_discovery.maintenance_materialization import (
     ATTEMPT_PROTOCOL,
@@ -352,7 +353,7 @@ class ImmutableAttemptWorker:
         dispatch_id: str,
         expected_target: Mapping[str, str],
         client: PublicationBrokerClient,
-        materializer: CandidateGenerationMaterializer,
+        materializer: CandidateGenerationMaterializer | ReadOnlyAttemptProjector,
         journal: AttemptLifecycleJournal,
         lease_seconds: int = 300,
         cancelled: Callable[[], bool] | None = None,
