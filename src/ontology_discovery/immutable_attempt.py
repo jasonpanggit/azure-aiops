@@ -12,7 +12,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import pyarrow as pa
 
@@ -291,6 +291,51 @@ class AzureSqlBlobAttemptBoundary:
 
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
         _refuse("sql_broker_locked_worm_adapter_not_implemented_or_qualified")
+
+
+@runtime_checkable
+class AttemptPublicationProtocol(Protocol):
+    """High-level trusted consumer port; no raw artifact or SQL capabilities."""
+
+    def control(self) -> AttemptControl:
+        """Return one exact control snapshot without choosing a latest receipt."""
+        ...
+
+    def active(self) -> tuple[AttemptReference | None, dict[str, Any] | None]:
+        """Resolve one control snapshot and its exact pinned verified catalog."""
+        ...
+
+    def stage(
+        self, session: AttemptSession, *, attempt_id: str,
+        candidate: Mapping[str, Any],
+        products: Mapping[str, Sequence[Mapping[str, Any]]],
+    ) -> AttemptReference:
+        """Stage a complete product batch; never expose per-product writes."""
+        ...
+
+    def commit(
+        self, session: AttemptSession, reference: AttemptReference, *,
+        expected_revision: str, operation: Literal["admit", "restore"],
+        request_id: str, authorization_digest: str,
+    ) -> AttemptControl:
+        """Commit exact original request pins through the enforcing authority."""
+        ...
+
+    def recover_commit(
+        self, session: AttemptSession, reference: AttemptReference, *,
+        expected_revision: str, operation: Literal["admit", "restore"],
+        request_id: str, authorization_digest: str,
+    ) -> AttemptControl | None:
+        """Recover authenticated historical success; None means no outcome."""
+        ...
+
+    def read_catalog(self, reference: AttemptReference) -> dict[str, Any]:
+        """Verify and return an exact pinned catalog and its product inventory."""
+        ...
+
+    def read_table(self, reference: AttemptReference, table: str) -> list[dict[str, Any]]:
+        """Verify and read only a logical member of the exact pinned catalog."""
+        ...
 
 
 class ImmutableAttemptProtocol:

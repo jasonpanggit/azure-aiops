@@ -157,10 +157,10 @@ restoration/convergence. This server library and synthetic transports do not
 make those predicates true. No deployment, production readiness, stronger
 deadline semantics or Phase 13/03.7/03.8 acceptance is claimed.
 
-In particular, `CandidateGenerationMaterializer` still constructs
-`ImmutableAttemptProtocol(attempt_boundary)`. This server-only composition does
-not inject a credential-free remote worker client into that constructor.
-The next consumer seam is high-level stage/control/commit/recover/read protocol
-injection and a client for the separately reviewed closed transport, not
-per-product privileged RPC or SQL/Blob credentials in a worker. That seam is
-not implemented by this delta.
+In particular, `CandidateGenerationMaterializer` constructs
+`ImmutableAttemptProtocol(attempt_boundary)` in the boundary-backed mode. This
+server-only composition does not inject a credential-free remote worker client
+into that constructor. A separately sealed
+[high-level consumer injection](fabric-immutable-attempt-protocol.md#high-level-consumer-injection)
+adds the exact-one-of protocol dependency without relaxing the local projection
+fence or introducing provider credentials into workers.
