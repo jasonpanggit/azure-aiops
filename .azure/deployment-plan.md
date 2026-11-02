@@ -8500,3 +8500,86 @@ and `publication-summary.json`. The source manifest SHA-256 is
 `a1358322ce01c67d05b1e0f23124365fb368be8da2e103894cb2b0d855696f16`;
 the checkpoint JSONL SHA-256 is
 `2ccded011252e48eacec96a6c1f9d14901a84d25f152795c3b970bb574e590c4`.
+
+## Trusted local composition source-image release (PR #438)
+
+Status: Deployed; configured-image adoption verified, scheduled execution pending.
+Recipe: AZCLI, existing DEV publisher Job image-only adoption. Existing user
+release authority selects subscription `890c9bfc-d09c-4143-9ce5-465e75e3eecc`,
+tenant `262a3a77-7d74-4684-8937-897d98d2a17a`, resource group
+`aiops-dev-rg`, region `australiaeast`, registry `aiopsdevacr7h0ih3` and
+Job `aiops-dev-inventory-publication`; no new resource or capacity is requested.
+
+PR #438 merged normally at 04:12:39 UTC on 2026-11-02 as
+`038c38a3bca1cf848849b14bc098ca89a0c462d8`. The reviewed source head
+`2698fdca737708b3312f8117a132d250caafd42e` and merge have identical trees.
+Only the sealed local composition source, tests and documentation are included.
+The projector and explicit-storage handoffs are separate queued batches, not
+part of this archive or validation. Unrelated Terraform-plan bytes are excluded.
+
+Section 7: Source Validation Proof. Integrated coupled tests passed 321 cases
+without skips, failures or errors; Ruff, compileall and diff checks passed.
+The single full backend regression passed 10,215 cases with 24 conditional
+skips, zero failures/errors, in 2,062.473 seconds. Actual JUnit SHA-256:
+`529292e34db2ba96493e8f46480bcf9091cf39a49d787c57bc7bce5a6d0c1929`.
+Validation began after all sealed additions were applied and verified, before
+their commit was created; unchanged source/tree/postimage bindings are retained
+in `composition-release-terminal-validation.json`, rather than falsely claiming
+a post-commit JUnit start. Exact-head CI `41384204028` passed all seven jobs;
+native SQL `41384244842` passed with actual JUnit 26 tests and zero skips.
+Web lint-fix, 151 files / 1,993 tests and production build passed without edits.
+
+All validation checks pass:
+- [x] Core CLI/auth and corrected tenant/subscription: fresh idle protected
+  preimage captured 04:13:55 UTC with state SHA-256
+  `012d338bcb471859a45d3eb50de78942c9c422e393f4e7bf1d23c6161652434f`.
+  Existing Succeeded publisher and unchanged expected baseline image checked.
+  Bicep compilation/deployment validation/what-if and Terraform apply are
+  inapplicable to this existing Job image-only delta, not infrastructure scope.
+- [x] Docker build: one merged-main amd64 ACR build and offline exact-source,
+  revision, composition and default-off verification.
+- [x] Azure policy: inherited-scope policy assignments read and retained;
+  unchanged static identity/Key Vault/registry-secret wiring inspected.
+- [x] Record final validation proof after build/package verification.
+
+Section 7: Deployment Validation Proof. On 2026-11-02, the separate guarded
+`build-composition-release.py` issued one amd64 ACR build `cr3q` from an immutable
+archive of merged main `038c38a3bca1cf848849b14bc098ca89a0c462d8`.
+Digest `sha256:748a57acb388dbc64b8be34cbe9e77fafd0f5e9dfeb56eb1f96527bdf0c9725f`
+was verified by `verify-composition-release-image.py` in a read-only,
+network-none amd64 container. All 493 packaged source hashes and embedded
+revision match; actual composition import, remote-root refusal, fixed-table
+defaults, lifecycle dependencies and workload-family contracts passed.
+Fresh preimage/policy/role commands completed before build. Existing publisher
+Key Vault Secrets User is scoped to the unchanged vault; registry-secret auth
+remains in force, so no AcrPull grant or provisioning reconciliation is needed.
+No new data-plane identity path is activated. Validation proof and exclusive
+intent/build/package receipts are retained under session `release-438/`.
+
+Authoritative azure-validate workflow completed before azure-deploy. The single
+guarded publisher image-only PATCH completed with provisioning Succeeded,
+verified at 04:22:21.280387 UTC on 2026-11-02. Exact deployed immutable image:
+`aiopsdevacr7h0ih3.azurecr.io/aiops-api@sha256:748a57acb388dbc64b8be34cbe9e77fafd0f5e9dfeb56eb1f96527bdf0c9725f`.
+All four apps, ten other Jobs and every publisher non-image setting match
+the actual sealed preimage; only the publisher image changed. Actual sanitized
+`protected-preimage.json` and `protected-postimage.json` are both retained.
+Postimage state SHA-256:
+`1fd9ced61867e63995c88fce747f6c750f8d29b6856c32744737236475e89aaa`.
+Live publisher roles are unchanged; 2 CPU / 4 GiB, retry zero, timeout, identity,
+registry authentication, environment, commands and `30 14 * * *` cron remain.
+No manual publisher execution occurred. Independent live verification is
+separate from these operator receipts; no scheduled execution qualification,
+remote activation, production journal commissioning or phase acceptance is
+claimed. This final documentation requires no additional image build.
+Use separate `release-438/` exclusive build/rollout intents, never PR436 intents.
+Retain actual sanitized protected preimage and postimage and require exactly
+one publisher image delta across four apps, ten other Jobs and every publisher
+non-image setting. Preserve 2 CPU / 4 GiB, retry zero, timeout, identity, registry
+authentication, environment, commands and unchanged `30 14 * * *` cron.
+
+No Terraform apply, infrastructure reconciliation, grants, manual publication,
+remote-root qualification, production journal commissioning, CLI/legacy/pointer/
+reader/graph integration or runtime activation is authorized by this source
+capability. Broker signed identity authority remains separate from declared
+credential ownership. Source-image adoption is not scheduled execution, current
+read authority, commissioning or phase acceptance.
