@@ -1790,7 +1790,7 @@ making any publication or Phase 03.1 acceptance claim.
 
 ### Protocol-injection publisher-only release (2026-11-02)
 
-Status: Approved; merged-main build/package validation pending.
+Status: Deployed; scheduled-execution qualification remains pending.
 Recipe: Azure CLI, existing-resource image-only update. The direct user release
 authority covers this source integration and autonomous prerequisite repair.
 Reuse the established subscription, resource group, ACR and scheduled publisher
@@ -1813,13 +1813,13 @@ Validation status (remaining gates below):
   australiaeast resource group, Succeeded Container Apps environment and ACR.
   Infrastructure-template build/validate/what-if and Terraform apply are
   inapplicable because this operation changes only the existing Job image.
-- [ ] 2. Docker build and package verification: build once from the exact
+- [x] 2. Docker build and package verification: build once from the exact
   final merged-main archive; verify immutable digest, embedded source revision,
   complete packaged source hashes, trusted protocol seam and unchanged
   required-family/default-off contracts before rollout.
-- [ ] 3. Azure policy and live identity verification: inspect applicable
+- [x] 3. Azure policy and live identity verification: inspect applicable
   assignments and current publisher identity; no role or policy change.
-- [ ] 4. Seal fresh protected-state preimage, verify no active publisher,
+- [x] 4. Seal fresh protected-state preimage, verify no active publisher,
   apply only the immutable image, then compare every non-image setting and
   protected application/revision/traffic against that preimage.
 
@@ -1827,8 +1827,46 @@ Section 7: validation proof. The integrated six handoff paths match their
 reviewed output hashes exactly. Expanded focused backend validation passed
 387 tests; repository-wide Ruff passed. Web lint-fix, all 151 Vitest files /
 1,993 tests, and production build passed without web source changes.
-Full backend regression and final merged-main image/package qualification
-remain pending; no rollout or remote-runtime activation is claimed here.
+Full local backend regression completed with 10,191 passed / 24 skipped,
+zero failures/errors (collection preceded the late test-only addition).
+All final-head CI shards/aggregate, frontend/security and native SQL-engine
+run `41371548545` succeeded for reviewed head
+`84ed937d764778ecd619fe95c775fa86fbfea926`; final-head CI covers the complete
+test set including that addition. Native engine evidence is not hosted service
+or production runtime qualification.
+
+PR #433 merged normally at 01:44:12Z as
+`4c4d806cd1f245ee055000f4f1f7071500673b0c`. The merged tree equals the reviewed
+head, which is an ancestor. One native `linux/amd64` ACR build `cr3n` from that
+exact merged-main archive succeeded:
+`aiopsdevacr7h0ih3.azurecr.io/aiops-api@sha256:e75b23baf69b2f5e8536256b4be9968b661066a37ae75a2f8baa8614ecd27ba1`.
+Offline `linux/amd64 --network none --read-only` verification passed embedded
+revision, complete 491-source-file hash parity, protocol port, fixed-table
+default/refusal and required/optional workload-family contracts.
+
+Read-only Azure context/resource checks and inherited-scope policy assignment
+listing passed (no applicable assignments returned). Static role review
+confirmed conditional resource-scoped AcrPull and Key Vault Secrets User
+wiring. Live readback confirms this publisher uses its existing registry
+password secret reference, not managed-identity registry authentication;
+therefore no new AcrPull grant/propagation gate applies. The unchanged publisher
+identity has Key Vault Secrets User on the actual Key Vault. No secret values
+were retrieved, and no new role or remote protocol capability is needed.
+The full sanitized protected preimage was sealed at 01:29:22Z with zero active
+publisher. Immediate full-state equality and zero-active checks are mandatory
+before the single image-only update. Build, package, exact CI and full sanitized
+preimage/postimage receipts are retained under integrator session
+`files/release-433/`.
+
+The single guarded publisher image-only update completed and was verified at
+01:52:15Z with provisioning state Succeeded and the exact immutable digest above.
+All four protected apps, ten other Jobs and every publisher non-image setting
+match the sealed preimage. Cron `30 14 * * *`, identity, registry authentication,
+resources, command, environment and retry/timeout settings remain unchanged.
+No manual execution was started, and no remote protocol was activated.
+This proves configured-image adoption and offline package integrity, not a
+successful scheduled execution of this new image. The next natural publication
+and full phase acceptance remain separate gates.
 
 ### Qualified workload source and additive typed graph proof (2026-11-02)
 
