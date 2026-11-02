@@ -496,6 +496,7 @@ class CandidateGenerationMaterializer:
             else None
         )
         self._definition_fingerprint = definition_fingerprint
+        self._attempt_before_send: Callable[[], None] | None = None
         if publication_protocol == ATTEMPT_PROTOCOL:
             if not output_policies:
                 raise PublicationSafetyError("immutable_attempt:boundary_and_policy_required")
@@ -553,16 +554,48 @@ class CandidateGenerationMaterializer:
         self._began = False
         self._runtime_guard = runtime_guard
 
-    def bind_attempt(self, session: AttemptSession, *, attempt_id: str) -> None:
+    @property
+    def attempt_protocol(self) -> AttemptPublicationProtocol | None:
+        """Return the explicitly injected immutable protocol dependency."""
+        return (
+            self._attempt_protocol
+            if self.publication_protocol == ATTEMPT_PROTOCOL
+            else None
+        )
+
+    @property
+    def expected_target(self) -> Mapping[str, str] | None:
+        """Return a defensive copy of the materializer's target binding."""
+        return (
+            None
+            if self._expected_target is None
+            else dict(self._expected_target)
+        )
+
+    def bind_attempt(
+        self,
+        session: AttemptSession,
+        *,
+        attempt_id: str,
+        reference: AttemptReference | None = None,
+        before_send: Callable[[], None] | None = None,
+    ) -> None:
         """Bind an enforcing-boundary session, never a caller-selected fence."""
         if self.publication_protocol != ATTEMPT_PROTOCOL:
             raise PublicationSafetyError("immutable_attempt:protocol_not_selected")
+        if reference is not None and (
+            type(reference) is not AttemptReference
+            or reference.attempt_id != attempt_id
+        ):
+            raise PublicationSafetyError("immutable_attempt:reference_binding")
         self._attempt_session, self._attempt_id = session, attempt_id
-        self._attempt_reference = None
+        self._attempt_reference = reference
+        self._attempt_before_send = before_send
 
     def commit_attempt(
         self, *, expected_revision: str, request_id: str,
         authorization_digest: str | None = None,
+        commit_intent_recorder: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> AttemptControl:
         """Publish the exact staged attempt via the enforcing commit boundary."""
         if (
@@ -596,15 +629,42 @@ class CandidateGenerationMaterializer:
         ):
             raise PublicationSafetyError("immutable_attempt:authority_changed")
         self._attempt_request_digests[request_id] = auth["authorization_digest"]
+        if commit_intent_recorder is not None:
+            commit_intent_recorder({
+                "session": {
+                    "owner": self._attempt_session.owner,
+                    "epoch": self._attempt_session.epoch,
+                    "session_id": self._attempt_session.session_id,
+                },
+                "reference": self._attempt_reference.as_dict(),
+                "expected_revision": expected_revision,
+                "operation": "admit",
+                "request_id": request_id,
+                "authorization_digest": auth["authorization_digest"],
+            })
+        if self._attempt_before_send is not None:
+            self._attempt_before_send()
+        commit_args = {
+            "expected_revision": expected_revision,
+            "operation": "admit",
+            "request_id": request_id,
+            "authorization_digest": auth["authorization_digest"],
+        }
+        if self._attempt_before_send is not None:
+            return self._attempt_protocol.commit(
+                self._attempt_session,
+                self._attempt_reference,
+                **commit_args,
+                before_send=self._attempt_before_send,
+            )
         return self._attempt_protocol.commit(
-            self._attempt_session, self._attempt_reference,
-            expected_revision=expected_revision, operation="admit",
-            request_id=request_id, authorization_digest=auth["authorization_digest"],
+            self._attempt_session, self._attempt_reference, **commit_args
         )
 
     def restore_attempt(
         self, reference: AttemptReference, *, expected_revision: str, request_id: str,
         authorization_digest: str | None = None,
+        commit_intent_recorder: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> AttemptControl:
         """Restore an exact retained catalog without any physical rematerialization."""
         if self.publication_protocol != ATTEMPT_PROTOCOL or self._attempt_session is None:
@@ -642,10 +702,36 @@ class CandidateGenerationMaterializer:
         if prior_digest is not None and prior_digest != release.attestation_digest:
             raise PublicationSafetyError("immutable_attempt:authority_changed")
         self._attempt_request_digests[request_id] = release.attestation_digest
+        if commit_intent_recorder is not None:
+            commit_intent_recorder({
+                "session": {
+                    "owner": self._attempt_session.owner,
+                    "epoch": self._attempt_session.epoch,
+                    "session_id": self._attempt_session.session_id,
+                },
+                "reference": reference.as_dict(),
+                "expected_revision": expected_revision,
+                "operation": "restore",
+                "request_id": request_id,
+                "authorization_digest": release.attestation_digest,
+            })
+        if self._attempt_before_send is not None:
+            self._attempt_before_send()
+        commit_args = {
+            "expected_revision": expected_revision,
+            "operation": "restore",
+            "request_id": request_id,
+            "authorization_digest": release.attestation_digest,
+        }
+        if self._attempt_before_send is not None:
+            return self._attempt_protocol.commit(
+                self._attempt_session,
+                reference,
+                **commit_args,
+                before_send=self._attempt_before_send,
+            )
         return self._attempt_protocol.commit(
-            self._attempt_session, reference, expected_revision=expected_revision,
-            operation="restore", request_id=request_id,
-            authorization_digest=release.attestation_digest,
+            self._attempt_session, reference, **commit_args
         )
 
     def recover_attempt_outcome(
@@ -711,9 +797,11 @@ class CandidateGenerationMaterializer:
             candidate.generation_id, manifest["content_hash"],
         )
         policy.validate_outputs(describe_outputs(products, self._service.onelake, catalog))
-        reference = self._attempt_protocol.stage(
-            self._attempt_session, attempt_id=self._attempt_id,
-            candidate={
+        if self._attempt_before_send is not None:
+            self._attempt_before_send()
+        stage_args = {
+            "attempt_id": self._attempt_id,
+            "candidate": {
                 "generation_id": context.generation_id,
                 "source_generation": context.source_generation,
                 "content_hash": context.content_hash,
@@ -723,8 +811,17 @@ class CandidateGenerationMaterializer:
                 "validation_digest": context.validation_digest,
                 "expected_target": target,
             },
-            products=products,
-        )
+            "products": products,
+        }
+        if self._attempt_before_send is not None:
+            reference = self._attempt_protocol.stage(
+                self._attempt_session, **stage_args,
+                before_send=self._attempt_before_send,
+            )
+        else:
+            reference = self._attempt_protocol.stage(
+                self._attempt_session, **stage_args
+            )
         self._attempt_reference = reference
         return {
             "status": "completed", "protocol": ATTEMPT_PROTOCOL,

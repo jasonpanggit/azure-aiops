@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -309,16 +309,18 @@ class AttemptPublicationProtocol(Protocol):
         self, session: AttemptSession, *, attempt_id: str,
         candidate: Mapping[str, Any],
         products: Mapping[str, Sequence[Mapping[str, Any]]],
+        before_send: Callable[[], None] | None = None,
     ) -> AttemptReference:
-        """Stage a complete product batch; never expose per-product writes."""
+        """Stage a complete batch; check lifecycle policy before HTTP send."""
         ...
 
     def commit(
         self, session: AttemptSession, reference: AttemptReference, *,
         expected_revision: str, operation: Literal["admit", "restore"],
         request_id: str, authorization_digest: str,
+        before_send: Callable[[], None] | None = None,
     ) -> AttemptControl:
-        """Commit exact original request pins through the enforcing authority."""
+        """Commit exact pins after an optional immediately-before-send guard."""
         ...
 
     def recover_commit(
@@ -354,6 +356,7 @@ class ImmutableAttemptProtocol:
         self, session: AttemptSession, *, attempt_id: str,
         candidate: Mapping[str, Any],
         products: Mapping[str, Sequence[Mapping[str, Any]]],
+        before_send: Callable[[], None] | None = None,
     ) -> AttemptReference:
         """Seal complete candidate-derived products in one private attempt.
 
@@ -377,6 +380,8 @@ class ImmutableAttemptProtocol:
                 _refuse("product_name")
             schemas[table] = _validate_product_rows(table, rows)
             bodies[table] = _json({"rows": [dict(row) for row in rows]})
+        if before_send is not None:
+            before_send()
         self._boundary.begin(session, attempt_id, candidate_json)
         artifacts = self._boundary.create_products(session, attempt_id, bodies)
         if set(artifacts) != set(bodies):
@@ -469,6 +474,7 @@ class ImmutableAttemptProtocol:
         self, session: AttemptSession, reference: AttemptReference, *,
         expected_revision: str, operation: Literal["admit", "restore"],
         request_id: str, authorization_digest: str,
+        before_send: Callable[[], None] | None = None,
     ) -> AttemptControl:
         """Ask the enforcing boundary to commit, never implement a raw CAS fallback."""
         recovered = self.recover_commit(
@@ -478,6 +484,8 @@ class ImmutableAttemptProtocol:
         if recovered is not None:
             return recovered
         self.read_catalog(reference)
+        if before_send is not None:
+            before_send()
         return self._boundary.commit(
             session, reference, expected_revision=expected_revision,
             operation=operation, request_id=request_id,

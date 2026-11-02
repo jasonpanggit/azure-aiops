@@ -7,7 +7,7 @@ import json
 import math
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -197,7 +197,18 @@ class PublicationBrokerClient:
         self._closed = True
         self._http.close()
 
-    def _rpc(self, operation: str, payload: dict[str, Any]) -> Any:
+    @property
+    def expected_target(self) -> Mapping[str, str]:
+        """Return a read-only copy of the exact target pinned at construction."""
+        return MappingProxyType(dict(self._target))
+
+    def _rpc(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        *,
+        before_send: Callable[[], None] | None = None,
+    ) -> Any:
         if self._closed:
             _refuse("closed")
         body = _json(payload).encode()
@@ -215,6 +226,8 @@ class PublicationBrokerClient:
             or access.expires_on <= time.time()
         ):
             _refuse("token_invalid")
+        if before_send is not None:
+            before_send()
         try:
             with self._http.stream(
                 "POST",
@@ -308,7 +321,11 @@ class PublicationBrokerClient:
         ) if value.active is not None else None
 
     def acquire(
-        self, *, expected_revision: str, lease_seconds: int = 300
+        self,
+        *,
+        expected_revision: str,
+        lease_seconds: int = 300,
+        before_send: Callable[[], None] | None = None,
     ) -> AttemptControl:
         """Acquire the server-issued session for the constructor-pinned worker."""
         revision = _revision(expected_revision)
@@ -321,6 +338,7 @@ class PublicationBrokerClient:
                     "expected_revision": revision,
                     "lease_seconds": lease_seconds,
                 },
+                before_send=before_send,
             )
         )
         self._session(result.session)
@@ -328,10 +346,20 @@ class PublicationBrokerClient:
             _refuse("acquire_revision")
         return result
 
-    def allocate_attempt(self, session: AttemptSession) -> str:
+    def allocate_attempt(
+        self,
+        session: AttemptSession,
+        *,
+        before_send: Callable[[], None] | None = None,
+    ) -> str:
         """Allocate one server-owned attempt; do not retry an ambiguous response."""
         result = _fields(
-            self._rpc("allocate", {"session": self._session(session)}), {"attempt_id"}
+            self._rpc(
+                "allocate",
+                {"session": self._session(session)},
+                before_send=before_send,
+            ),
+            {"attempt_id"},
         )
         return _uuid(result["attempt_id"])
 
@@ -375,6 +403,7 @@ class PublicationBrokerClient:
         attempt_id: str,
         candidate: Mapping[str, Any],
         products: Mapping[str, Sequence[Mapping[str, Any]]],
+        before_send: Callable[[], None] | None = None,
     ) -> AttemptReference:
         """Batch the complete product set; no per-product write RPC is available."""
         # Snapshot mutable inputs once, before any token or HTTP call.
@@ -422,6 +451,7 @@ class PublicationBrokerClient:
                     "candidate": candidate_value,
                     "products": rows_by_table,
                 },
+                before_send=before_send,
             )
         )
         if (
@@ -582,6 +612,7 @@ class PublicationBrokerClient:
         operation: Literal["admit", "restore"],
         request_id: str,
         authorization_digest: str,
+        before_send: Callable[[], None] | None = None,
     ) -> AttemptControl | None:
         if operation not in {"admit", "restore"}:
             _refuse("operation")
@@ -597,6 +628,7 @@ class PublicationBrokerClient:
                 "request_id": _uuid(request_id),
                 "authorization_digest": _hash(authorization_digest),
             },
+            before_send=before_send,
         )
         if result is None and rpc == "recover":
             return None
@@ -618,6 +650,7 @@ class PublicationBrokerClient:
         operation: Literal["admit", "restore"],
         request_id: str,
         authorization_digest: str,
+        before_send: Callable[[], None] | None = None,
     ) -> AttemptControl:
         """Send exactly one mutation with original pins; never automatically retry."""
         value = self._transition(
@@ -628,6 +661,7 @@ class PublicationBrokerClient:
             operation=operation,
             request_id=request_id,
             authorization_digest=authorization_digest,
+            before_send=before_send,
         )
         if value is None:
             _refuse("commit_result")
