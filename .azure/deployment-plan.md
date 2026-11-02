@@ -1788,6 +1788,126 @@ state, identity, grant, or schedule changes occurred. Wait for the next
 natural execution and perform generation-bound source/readback checks before
 making any publication or Phase 03.1 acceptance claim.
 
+### Protocol-injection publisher-only release (2026-11-02)
+
+Status: Approved; merged-main build/package validation pending.
+Recipe: Azure CLI, existing-resource image-only update. The direct user release
+authority covers this source integration and autonomous prerequisite repair.
+Reuse the established subscription, resource group, ACR and scheduled publisher
+Job; do not provision resources, broaden permissions, change environment
+variables, enable remote protocol mode or start a manual publication.
+
+The six-path handoff is sealed by patch SHA-256
+`b885cb9488fc7b88a0956a2f304d396ec5b6b1ea4dc5fadc5bddb8101d499fb1`
+against main `ec7587fd3105107d8151e5d029c67c1fec655d75`. It adds a trusted
+seven-operation `AttemptPublicationProtocol` constructor seam and a pinned
+reader type, with exact-one-of boundary/protocol selection only in explicitly
+selected immutable-attempt mode. Fixed-table defaults, local projection-root
+fence, output policies and admission/restoration authority remain unchanged.
+No hosted broker client is automatically wired. SQL-engine test collection
+and in-process wrappers do not qualify a commissioned remote runtime.
+
+Validation status (remaining gates below):
+
+- [x] 1. Core validation: verified actual Azure tenant/subscription, existing
+  australiaeast resource group, Succeeded Container Apps environment and ACR.
+  Infrastructure-template build/validate/what-if and Terraform apply are
+  inapplicable because this operation changes only the existing Job image.
+- [ ] 2. Docker build and package verification: build once from the exact
+  final merged-main archive; verify immutable digest, embedded source revision,
+  complete packaged source hashes, trusted protocol seam and unchanged
+  required-family/default-off contracts before rollout.
+- [ ] 3. Azure policy and live identity verification: inspect applicable
+  assignments and current publisher identity; no role or policy change.
+- [ ] 4. Seal fresh protected-state preimage, verify no active publisher,
+  apply only the immutable image, then compare every non-image setting and
+  protected application/revision/traffic against that preimage.
+
+Section 7: validation proof. The integrated six handoff paths match their
+reviewed output hashes exactly. Expanded focused backend validation passed
+387 tests; repository-wide Ruff passed. Web lint-fix, all 151 Vitest files /
+1,993 tests, and production build passed without web source changes.
+Full backend regression and final merged-main image/package qualification
+remain pending; no rollout or remote-runtime activation is claimed here.
+
+### Qualified workload source and additive typed graph proof (2026-11-02)
+
+The user-authorized bounded validation execution
+`aiops-dev-inventory-publication-q5krx7a` succeeded from 00:23:12Z to
+00:36:17Z on the exact PR #431 image `sha256:50d35f31ac2aefcfe12ceb1a993b7990a0c6a545f9f44ee9155a75d56f8001c9`.
+This supersedes only the earlier absence of qualified workload-source proof;
+it does not convert an earlier empty run into success.
+
+The retained generation is
+`activation-464189ab-82a7-4fef-9a01-167fe69c5a9b`, from source run
+`04e97541-d7ff-4d3c-b225-e023fb804225` and publication run
+`22ae7b68-3cef-49bd-b25b-ff0b4ef4a2ce`. Immutable OneLake readback and
+actual SQL joins agree on 1,322 observations, one deployment and 12 fresh,
+non-carried checkpoints. Required ContainerInventory and KubePodInventory
+checkpoints each contain 661 rows. Provenance observation-ID joins establish
+the exact diagnostic digest, shared nonempty ContainerID and provider-time
+deltas of 46.090733 / 47.090733 seconds, below the unchanged 900-second bound.
+An independent SQL rerun reproduced those joins at 00:38:49Z.
+
+The diagnostic namespace, Job, pod, deny-all policy and exact image manifest
+were removed, AKS returned to Stopped/Succeeded, and the temporary
+cluster-scoped namespace-bootstrap assignment was revoked. Only the requested
+namespace-scoped workload-operator assignment remains. Publisher settings,
+daily schedule and protected API/web/MCP resources remain unchanged.
+
+The commissioned GraphModel `e4aa8669-82d3-4ef4-9241-47252fca23fd` then
+received the smallest supported additive projection: ImageDigest,
+WorkloadDeployment and deployedAs. Existing two nodes, one edge and all their
+bindings were preserved; platform metadata, graph settings and styling remain
+byte-identical. New endpoint keys include tenant, subscription, ingestion
+generation and resource ID; the edge maps corresponding scoped-generation
+subject/object keys and exposes those same scope/generation properties.
+No application relationship was invented.
+
+Published graphType/graphDefinition schemas reference an unavailable official
+identifier schema, so no complete local official-schema pass is claimed.
+The exact new contract was instead accepted by the supported GraphModel create
+API on one disposable graph, read back and loaded before touching the
+commissioned graph. New entries omit undocumented legacy extensions; the
+provider's sole observed normalization adds `edgeIdMapping: null`. The
+commissioned six-part live preimage matched every retained decoded hash
+immediately before the single update; this is a freshness guard, not an
+atomic provider compare-and-swap.
+
+Commissioned update operation `04b03026-0709-44fa-bd52-58224a3751ed`
+succeeded. Its automatic load
+`d9a7c049-a17b-4ff8-9fa7-97b607d3f4ec` completed at 01:01:39Z.
+Exact postimage verification confirms four nodes/two edges and no unintended
+binding changes. Fresh SQL/GQL comparisons at 01:03:21Z returned exactly one
+typed digest-to-deployment link with actual endpoint-ID parity, explicit
+tenant/subscription/generation equality on both nodes and edge, GQL status
+`00000`, and no warnings or continuation. Independent commissioned readback
+also passed. The first cold query exceeded a 60-second operator timeout before
+a successful read-only retry; this is not a latency-SLO certification.
+The disposable graph `1d009e03-bb97-4485-a8e8-a41bfa578a55` was deleted at
+01:04:22Z after fresh full-definition identity and idle checks; two original
+workspace graphs remain.
+
+Receipts are retained under the integrator's
+`files/release-431-a2262b1/`:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `qualified-test-source-readback.json` | `eb80bce1eea33077a936df386094a18deed7c9f4a7ef8796c3773129d8973cd0` |
+| `qualified-test-sql-readback.json` | `4c2426fefa7c36e379650c7f556b92bc371e7aa940c6a145f2a8fc941969e5c7` |
+| `workload-graph-target-update.json` | `9285bd5a33d1943d6a07f5c903e3acf62915fc27eaa0fdd41715ce681891b815` |
+| `workload-graph-target-delta-verification.json` | `a2f7a37ac97b37130928dc9835983b87ce76d4af4d7116a88ce66ae96c39197d` |
+| `workload-graph-target-sql-gql-parity.json` | `af137f62f9447519e84abfb20f54e3d8e6b3ff4b97e5dfd0f7270d0275a62f5c` |
+| `workload-graph-provider-cleanup.json` | `79241a283f7cf130f10171ded997063b1398d11c76509aea64a336b5b169d8c8` |
+
+This proves the historical bounded-test source linkage and the final typed
+digest-to-deployment edge only. The disposable workload is no longer live.
+Full CVE traversal, explicit application mapping, mixed 100k qualification,
+live canary, rollback exercise and Phase 03.1 acceptance remain unproven.
+Retaining a guarded rollback preimage is not a rollback test. Continue the
+release/enhancement loop and the next natural 14:30Z publisher follow-through;
+do not disable the loop at this evidence handoff.
+
 ### F05 rollout complete; future live acceptance pending
 
 Superseding user-directed immediate test (2026-10-28T22:46Z): exactly one

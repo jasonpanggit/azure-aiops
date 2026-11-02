@@ -165,3 +165,22 @@ coercions fail closed. Existing sparse rows and explicit `None` remain supported
 genuine integer values are compatible with floating-point fields without
 rewriting the canonical JSON. This is compatibility validation, not a new
 required-column or business-quality policy.
+
+## High-level consumer injection
+
+The separately sealed consumer seam allows `CandidateGenerationMaterializer`
+to receive exactly one of `attempt_boundary` or `attempt_protocol` when
+`publication_protocol="immutable-attempt/v1"` is explicitly selected. The
+structural `AttemptPublicationProtocol` exposes only control/active,
+complete-batch stage, commit, exact-request recovery and pinned catalog/table
+reads. A trusted credential-free client can implement that port without
+implementing `AttemptBoundary` or receiving SQL/Blob/verifier credentials.
+`PinnedProductReader` uses the same high-level port. This constructor dependency
+is application wiring, never a caller-supplied authorization assertion.
+
+Fixed-table mode refuses both attempt dependency types and remains the default.
+The existing local projection root, complete output policies, staged candidate,
+admission/restoration authority and legacy pointer guards remain unchanged.
+Transport errors propagate without fallback or automatic mutation retries.
+This seam does not implement a worker HTTP client, deploy a broker or qualify
+remote projection without the local-root guard.

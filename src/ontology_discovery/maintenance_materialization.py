@@ -48,6 +48,7 @@ from .immutable_attempt import (
 from .immutable_attempt import (
     AttemptBoundary,
     AttemptControl,
+    AttemptPublicationProtocol,
     AttemptReference,
     AttemptSession,
     ImmutableAttemptProtocol,
@@ -323,7 +324,7 @@ class PinnedProductReader:
         receipts: ProductReceiptStore,
         delta: Any,
         onelake: Any,
-        attempt_protocol: ImmutableAttemptProtocol | None = None,
+        attempt_protocol: AttemptPublicationProtocol | None = None,
     ) -> None:
         self._pointer = read_pointer
         self._receipts = receipts
@@ -443,11 +444,29 @@ class CandidateGenerationMaterializer:
         output_policies: tuple[GenerationOutputPolicy, ...] = (),
         publication_protocol: str = "fixed-tables/v1",
         attempt_boundary: AttemptBoundary | None = None,
+        attempt_protocol: AttemptPublicationProtocol | None = None,
     ) -> None:
         if publication_protocol not in {"fixed-tables/v1", ATTEMPT_PROTOCOL}:
             raise PublicationSafetyError("publication_protocol_unsupported")
         if publication_protocol == "fixed-tables/v1" and attempt_boundary is not None:
             raise PublicationSafetyError("attempt_boundary_requires_protocol")
+        if publication_protocol == "fixed-tables/v1" and attempt_protocol is not None:
+            raise PublicationSafetyError("attempt_protocol_requires_protocol")
+        if publication_protocol == ATTEMPT_PROTOCOL:
+            if (attempt_boundary is None) == (attempt_protocol is None):
+                raise PublicationSafetyError(
+                    "immutable_attempt:exactly_one_boundary_or_protocol_required"
+                )
+            if attempt_protocol is not None and (
+                not isinstance(attempt_protocol, AttemptPublicationProtocol)
+                or not all(callable(getattr(attempt_protocol, name, None)) for name in (
+                    "control", "active", "stage", "commit", "recover_commit",
+                    "read_catalog", "read_table",
+                ))
+            ):
+                raise PublicationSafetyError(
+                    "immutable_attempt:high_level_protocol_required"
+                )
         self.publication_protocol = publication_protocol
         if (
             type(isolated_output) is not bool
@@ -478,9 +497,15 @@ class CandidateGenerationMaterializer:
         )
         self._definition_fingerprint = definition_fingerprint
         if publication_protocol == ATTEMPT_PROTOCOL:
-            if not output_policies or attempt_boundary is None:
+            if not output_policies:
                 raise PublicationSafetyError("immutable_attempt:boundary_and_policy_required")
-            self._attempt_protocol = ImmutableAttemptProtocol(attempt_boundary)
+            self._attempt_protocol: AttemptPublicationProtocol
+            if attempt_protocol is not None:
+                self._attempt_protocol = attempt_protocol
+            elif attempt_boundary is not None:
+                self._attempt_protocol = ImmutableAttemptProtocol(attempt_boundary)
+            else:
+                raise PublicationSafetyError("immutable_attempt:boundary_and_policy_required")
             self.reader = PinnedProductReader(
                 read_pointer=storage.read_pointer, receipts=None,
                 delta=service.delta, onelake=service.onelake,
