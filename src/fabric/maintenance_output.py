@@ -249,6 +249,33 @@ def describe_outputs(
     )
 
 
+def validate_logical_candidate(
+    expected: GenerationOutputContext,
+    context: GenerationOutputContext,
+    entities: Sequence[Mapping[str, Any]],
+    relationships: Sequence[Mapping[str, Any]],
+    entity_types: tuple[str, ...],
+    relationship_triples: tuple[tuple[str, str, str], ...],
+) -> None:
+    """Apply the shared exact context and closed canonical vocabulary checks."""
+    if context != expected:
+        _reject("candidate_context")
+    allowed_entities = set(entity_types)
+    triples = set(relationship_triples)
+    if any(
+        type(row.get("entity_type")) is not str
+        or row["entity_type"] not in allowed_entities
+        for row in entities
+    ):
+        _reject("entity_closure")
+    if any(
+        any(type(row.get(key)) is not str for key in ("subject_type", "predicate", "object_type"))
+        or (row["subject_type"], row["predicate"], row["object_type"]) not in triples
+        for row in relationships
+    ):
+        _reject("relationship_closure")
+
+
 @dataclass(frozen=True)
 class GenerationOutputPolicy:
     """Server-owned expected outputs; no loader, CLI switch or live approval.
@@ -317,22 +344,10 @@ class GenerationOutputPolicy:
         relationships: Sequence[Mapping[str, Any]],
     ) -> None:
         """Reject unknown types, including inactive rows, before product building."""
-        if context != self.context:
-            _reject("candidate_context")
-        entity_types = set(self.entity_types)
-        triples = set(self.relationship_triples)
-        if any(
-            type(row.get("entity_type")) is not str
-            or row["entity_type"] not in entity_types
-            for row in entities
-        ):
-            _reject("entity_closure")
-        if any(
-            any(type(row.get(key)) is not str for key in ("subject_type", "predicate", "object_type"))
-            or (row["subject_type"], row["predicate"], row["object_type"]) not in triples
-            for row in relationships
-        ):
-            _reject("relationship_closure")
+        validate_logical_candidate(
+            self.context, context, entities, relationships,
+            self.entity_types, self.relationship_triples,
+        )
 
     def validate_outputs(self, actual: GenerationOutputManifest) -> None:
         """Compare every table, destination, schema, payload and catalog field."""
