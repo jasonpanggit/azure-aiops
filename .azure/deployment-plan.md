@@ -1870,7 +1870,7 @@ and full phase acceptance remain separate gates.
 
 ### Isolated immutable worker lifecycle source release (2026-11-02)
 
-Status: Prepared; full regression, exact-head CI and deployment gates pending.
+Status: Deployed; configured-image adoption verified, scheduled execution pending.
 Recipe: existing publisher-only immutable image update, after normal source
 merge. No application, Network, API, web, Terraform, identity, grant, schedule
 or runtime activation change is included.
@@ -1896,19 +1896,65 @@ production journal is wired; no endpoint, root, credential or grant is guessed.
 
 Validation status:
 
+- [x] 1. Core validation: verify CLI/auth, exact existing subscription/resource
+  health and fresh idle protected-state preimage. Bicep build/deployment
+  validation/what-if and Terraform apply are inapplicable to this existing
+  Job image-only change; do not broaden it into infrastructure reconciliation.
+- [x] 2. Docker build: one exact validated merged-main amd64 ACR build followed
+  by read-only/network-none full source/revision/default-off/lifecycle parity.
+- [x] 3. Azure policy and role verification: applicable policy assignments,
+  unchanged registry-secret authentication, static least-privilege identity
+  wiring and actual resource-scoped role readback; no permission mutation.
 - [x] Coupled worker/protocol/recovery/schema/materializer/client/transport/
   SQL-Blob regressions: 370 tests, zero skips/failures/errors; repository Ruff.
 - [x] Required web lint-fix, 151 files / 1,993 tests, production build; no web
   source changes.
-- [ ] Full local backend regression and exact-final-head CI/native SQL engine.
-- [ ] Normal merge with exact reviewed-head/tree/CI provenance binding.
-- [ ] One merged-main amd64 build and complete immutable source-package parity.
-- [ ] Authoritative predeploy validation, fresh protected-state/idle guards,
+- [x] Full local backend regression and exact-final-head CI/native SQL engine.
+- [x] Normal merge with exact reviewed-head/tree/CI provenance binding.
+- [x] One merged-main amd64 build and complete immutable source-package parity.
+- [x] Authoritative predeploy validation, fresh protected-state/idle guards,
   one image-only adoption and independent full postimage comparison.
 
-No lifecycle image has yet been built or deployed. These are source/library
-checks, not a commissioned production journal, remote broker/runtime, hosted
-SQL service, scheduled-execution or phase-acceptance qualification.
+Section 7: Validation Proof. On 2026-11-02, the single final-head local backend
+run completed 10,207 passed / 24 skipped / zero errors or failures in 2,065.22
+seconds; JUnit SHA-256
+`9a13f671e02f4cdffc560b3a1b75183a6970d2d7d8e871ea107bdb67be079aa0`.
+Exact reviewed head `d238e6af91baeca9cd78c73c7578a07b6f09558d` passed
+CI `41377998817` (all four backend shards, aggregate, frontend, security) and
+native x64 SQL-engine run `41377998739` (actual 26 tests, zero skips/failures).
+PR #436 merged normally as `2a2299694624e99c78475962ee204c6c2b51aa65`;
+reviewed-head ancestry and identical Git trees were asserted before ACR intent.
+One native amd64 build `cr3p` succeeded with immutable image
+`aiopsdevacr7h0ih3.azurecr.io/aiops-api@sha256:bc825f3a55f736eec8f90b3489a530d8b92c2f049414aac8c4a44c6adda4a8ec`.
+Actual read-only/network-none amd64 package verification passed embedded
+revision, all 492 source-file hashes, required lifecycle dependencies,
+fixed-table defaults/refusal and unchanged workload-family contracts.
+
+Read-only Azure preflight sealed the full protected preimage at 02:41:40Z
+with zero active publisher, correct tenant/subscription and Succeeded Job.
+Applicable inherited-scope policy listing was empty. Static role wiring
+and live resource-scoped Key Vault Secrets User assignment were verified;
+actual registry authentication remains the existing `acr-password` secret
+reference, not managed-identity auth. No secret values were retrieved and no
+new role or infrastructure reconciliation is required. Receipts:
+integrator `files/release-436/`. Immediate full-state equality and idle checks
+remain mandatory before the one image-only update.
+
+The authoritative azure-validate workflow completed through UpdateStatus and
+azure-deploy was invoked before mutation. The single publisher image-only
+update returned Succeeded and actual configured-image adoption was verified
+at 03:12:15Z. Full sanitized protected preimage and postimage are retained,
+not only hashes: all four apps, ten other Jobs and every publisher non-image
+setting match exactly. Cron `30 14 * * *`, identity, registry authentication,
+2 CPU / 4 GiB, retry zero, command, environment and timeout remain unchanged.
+Live resource-scoped Key Vault Secrets User assignment matches the preflight
+readback. No manual publication execution or remote activation occurred.
+The Job has no public ingress or endpoint.
+
+This qualifies source/library package integrity and configured-image adoption,
+not a commissioned production journal, remote broker/runtime, hosted SQL
+service, successful scheduled execution or phase acceptance. The next natural
+14:30Z publisher run remains a separate gate; do not start a duplicate run.
 
 ### Qualified workload source and additive typed graph proof (2026-11-02)
 
